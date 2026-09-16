@@ -247,6 +247,52 @@ def test_gripper_metadata_shape(registry: dict) -> None:
     assert not problems, "Malformed gripper metadata:\n  " + "\n  ".join(problems)
 
 
+def test_tool_frame_metadata_shape(registry: dict) -> None:
+    """Optional ``tool_frame`` blocks are shape-checked when present.
+
+    The MuJoCo backend adds this site to the model before attaching the robot
+    and ``move_to`` drives it, so a malformed block would refuse ``add_robot``
+    for that robot (loudly, by design - never a silent fall-back to the wrist).
+    Shape contract, checked at runtime by
+    ``strands_robots.simulation.tool_frame.tool_frame_from_block``::
+
+        "tool_frame": {
+            "body": "<model body name>",        # un-namespaced
+            "pos":  [x, y, z],                  # meters, in that body's frame
+            "site": "<site name>"               # optional, default "tcp"
+        }
+    """
+    from strands_robots.simulation.tool_frame import tool_frame_from_block
+
+    problems: list[str] = []
+    for name, info in registry.items():
+        if "tool_frame" not in info:
+            continue
+        frame, reason = tool_frame_from_block(name, info["tool_frame"])
+        if reason is not None:
+            problems.append(reason)
+        elif frame is not None and (frame.body == "world" or "/" in frame.body):
+            problems.append(f"{name}.tool_frame.body must be one of the model's own bodies: {frame.body!r}")
+    assert not problems, "Malformed tool_frame metadata:\n  " + "\n  ".join(problems)
+
+
+def test_shipped_tool_frame_entries(registry: dict) -> None:
+    """Pin the tool frame for the robot whose shipped model has no site.
+
+    ``trs_so_arm100/so_arm100.xml`` declares zero sites, so end-effector
+    discovery fell through to the ``Wrist_Pitch_Roll`` body - about 16 cm
+    short of the jaw tips - and ``move_to`` on the README's first robot missed
+    every low target. The declared point sits between the jaw tips, ~7 mm in
+    from the fingertips, the same convention as the SO-101's shipped
+    ``gripper`` site. Losing this entry silently demotes so100 to the wrist.
+    """
+    frame = registry["so100"]["tool_frame"]
+    assert frame["body"] == "Fixed_Jaw"
+    assert frame["site"] == "tcp"
+    x, y, z = frame["pos"]
+    assert abs(x) < 0.005 and -0.11 < y < -0.09 and abs(z) < 0.005, frame["pos"]
+
+
 def test_shipped_gripper_metadata_entries(registry: dict) -> None:
     """Pin the gripper metadata for the robots we ship policy configs for.
 

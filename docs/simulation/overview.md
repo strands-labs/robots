@@ -52,6 +52,25 @@ For walkthroughs see [Simulation overview](../simulation/overview.md).
 | `list_robots` | - each robot's asset, joint count, and **live** base position, read from the physics rather than from the `add_robot` request, so a robot that walked (or whose model's root pose offset the request) reports where it is |
 | `get_robot_state` | `name` → joint positions, velocities, torques |
 
+!!! note "The frame `move_to` drives"
+    `move_to` and `get_robot_state`'s `end_effector` line follow the frame
+    `discover_ee_frame` finds: a tool-point **site** first (`tcp`, `gripper`,
+    `attachment_site`, …), else a hand/wrist **body**. A vendored model that
+    ships no site lands on the wrist, so a registry entry may declare the tool
+    point the model lacks and the backend adds that site before the attach:
+
+    ```json
+    "tool_frame": {"body": "Fixed_Jaw", "pos": [0.0, -0.0995, 0.001], "site": "tcp"}
+    ```
+
+    `body` is the model's own body name, `pos` is meters in that body's frame,
+    `site` defaults to `tcp`. The shipped `so100` entry carries one (its
+    Menagerie model has zero sites; the point sits between the jaw tips like
+    the SO-101's own `gripper` site). A malformed block, or one naming a body
+    the model lacks, refuses `add_robot` with the reason - never a silent
+    fall-back to the wrist. The overlay `user_robots.json` may declare one for
+    your own robot.
+
 ## Objects
 
 | Action | Key params |

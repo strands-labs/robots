@@ -46,6 +46,7 @@ from typing import Any
 from strands_robots.simulation.models import SimCamera, SimObject, SimRobot, SimWorld
 from strands_robots.simulation.mujoco.backend import _ensure_mujoco, filter_mujoco_attach_noise, mj_name_to_id
 from strands_robots.simulation.mujoco.spec_builder import _SIZE_LAYOUT, SpecBuilder
+from strands_robots.simulation.tool_frame import ToolFrame, ToolFrameRefused
 from strands_robots.utils import (
     coerce_rgba,
     entity_name_error,
@@ -1428,8 +1429,18 @@ def inject_robot_into_scene(
     world: SimWorld,
     robot: SimRobot,
     robot_xml_path: str,
+    tool_frame: ToolFrame | None = None,
 ) -> bool:
     """Attach a robot to the scene via ``spec.attach(other, prefix=..., frame=...)``.
+
+    ``tool_frame`` is a registry-declared tool point for a model that ships no
+    tool site (:mod:`strands_robots.simulation.tool_frame`); it is added to the
+    robot's spec before the attach. A declaration the model cannot honour
+    (unknown body, duplicate site name) raises ``ValueError`` with the reason
+    rather than folding into a bare ``False``, so the caller can report which
+    entry is wrong. That check reads the robot's OWN spec before anything
+    touches the scene's, so the scene needs no rollback: a refused add leaves
+    the live spec byte-identical and the next add succeeds.
 
     MuJoCo handles name prefixing (bodies, joints, geoms, actuators, sensors,
     sites), asset deduplication (meshes, textures, materials), and default-
@@ -1474,8 +1485,16 @@ def inject_robot_into_scene(
 
     try:
         with filter_mujoco_attach_noise():
-            joint_names = SpecBuilder.attach_robot(spec, robot, robot_xml_path)
+            joint_names = SpecBuilder.attach_robot(spec, robot, robot_xml_path, tool_frame=tool_frame)
         robot.joint_names = joint_names
+    except ToolFrameRefused:
+        # The registry asked for a tool site the model cannot carry. The check
+        # reads the robot's own spec before the attach, so the scene's spec was
+        # never touched and there is nothing to put back (measured: the live
+        # spec's XML is byte-identical across a refused add). Re-raised so the
+        # reason reaches the caller instead of the handler below folding it
+        # into a bare False.
+        raise
     except (ValueError, RuntimeError, OSError) as e:
         # attach_robot can insert its worldbody frame before the call that
         # raised. That leftover compiles, so it never broke the scene, but the

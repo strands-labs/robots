@@ -262,6 +262,15 @@
         "closed": "low",
         "open": "high"
       },
+      "tool_frame": {
+        "body": "Fixed_Jaw",
+        "pos": [
+          0.0,
+          -0.0995,
+          0.001
+        ],
+        "site": "tcp"
+      },
       "legacy_urdf": "so100/so100.urdf",
       "aliases": [
         "so100_4cam",

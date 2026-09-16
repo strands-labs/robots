@@ -37,6 +37,7 @@ from strands_robots.simulation.terrain import (
     generate_heightfield,
     terrain_elevation,
 )
+from strands_robots.simulation.tool_frame import ToolFrame, ToolFrameRefused
 
 logger = logging.getLogger(__name__)
 
@@ -1076,6 +1077,7 @@ class SpecBuilder:
         scene_spec: Any,
         robot: SimRobot,
         robot_file_path: str,
+        tool_frame: ToolFrame | None = None,
     ) -> list[str]:
         """Attach a URDF/MJCF file into the scene spec with a name prefix.
 
@@ -1091,11 +1093,19 @@ class SpecBuilder:
             robot: ``SimRobot`` carrying ``name`` (used as prefix) and
                 ``position`` / ``orientation`` (used as attach frame).
             robot_file_path: absolute or relative path to an MJCF/URDF file.
+            tool_frame: a registry-declared tool point to add to the model
+                before the attach (:mod:`strands_robots.simulation.tool_frame`),
+                for a model that ships no tool site. Added to the child spec so
+                ``attach`` namespaces it with the rest of the robot.
 
         Returns:
             List of joint names belonging to the attached robot, in the order
             MuJoCo discovered them (no prefix - caller namespaces via
             ``robot.namespace`` when it resolves IDs post-compile).
+
+        Raises:
+            ToolFrameRefused: ``tool_frame`` names a body the model does not
+                have, or a site name the model already uses.
         """
         mujoco = _ensure_mujoco()
 
@@ -1171,6 +1181,9 @@ class SpecBuilder:
         for top_body in robot_spec.worldbody.bodies:
             _walk(top_body)
 
+        if tool_frame is not None:
+            SpecBuilder.add_tool_site(robot_spec, robot.name, tool_frame)
+
         # Read the solver settings the robot model declares for itself. The read
         # has to happen here, before ``attach`` consumes the child spec, but the
         # scene is only written once the attach below has succeeded: everything
@@ -1189,6 +1202,46 @@ class SpecBuilder:
         SpecBuilder.adopt_declared_options(scene_spec, declared_options, robot.name)
 
         return source_joint_names
+
+    @staticmethod
+    def add_tool_site(robot_spec: Any, robot_name: str, tool_frame: ToolFrame) -> Any:
+        """Add the registry-declared tool site to a robot's (un-attached) spec.
+
+        The site goes on ``tool_frame.body`` at ``tool_frame.pos`` under the
+        name ``tool_frame.site``. Called before ``attach`` so MuJoCo prefixes
+        the site with the robot's namespace like every other element, and
+        :func:`~strands_robots.simulation.ik.discover_ee_frame` finds it as
+        the robot's own tool point.
+
+        Raises:
+            ToolFrameRefused: the body is not in the model (names the bodies
+                that are), or the model already has a site of that name (the
+                declaration is then redundant or mis-targeted - either way a
+                second site of one name would be refused at compile).
+        """
+        bodies = [b.name for b in robot_spec.bodies if b.name and b.name != "world"]
+        if tool_frame.body not in bodies:
+            raise ToolFrameRefused(
+                f"tool_frame for robot '{robot_name}' names body {tool_frame.body!r}, which the model "
+                f"does not have. Bodies in the model: {bodies}. Fix the registry entry's tool_frame.body."
+            )
+        existing = [st.name for st in robot_spec.sites if st.name]
+        if tool_frame.site in existing:
+            raise ToolFrameRefused(
+                f"tool_frame for robot '{robot_name}' would add site {tool_frame.site!r}, but the model "
+                f"already has a site of that name (sites: {existing}). Drop the registry tool_frame, or "
+                "give the declared site another name."
+            )
+        body = robot_spec.body(tool_frame.body)
+        site = body.add_site(name=tool_frame.site, pos=list(tool_frame.pos))
+        logger.debug(
+            "attach_robot: added tool site %r on body %r at %r for %r (registry tool_frame)",
+            tool_frame.site,
+            tool_frame.body,
+            list(tool_frame.pos),
+            robot_name,
+        )
+        return site
 
     @staticmethod
     def declared_options(robot_spec: Any) -> dict[str, Any]:

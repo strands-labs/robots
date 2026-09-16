@@ -142,6 +142,7 @@ from strands_robots.simulation.observers import RunPolicyObserver
 from strands_robots.simulation.policy_runner import CooperativeStop
 from strands_robots.simulation.recording import undriven_robot_state
 from strands_robots.simulation.terrain import SUPPORTED_TERRAINS, validate_difficulty, validate_terrain
+from strands_robots.simulation.tool_frame import registry_tool_frame
 from strands_robots.teleop_mixin import TeleopMixin
 from strands_robots.utils import (
     camera_fov_error,
@@ -2208,6 +2209,26 @@ class MuJoCoSimEngine(
                 self._world.robots.pop(name, None)
                 return mesh_err
 
+            # A tool point the registry declares for a model that ships none
+            # (so100: no sites, so move_to drove the wrist 16 cm short of the
+            # jaws). It describes the registry's OWN model, so it applies only
+            # when that model is what loads: a caller's urdf_path with
+            # data_config= as the metadata source keeps its own frames. Shape-
+            # checked before anything touches the scene; a malformed block is
+            # refused loudly, like the sibling gripper block, rather than
+            # silently falling back to the wrist.
+            # ``data_config or name`` is the registry key the model was
+            # resolved from on this path (the same key the mesh resolution
+            # above uses): ``data_config`` when it was passed, else the
+            # instance name that the deprecated name-as-registry-key fallback
+            # looked up.
+            tool_frame = None
+            if not urdf_path:
+                tool_frame, tool_frame_err = registry_tool_frame(data_config or name)
+                if tool_frame_err is not None:
+                    self._world.robots.pop(name, None)
+                    return {"status": "error", "content": [{"text": f"add_robot: {tool_frame_err}"}]}
+
             # Resolve the requested spawn keyframe from the robot's SOURCE
             # model BEFORE mutating the scene, so an unknown keyframe fails
             # cleanly (naming the available keyframes) without leaving a
@@ -2237,7 +2258,7 @@ class MuJoCoSimEngine(
                 # robot.joint_names from the source spec (pre-namespacing) and
                 # then scene_ops._recompile_preserving_state resolves the
                 # post-attach joint/actuator IDs on the compiled model.
-                ok = inject_robot_into_scene(self._world, robot, resolved_path)
+                ok = inject_robot_into_scene(self._world, robot, resolved_path, tool_frame=tool_frame)
                 if not ok:
                     del self._world.robots[name]
                     return {

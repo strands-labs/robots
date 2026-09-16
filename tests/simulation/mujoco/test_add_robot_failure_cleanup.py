@@ -67,11 +67,11 @@ class TestAddRobotFailureCleanup:
         real_inject = sim_mod.inject_robot_into_scene
         calls = {"n": 0}
 
-        def flaky_inject(world, robot, path):
+        def flaky_inject(world, robot, path, **kwargs):
             calls["n"] += 1
             if calls["n"] == 1:
                 return False
-            return real_inject(world, robot, path)
+            return real_inject(world, robot, path, **kwargs)
 
         monkeypatch.setattr(sim_mod, "inject_robot_into_scene", flaky_inject)
 
@@ -90,11 +90,11 @@ class TestAddRobotFailureCleanup:
         real_inject = sim_mod.inject_robot_into_scene
         calls = {"n": 0}
 
-        def flaky_inject(world, robot, path):
+        def flaky_inject(world, robot, path, **kwargs):
             calls["n"] += 1
             if calls["n"] == 1:
                 raise RuntimeError("simulated compile crash")
-            return real_inject(world, robot, path)
+            return real_inject(world, robot, path, **kwargs)
 
         monkeypatch.setattr(sim_mod, "inject_robot_into_scene", flaky_inject)
 
