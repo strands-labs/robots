@@ -55,8 +55,9 @@ from strands.tools.tools import AgentTool
 from strands.types._events import ToolInterruptEvent, ToolResultEvent
 from strands.types.tools import ToolContext, ToolResult, ToolSpec, ToolUse
 
+from strands_robots import hardware_observe
 from strands_robots._serial_discovery import describe_serial_candidates, scan_serial_devices
-from strands_robots.bus_access import read_observation, write_action
+from strands_robots.bus_access import bus_lock, read_observation, write_action
 from strands_robots.ros_telemetry import ROS2_SYSTEM_INSTALL_HINT
 from strands_robots.teleop_mixin import TeleopMixin, _stop_reported_stopped
 from strands_robots.tools._command_gate import gate_motion
@@ -1675,6 +1676,81 @@ class Robot(TeleopMixin, AgentTool):
         # port and the surviving cameras shut.
         self._close_open_devices()
 
+    def _observe_ledger(self) -> set[str]:
+        """The devices an observe action opened that no connect has yet been handed.
+
+        Entries are ``"bus"`` and ``"camera:<name>"``. Created by the first
+        observe action rather than in ``__init__``: a tool that never observed
+        has no ledger and nothing to hand back, and that is the same answer.
+        """
+        ledger: set[str] | None = getattr(self, "_observe_opened", None)
+        if ledger is None:
+            ledger = set()
+            self._observe_opened = ledger
+        return ledger
+
+    def _hand_back_observe_devices(self) -> None:
+        """Close every device an observe action left open, so ``connect()`` starts from nothing.
+
+        ``get_state`` opens the motor bus alone and ``render`` opens one
+        camera, and each leaves its device open so the next read is cheap.
+        lerobot's ``Robot.connect()`` cannot start from either: every device's
+        own ``connect()`` is ``@check_if_already_connected``, so an open bus is
+        refused before any camera opens, and an open camera is refused in the
+        camera loop - *before* ``configure()``, which is where the operating
+        mode, the PID gains and the gripper's current and torque limits are
+        written. The two failures are not alike. The bus one is a refused
+        connect. The camera one is a connect that reports success: with one
+        camera, ``is_connected`` (``bus and all(cameras)``) reads True once the
+        bus is up, so the rollout drives servos the driver never configured.
+
+        The trigger is the ledger, not ``is_connected``, because on an arm with
+        **no** cameras an open bus *is* ``is_connected`` - so a gate keyed on
+        that field skips ``connect()`` altogether, and ``get_state`` followed by
+        a rollout drives an arm whose ``configure()`` never ran. Measured on the
+        fake: ``(True, "")`` with ``configure_calls == 0``. What the ledger
+        records is what this tool borrowed; a robot the caller connected
+        themselves is not in it and is left as they left it.
+
+        A close that fails raises: the caller refuses and rolls back, instead of
+        letting the driver's ``DeviceAlreadyConnectedError`` pass for a robot
+        that was already up. That is the one way this differs from
+        ``_close_open_devices``, which is best-effort because it runs where
+        there is nothing left to refuse.
+
+        Synchronous, for the teleop loop; ``_connect_robot`` runs it off the
+        event loop. The bus is closed under its ``bus_lock``, the lock
+        ``get_state`` and the mesh probes read under, so a read in flight
+        finishes before the port goes.
+
+        Raises:
+            Exception: Whatever the device's own ``disconnect()`` raised,
+                unchanged - the ledger keeps the entry, so the next connect
+                tries again.
+        """
+        ledger = self._observe_ledger()
+        if not ledger:
+            return
+        robot = self.robot
+        if "bus" in ledger:
+            bus = getattr(robot, "bus", None)
+            if bus is not None and getattr(bus, "is_connected", False):
+                logger.info("closing the bus an observe action opened so %s can connect fully", robot)
+                with bus_lock(robot):
+                    # disable_torque=False: nothing was energised, and a torque
+                    # write to a bus that was only ever read is the register
+                    # write the observe actions promise not to make.
+                    bus.disconnect(disable_torque=False)
+            ledger.discard("bus")
+        cameras = getattr(robot, "cameras", None)
+        for entry in sorted(e for e in ledger if e.startswith("camera:")):
+            name = entry.removeprefix("camera:")
+            camera = cameras.get(name) if isinstance(cameras, Mapping) else None
+            if camera is not None and getattr(camera, "is_connected", False):
+                logger.info("closing camera %s an observe action opened so %s can connect fully", name, robot)
+                camera.disconnect()
+            ledger.discard(entry)
+
     async def _connect_robot(self) -> tuple[bool, str]:
         """Connect to robot hardware with proper error handling.
 
@@ -1685,12 +1761,25 @@ class Robot(TeleopMixin, AgentTool):
             # Import lerobot exceptions
             from lerobot.utils.errors import DeviceAlreadyConnectedError
 
-            # Check if already connected
+            # An observe action leaves its device open: ``get_state`` the motor
+            # bus, ``render`` one camera. lerobot's ``connect()`` cannot start
+            # from either, and the two fail differently - an open bus refuses
+            # the connect, an open camera lets it *succeed* with ``configure()``
+            # skipped. Hand every borrowed device back BEFORE reading
+            # ``is_connected``: on a camera-less arm the open bus alone reads as
+            # connected. ``_hand_back_observe_devices`` says why a close that
+            # fails has to refuse rather than fall through to the
+            # ``DeviceAlreadyConnectedError`` handler below.
+            await asyncio.to_thread(self._hand_back_observe_devices)
+
+            # Check if already connected. Not a return: the calibration check
+            # below runs on this path too. It used to be skipped here, so a
+            # refused first call (bus left open) made the second call report
+            # success for an arm the gate had refused.
             if self.robot.is_connected:
                 logger.info(f"{self.robot} already connected")
-                return True, ""
-
-            logger.info(f"Connecting to {self.robot}...")
+            else:
+                logger.info(f"Connecting to {self.robot}...")
 
             # Handle robot connection using lerobot's error handling patterns
             try:
@@ -1716,13 +1805,47 @@ class Robot(TeleopMixin, AgentTool):
                 logger.error(f"{error_msg}")
                 return False, error_msg
 
-            # Check robot calibration
-            if hasattr(self.robot, "is_calibrated") and not self.robot.is_calibrated:
+            # Check robot calibration, reading the flag exactly once. On a
+            # lerobot arm ``is_calibrated`` is ``read_calibration()`` - a
+            # homing-offset and range sweep of every servo - and the guard used
+            # to be ``hasattr(self.robot, "is_calibrated") and not
+            # self.robot.is_calibrated``, which evaluated it twice. ``hasattr``
+            # also swallows an ``AttributeError`` raised *inside* that read,
+            # which is indistinguishable from "this driver has no such
+            # property": a driver whose ``is_calibrated`` is
+            # ``self.bus.is_calibrated`` over a bus built lazily raises exactly
+            # that, and the gate was then skipped altogether - measured
+            # ``(True, "")``, cameras open and ``configure()`` already run, for
+            # an arm whose calibration was never checked. Absent is not the same
+            # as unreadable: a driver that declares the attribute at all (on the
+            # class as a property, or on the instance as a plain flag) must
+            # answer, and a read that raises falls to the handler below, which
+            # refuses and closes the port. A driver with no notion of
+            # calibration is calibrated by lerobot's own contract for the
+            # property: "should be always True if not applicable".
+            try:
+                is_calibrated = self.robot.is_calibrated
+            except AttributeError:
+                if hasattr(type(self.robot), "is_calibrated"):
+                    raise  # the property exists; its own read failed
+                is_calibrated = True
+            if not is_calibrated:
                 error_msg = (
                     f"Robot {self.robot} is not calibrated. Please calibrate the robot manually"
                     " first using LeRobot's calibration process (lerobot-calibrate)"
                 )
                 logger.error(f"{error_msg}")
+                # Refused, so close what this attempt opened. ``connect()``
+                # above succeeded - bus open, cameras open, ``configure()``
+                # run - and this check is the first to say no. Left open, the
+                # NEXT attempt short-circuits on ``is_connected`` at the top
+                # of this method and returns success for an arm this branch
+                # just refused: the calibration gate would hold for exactly
+                # one call. It also held the serial port for the life of the
+                # process, so `lerobot-calibrate` - the remedy this message
+                # names - could not open it. Measured on an uncalibrated
+                # SO-101: first call refused, second call ``(True, "")``.
+                self._close_open_devices()
                 return False, error_msg
 
             logger.info(f"{self.robot} connected and ready")
@@ -2836,21 +2959,57 @@ class Robot(TeleopMixin, AgentTool):
     @property
     def tool_spec(self) -> ToolSpec:
         """Get tool specification with async actions."""
+        # The first sentence is the first thing an agent does with the tool, so
+        # it leads with what can be learned for free. Before the observe actions
+        # existed the only verbs were the motion ones, and an agent asked to
+        # "read the joint positions, do not move" requested a ten-second mock
+        # policy rollout on the real arm to do the reading.
+        port = getattr(getattr(self.robot, "bus", None), "port", None)
+        where = f" on {port}" if port else ""
         return {
             "name": self.tool_name_str,
-            "description": f"Universal robot control with async task execution ({self.robot}). "
-            f"Actions: execute (blocking), start (async), status, stop. "
-            f"For execute/start actions: instruction is required; policy_port when the provider dials a server. "
-            f"For status/stop actions: no additional parameters needed.",
+            "description": (
+                f"Real robot {self.tool_name_str!r} ({self.robot}){where}. "
+                "Observe (no approval, writes nothing): get_state (alias get_robot_state) = joint positions in "
+                "degrees + raw ticks, torque on/off, voltage; list_cameras; render = save one camera frame "
+                "(camera_name, optional output_path). "
+                "Motion (asks the operator first): execute (blocking policy rollout, instruction required), "
+                "start (same, async). status = task state; stop = cancel the rollout. "
+                "No set_joint_positions/move_to here: a policy is the only way to command motion on this real "
+                "robot. To find out where the arm is, call get_state - never execute."
+            ),
             "inputSchema": {
                 "json": {
                     "type": "object",
                     "properties": {
                         "action": {
                             "type": "string",
-                            "description": "Action to perform: execute (blocking), start (async), status, stop",
-                            "enum": ["execute", "start", "status", "stop"],
-                            "default": "execute",
+                            "description": (
+                                "get_state | get_robot_state | list_cameras | render (observe, ungated); "
+                                "execute | start (motion, operator approval); status | stop"
+                            ),
+                            "enum": [
+                                "get_state",
+                                "get_robot_state",
+                                "list_cameras",
+                                "render",
+                                "execute",
+                                "start",
+                                "status",
+                                "stop",
+                            ],
+                            "default": "get_state",
+                        },
+                        "camera_name": {
+                            "type": "string",
+                            "description": "render: which configured camera (see list_cameras). Optional when there is exactly one.",
+                        },
+                        "output_path": {
+                            "type": "string",
+                            "description": (
+                                "render: PNG destination inside the render sandbox (~/.strands_robots/renders or "
+                                "STRANDS_ROBOTS_RENDER_ROOT); default <robot>-<camera>-<ms>.png."
+                            ),
                         },
                         "instruction": {
                             "type": "string",
@@ -2964,6 +3123,92 @@ class Robot(TeleopMixin, AgentTool):
             allow_match=lambda allowed: "*" in allowed or action in allowed,
         )
 
+    def _observe(self, action: str, tool_input: Mapping[str, Any]) -> dict[str, Any]:
+        """Answer one observe action: a read of the arm, never a write to it.
+
+        ``get_state``/``get_robot_state`` open the motor bus if it is closed
+        (the bus only - not the robot's ``connect()``, whose ``configure()``
+        writes servo registers) and read positions, torque and voltage; on an
+        arm with no calibration the degrees are the encoder estimate and the
+        text says so. ``list_cameras`` opens nothing. ``render`` opens the
+        named camera on first use, saves one PNG in the render sandbox and returns
+        the frame as an ``image`` block so the model sees it, as the simulation's
+        ``render`` does.
+
+        A failure names the port and the remedy rather than the SDK's
+        traceback: a read that cannot open the port is the one message a
+        developer reads first on a new machine.
+        """
+        try:
+            if action in ("get_state", "get_robot_state"):
+                state = hardware_observe.read_joint_state(self.robot)
+                if state["opened_bus"]:
+                    self._observe_ledger().add("bus")
+                state["robot"] = self.tool_name_str
+                state["task_status"] = self._task_state.status.value
+                return {
+                    "status": "success",
+                    "content": [
+                        {"text": hardware_observe.format_joint_state(self.tool_name_str, state)},
+                        {"json": state},
+                    ],
+                }
+            if action == "list_cameras":
+                cams = hardware_observe.list_cameras(self.robot)
+                return {
+                    "status": "success",
+                    "content": [
+                        {"text": hardware_observe.format_cameras(self.tool_name_str, cams)},
+                        {"json": {"robot": self.tool_name_str, "cameras": cams}},
+                    ],
+                }
+            # render
+            camera_name = tool_input.get("camera_name")
+            output_path = tool_input.get("output_path")
+            frame = hardware_observe.capture_frame(
+                self.robot,
+                None if camera_name is None else str(camera_name),
+                None if output_path is None else str(output_path),
+                tool_name=self.tool_name_str,
+            )
+            if frame["opened_camera"]:
+                self._observe_ledger().add(f"camera:{frame['camera']}")
+            png = frame.pop("png")
+            text = (
+                f"Saved one frame from camera {frame['camera']!r} to {frame['path']} "
+                f"({frame['width']}x{frame['height']}, {frame['channels']} channels, read {frame['read_ms']} ms)."
+            )
+            # The image block is what lets the model SEE the frame, as the simulation's
+            # ``render`` does; raw bytes, not base64 (Bedrock encodes on the wire).
+            return {
+                "status": "success",
+                "content": [
+                    {"text": text},
+                    {"image": {"format": "png", "source": {"bytes": png}}},
+                    {"json": frame},
+                ],
+            }
+        except ValueError as exc:
+            # A refusal this module composed: unknown camera, unsafe path, no cameras.
+            return {"status": "error", "content": [{"text": f"{self.tool_name_str}: {exc}"}]}
+        except Exception as exc:  # noqa: BLE001 - every hardware failure becomes a tool error that names the port
+            port = getattr(getattr(self.robot, "bus", None), "port", None)
+            lines = str(exc).strip().splitlines()
+            reason = lines[-1] if lines else type(exc).__name__
+            return {
+                "status": "error",
+                "content": [
+                    {
+                        "text": (
+                            f"{self.tool_name_str}: {action} could not read the arm on {port!r}: {reason} "
+                            "Check the arm is powered and the port is right (`lerobot-find-port`, or "
+                            "strands_robots._serial_discovery.scan_serial_devices()), and that no other "
+                            "process holds the port (`lsof <port>`)."
+                        )
+                    }
+                ],
+            }
+
     async def stream(
         self, tool_use: ToolUse, invocation_state: dict[str, Any], **kwargs: Any
     ) -> AsyncGenerator[ToolResultEvent | ToolInterruptEvent, None]:
@@ -2972,10 +3217,16 @@ class Robot(TeleopMixin, AgentTool):
             tool_use_id = tool_use.get("toolUseId", "")
             input_data = tool_use.get("input", {})
 
-            action = input_data.get("action", "execute")
+            action = input_data.get("action", "get_state")
 
             # Handle different actions
-            if action == "execute":
+            if action in hardware_observe.OBSERVE_ACTIONS:
+                # Reads. Serial I/O blocks, so each runs off the event loop;
+                # none of them writes a servo register, so none is gated.
+                result = await asyncio.to_thread(self._observe, action, input_data)
+                yield ToolResultEvent(self._make_tool_result(tool_use_id, result))
+
+            elif action == "execute":
                 # Blocking execution (legacy behavior)
                 instruction = input_data.get("instruction", "")
                 policy_port = input_data.get("policy_port")
@@ -3078,7 +3329,12 @@ class Robot(TeleopMixin, AgentTool):
                         {
                             "status": "error",
                             "content": [
-                                {"text": f"Unknown action: {action}. Valid actions: execute, start, status, stop"}
+                                {
+                                    "text": (
+                                        f"Unknown action: {action}. Valid actions: get_state, get_robot_state, "
+                                        "list_cameras, render (observe); execute, start (motion); status, stop"
+                                    )
+                                }
                             ],
                         },
                     )
@@ -3257,7 +3513,23 @@ class Robot(TeleopMixin, AgentTool):
         try:
             # Get robot connection status
             is_connected = self.robot.is_connected if hasattr(self.robot, "is_connected") else False
-            is_calibrated = self.robot.is_calibrated if hasattr(self.robot, "is_calibrated") else True
+            # ``is_calibrated`` on a lerobot arm reads the motors' calibration
+            # registers, so on a closed bus it raises ``DeviceNotConnectedError``
+            # - and this probe then degraded to the ``{"error": ..., "task_status":
+            # "error"}`` dict below for every real arm that had simply not been
+            # driven yet. Construction opens nothing, so that was every arm at
+            # startup: the fleet snapshot showed an idle SO-101 as broken. Not
+            # connected is a fact this probe can report without the bus;
+            # calibration is unknown until the bus is open, and ``None`` says so.
+            # Looked up on the CLASS: ``hasattr(instance, ...)`` evaluates the
+            # property, which is the bus read being avoided.
+            is_calibrated: bool | None
+            if not hasattr(type(self.robot), "is_calibrated"):
+                is_calibrated = True
+            elif is_connected:
+                is_calibrated = self.robot.is_calibrated
+            else:
+                is_calibrated = None
 
             # The configured enumeration: which image streams the device was
             # asked for. Says nothing about whether any of them came up.
@@ -3343,15 +3615,20 @@ class Robot(TeleopMixin, AgentTool):
             errors without exceptions tearing down the hot loop.
         """
         try:
-            if not getattr(self.robot, "is_connected", False):
-                # Lazy connect on first action. calibrate=False: a teleop
-                # session assumes the follower is already calibrated (same
-                # contract as the policy-run path).
-                try:
+            # A device an observe action opened goes back first, for the same
+            # reason as in ``_connect_robot``: on a camera-less arm the open bus
+            # reads as connected, and a write would then reach servos the
+            # driver's ``configure()`` never set up.
+            try:
+                self._hand_back_observe_devices()
+                if not getattr(self.robot, "is_connected", False):
+                    # Lazy connect on first action. calibrate=False: a teleop
+                    # session assumes the follower is already calibrated (same
+                    # contract as the policy-run path).
                     self.robot.connect(False)
-                except Exception:
-                    self._close_open_devices()
-                    raise
+            except Exception:
+                self._close_open_devices()
+                raise
             write_action(self.robot, action)
             return {"status": "success", "content": [{"text": "ok"}]}
         except Exception as e:  # noqa: BLE001 - surface as status, never kill the loop

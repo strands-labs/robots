@@ -791,7 +791,16 @@ class TestStatusSurface:
         spec = hw.tool_spec
         assert spec["name"] == "test_arm"
         enum = spec["inputSchema"]["json"]["properties"]["action"]["enum"]
-        assert set(enum) == {"execute", "start", "status", "stop"}
+        assert set(enum) == {
+            "get_state",
+            "get_robot_state",
+            "list_cameras",
+            "render",
+            "execute",
+            "start",
+            "status",
+            "stop",
+        }
         assert hw.tool_type == "robot"
         assert hw.tool_name == "test_arm"
         hw.cleanup()

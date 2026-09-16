@@ -984,6 +984,7 @@ markers = [
     "wbc: requires onnxruntime + a downloaded GR00T-WBC (SONIC) checkpoint + mujoco. Run with: pytest -m wbc (set WBC_LIVE=1)",
     "molmoact2: requires lerobot >= 0.5.2 (from source) + the [molmoact2] extra (transformers, peft, scipy). Run with: pytest -m molmoact2",
     "rtps: requires cyclonedds ([ros2] extra) + a live ROS 2 peer (e.g. turtlesim) on the DDS domain. Run with: RTPS_LIVE=1 pytest -m rtps",
+    "hardware: requires a real serial arm. Run with: STRANDS_HW_PORT=/dev/tty... pytest -m hardware",
 ]
 
 [tool.coverage.run]
