@@ -268,6 +268,12 @@ class RecordingMixin(DatasetRecordingMixin):
         self._world._backend_state["recording"] = True
         self._world._backend_state["trajectory"] = []
         self._world._backend_state["push_to_hub"] = push_to_hub
+        # ``step`` feeds the recording at this rate and labels its frames with
+        # this task (see ``Simulation._record_step_frame``); the due-time clock
+        # starts fresh with every session.
+        self._world._backend_state["recording_fps"] = fps
+        self._world._backend_state["recording_task"] = task
+        self._world._backend_state.pop("step_recording_due", None)
 
         # Resolve the on-disk dataset dir (shared by overwrite + resume logic).
         # Delegates to the same resolver DatasetRecorder.create() uses so the
@@ -534,11 +540,12 @@ class RecordingMixin(DatasetRecordingMixin):
                             f"Recording to LeRobotDataset: {repo_id}\n"
                             f"{len(joint_names)} joints, {len(camera_keys)} cameras @ {fps}fps\n"
                             f"Codec: {vcodec} | Task: {task or '(set per policy)'}\n"
-                            f"Frames are captured by a policy rollout only - run_policy (one call "
-                            f"per episode), start_policy (async) or run_multi_policy (several "
-                            f"robots into one merged frame); step, set_joint_positions, teleoperate "
-                            f"and replay_episode do not feed the recorder. Then stop_recording to "
-                            f"save the episode"
+                            f"Frames are captured by a policy rollout - run_policy (one call per "
+                            f"episode), start_policy (async) or run_multi_policy (several robots "
+                            f"into one merged frame) - or by stepping a scripted motion: "
+                            f"set_joint_positions(hold=True) + step records one frame per 1/{fps}s "
+                            f"of sim time. teleoperate and replay_episode do not feed the "
+                            f"recorder. Then stop_recording to save the episode"
                         )
                     }
                 ],

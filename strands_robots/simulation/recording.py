@@ -1097,6 +1097,8 @@ class DatasetRecordingMixin:
             return self._stop_recording_idle(push_to_hub=push_to_hub, bucket=bucket, run_id=run_id)
 
         state["recording"] = False
+        # The step-fed frame clock belongs to the session that just closed.
+        state.pop("step_recording_due", None)
         recorder = state.get("dataset_recorder", None)
 
         if recorder is None:
@@ -1116,10 +1118,11 @@ class DatasetRecordingMixin:
         #      wrongly fail an otherwise-complete dataset.
         #   3. Nothing ever captured (frame_count == 0): fail loudly instead of
         #      writing a 0-frame dataset. This happens when the rollout was
-        #      driven by eval_policy / evaluate / replay_episode or a bare step
-        #      loop - none of which feed the active recorder (only a rollout's
-        #      on_frame hook calls add_frame, and both run_policy and
-        #      start_policy launch one). Previously stop_recording reported
+        #      driven by eval_policy / evaluate / replay_episode without a hook
+        #      (only a rollout's on_frame hook calls add_frame, and run_policy,
+        #      start_policy and run_multi_policy each launch one), or by a step
+        #      loop on a backend other than MuJoCo, whose ``step`` feeds the
+        #      recorder at the dataset fps. Previously stop_recording reported
         #      success with "0 frames, 0 episode(s)", silently producing a
         #      dataset with only meta/info.json (no parquet/video).
         pending = getattr(recorder, "episode_frame_count", 0)
@@ -1185,10 +1188,14 @@ class DatasetRecordingMixin:
                             "installs the per-step on_frame hook that calls add_frame. "
                             "eval_policy / evaluate_benchmark take an on_frame hook, so they "
                             "record only when the caller passes one that calls add_frame. "
-                            "replay_episode, teleoperate and bare step loops have no such "
-                            "hook and cannot feed the recorder. To record a dataset: "
-                            "start_recording -> run_policy (once per episode) -> "
-                            "stop_recording."
+                            "replay_episode and teleoperate have no such hook and cannot feed "
+                            "the recorder. On the MuJoCo backend step() records too: one frame per "
+                            "1/fps seconds of sim time while a recording is open, so "
+                            "set_joint_positions(hold=True) + step is a scripted demonstration "
+                            "(a step call covering less sim time than one frame period captures "
+                            "nothing, and its reply says so). To record a dataset: "
+                            "start_recording -> run_policy (once per episode) or step through "
+                            "the motion -> stop_recording."
                         )
                     }
                 ],

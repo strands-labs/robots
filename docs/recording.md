@@ -17,6 +17,30 @@ sim.stop_recording()
 
 `start_recording` requires `[lerobot]`. Without it, use `start_cameras_recording` for plain MP4.
 
+## Scripted demonstrations: `step` records too
+
+A policy is not the only thing that can fill an episode. While a recording is
+open, `step` captures one frame per `1/fps` seconds of sim time, so a motion you
+script is a demonstration:
+
+```python
+sim.start_recording(repo_id="user/three_poses", task="three poses", fps=10)
+for pose in (0.3, -0.3, 0.0):
+    sim.set_joint_positions(positions={"1": pose}, robot_name="so101", hold=True)
+    sim.step(n_steps=250)          # 0.5 s -> "recorded 5 frames" (6 on the first call: the opening frame too)
+sim.stop_recording()               # 16 frames, 1 episode
+```
+
+Each frame carries every robot's state and cameras exactly as a `run_policy`
+frame does; its *action* is the position-servo target in force at that instant
+(`data.ctrl`, keyed like `robot_action_keys`) - what the controller was told to
+reach when the observation was taken - and its `task` is the session's. A `step`
+call covering less sim time than one frame period records nothing and says so
+in its reply, with the time the next frame is due. While a policy rollout is
+running its own hook owns the recorder, so `step` stays out of its way. Motion
+primitives (`move_to`, `set_gripper`, ...) still do not record - drive them, then
+`step` to capture. MuJoCo only; other backends record through `run_policy`.
+
 ## `fps` must equal the rollout's `control_frequency`
 
 The recorder captures **one frame per control step and never decimates**, so the

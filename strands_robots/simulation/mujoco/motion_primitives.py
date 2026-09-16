@@ -39,8 +39,9 @@ Contract notes (shared by all three):
   destroyed/recompiled or a policy starts mid-run, the loop aborts with a
   structured error instead of stepping a stale model.
 * **Dataset-recording interplay** (pinned by test): primitive motion does NOT
-  feed frames into an active ``start_recording`` dataset session - only
-  ``run_policy``'s per-frame hook records episodes. Camera MP4 recording
+  feed frames into an active ``start_recording`` dataset session -
+  ``run_policy``'s per-frame hook and ``step`` (one frame per ``1/fps`` of sim
+  time) record episodes; a primitive steps its own loop. Camera MP4 recording
   (``start_cameras_recording``) still captures primitive motion, since it
   samples the live scene on its own thread.
 """
