@@ -39,6 +39,8 @@ pip install "strands-robots[sim-mujoco,lerobot]" "lerobot[training]"   # trainin
 ```
 
 ```python
+import os
+
 from strands_robots import Robot, MockPolicy, create_policy
 from strands_robots.training import create_trainer, TrainSpec
 
@@ -64,7 +66,9 @@ if __name__ == "__main__":   # lerobot's DataLoader workers re-import this file 
     # 3. EXPORT - loadable artifact (HF-native passthrough for lerobot/groot)
     ckpt = trainer.export(spec, result.checkpoint_dir)
 
-    # 4. DEPLOY - load the freshly-trained checkpoint back as a Policy
+    # 4. DEPLOY - load the freshly-trained checkpoint back as a Policy;
+    #    lerobot_local is behind the trust-remote-code gate even for a local dir
+    os.environ.setdefault("STRANDS_TRUST_REMOTE_CODE", "1")
     policy = create_policy(ckpt, device="cpu")
     sim.run_policy(robot_name="so100", policy_object=policy,
                    instruction="pick up the red cube", n_steps=15)
