@@ -85,6 +85,28 @@ class TestTheDashboardLogsThroughIt:
         assert len(caplog.records) == 1
         assert "\n" not in caplog.records[0].getMessage()
 
+    def test_a_patched_sections_type_name_cannot_forge_a_second_entry(self, caplog, tmp_path, monkeypatch) -> None:
+        """The message above quotes one caller-derived token: `type(values).__name__`.
+
+        The cell above puts the CRLF in the value, which this message never renders, so
+        it passes whether or not the statement goes through the step. The type name is
+        the half that is rendered - and this is the lenient path, whose callers are the
+        settings file, the environment and the CLI, so the object is any Python object
+        the caller hands the store, and a class made by `type()` names itself whatever
+        it likes. Over HTTP the name can only be one the JSON decoder chose.
+        """
+        monkeypatch.setattr(settings, "SETTINGS_FILE", tmp_path / "settings.json")
+        settings.clear_overrides()
+        settings.load(refresh=True)
+        forger = type("str\r\n" + FORGED_SECOND_LINE, (), {})
+        with caplog.at_level(logging.WARNING, logger="strands_robots.dashboard.settings"):
+            changed = settings.update({"agent": forger()})
+        assert changed == []
+        assert len(caplog.records) == 1
+        message = caplog.records[0].getMessage()
+        assert len(message.splitlines()) == 1
+        assert FORGED_SECOND_LINE not in message.splitlines()
+
     def test_a_forwarded_address_cannot_forge_the_challenge_cap_entry(self, caplog, monkeypatch) -> None:
         """X-Forwarded-For is quoted with %s, so its bytes reach the line as they arrived.
 
@@ -164,5 +186,25 @@ class TestAValuePersistedInTheStoreIsStillCallerSupplied:
         recorded = [r.getMessage() for r in caplog.records if r.getMessage().startswith("recorded rp_id")]
         assert len(recorded) == 1
         message = recorded[0]
+        assert message.splitlines() == [message]
+        assert FORGED_SECOND_LINE in message  # escaped, not dropped: the bytes stay legible
+
+
+class TestTheNameOnTheEStopEntryIsCallerSupplied:
+    """`/api/safety/estop` records whoever pressed it, and for a passkey caller that
+    is the label the enrolling request chose - the same stored-then-read-back value
+    the class above covers, at the one dashboard statement that quotes it.
+    """
+
+    def test_a_passkey_label_cannot_forge_the_estop_entry(self, caplog) -> None:
+        pytest.importorskip("fastapi")
+        from strands_robots.dashboard.routes_sim import Safety
+        from strands_robots.dashboard.sim_session import SessionStore
+
+        safety = Safety(SessionStore())
+        with caplog.at_level(logging.WARNING, logger="strands_robots.dashboard.routes_sim"):
+            safety.estop(by="owner\r\n" + FORGED_SECOND_LINE)
+
+        (message,) = [r.getMessage() for r in caplog.records]
         assert message.splitlines() == [message]
         assert FORGED_SECOND_LINE in message  # escaped, not dropped: the bytes stay legible

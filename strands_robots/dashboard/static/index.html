@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>strands robots · dashboard</title>
+<link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+<header class="bar">
+  <a class="brand" href="/"><span class="dot"></span>strands robots</a>
+  <nav class="tabs" id="tabs">
+    <button data-view="fleet" class="on">Fleet</button>
+    <button data-view="sim">Sim</button>
+    <button data-view="agent">Agent</button>
+    <button data-view="settings">Settings</button>
+  </nav>
+  <div class="who" id="who">…</div>
+</header>
+
+<main id="main">
+  <section id="view-login" class="view card" hidden>
+    <h1>Sign in</h1>
+    <p id="login-hint" class="muted"></p>
+    <form id="enrol" hidden>
+      <label>Bootstrap token <input name="bootstrap" autocomplete="off" required></label>
+      <label>Passkey label <input name="label" value="owner" maxlength="64"></label>
+      <button type="submit">Create the owner passkey</button>
+    </form>
+    <button id="login" hidden>Sign in with a passkey</button>
+    <p id="login-error" class="error" role="alert"></p>
+  </section>
+
+  <section id="view-fleet" class="view" hidden>
+    <div class="row between"><h1>Fleet</h1><span id="fleet-count" class="pill"></span></div>
+    <div id="fleet" class="grid"></div>
+  </section>
+
+  <section id="view-sim" class="view" hidden>
+    <div class="row between wrap">
+      <h1>Sim</h1>
+      <form id="sim-new" class="row">
+        <select name="robot" id="sim-robot" aria-label="robot"></select>
+        <button type="submit" class="primary">Start</button>
+      </form>
+      <button id="estop" class="danger" title="Freeze every session and latch the lockout">E-STOP</button>
+    </div>
+    <p id="lockout" class="lockout" role="status"></p>
+    <div id="sessions" class="sessions"></div>
+  </section>
+
+  <section id="view-agent" class="view" hidden>
+    <h1>Agent</h1>
+    <p class="muted">Arrives with the agent slice: a Strands Agent with the robot tool, consent cards for anything that moves.</p>
+  </section>
+
+  <section id="view-settings" class="view" hidden>
+    <h1>Settings</h1>
+    <p class="muted">Stored at <code id="settings-file"></code>. Secrets show only as set / unset.</p>
+    <form id="settings-form"></form>
+    <p id="settings-msg" role="status"></p>
+  </section>
+</main>
+
+<footer class="foot"><span id="version"></span></footer>
+<script type="module" src="/static/app.js"></script>
+</body>
+</html>
