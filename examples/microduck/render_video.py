@@ -48,6 +48,11 @@ Examples::
         --onnx roller.onnx --scene scene_rollers.xml \
         --vx 0.3 --duration 6 --out /tmp/microduck_viz/roller.mp4
 
+    # The ball scene declares its ball 0.3 m ahead; the kick weights were trained
+    # with it 0.09 m ahead and 0.042 m to the side of the kicking foot. With a
+    # ball in the scene the ball is placed there before the rollout, on the
+    # side --kick-foot names (inferred from the weight's file name when its
+    # stem says left or right), the way Pollen's runtime places it.
     python examples/microduck/render_video.py \
         --onnx ball_kick_left.onnx --scene scene_ball.xml \
         --vx 0 --duration 4 --out /tmp/microduck_viz/kick.mp4
@@ -72,6 +77,18 @@ from pathlib import Path
 import numpy as np
 
 BASE_BODY = "microduck/trunk_base"
+
+# Where the two kick weights were trained to find the ball, in the robot's yaw
+# frame: ahead of the trunk, and to the side of the foot that swings. Read off
+# Pollen's reference runtime (microduck_rl ``scripts/infer_policy.py``,
+# ``BALL_OFFSET_X`` / ``BALL_OFFSET_ABS_Y``), whose ``_place_ball`` this mirrors.
+# ``scene_ball.xml`` itself declares the ball 0.3 m straight ahead - 3.3x too
+# far, and centred - so a kick driven from the declared position swings at air.
+BALL_OFFSET_X = 0.09
+BALL_OFFSET_ABS_Y = 0.042
+#: The ball's free joint, as ``ball.xml`` names it; ``add_robot(name=...)``
+#: prefixes it with the robot's name, so it is matched by suffix.
+BALL_JOINT = "ball_free"
 
 
 def _load_mujoco():
@@ -224,6 +241,104 @@ def distance_travelled(path) -> float:
     return float(np.linalg.norm(steps, axis=1).sum())
 
 
+def _kick_foot(args) -> str | None:
+    """Which foot the weight kicks with: ``--kick-foot``, else read off the file name.
+
+    Returns:
+        ``"left"`` or ``"right"``, or ``None`` when neither was given and the
+        ONNX stem says neither (a non-kick weight on the ball scene, which needs
+        no placement).
+    """
+    if getattr(args, "kick_foot", None):
+        return args.kick_foot
+    stem = Path(args.onnx).stem.lower()
+    for foot in ("left", "right"):
+        if foot in stem.split("_"):
+            return foot
+    return None
+
+
+def _ball_joint(mujoco, model) -> int:
+    """The id of the ball's free joint, or ``-1`` when the scene carries no ball."""
+    for jid in range(model.njnt):
+        name = mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_JOINT, jid) or ""
+        if name == BALL_JOINT or name.endswith("/" + BALL_JOINT):
+            return jid
+    return -1
+
+
+def place_ball_for_kick(mujoco, model, data, foot: str) -> tuple[float, float] | None:
+    """Teleport the ball to where the kick weights were trained to find it.
+
+    Mirrors ``_place_ball`` in Pollen's reference runtime: the trained offset
+    (:data:`BALL_OFFSET_X` ahead, :data:`BALL_OFFSET_ABS_Y` toward ``foot``) is
+    rotated into the trunk's yaw frame and added to the trunk position; the ball
+    keeps its declared height, its orientation is reset and its velocity zeroed,
+    and the kinematics are recomputed so the first observation and frame see it
+    there.
+
+    Args:
+        mujoco: The ``mujoco`` module.
+        model: The compiled scene.
+        data: Its state, after ``reset()``.
+        foot: ``"left"`` or ``"right"``.
+
+    Returns:
+        The ball's new ``(x, y)`` in world coordinates, or ``None`` when the
+        scene carries no ball joint (nothing was moved).
+    """
+    jid = _ball_joint(mujoco, model)
+    if jid < 0:
+        return None
+    body = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, BASE_BODY)
+    x, y = float(data.xpos[body][0]), float(data.xpos[body][1])
+    qw, qx, qy, qz = (float(v) for v in data.xquat[body])
+    yaw = np.arctan2(2.0 * (qw * qz + qx * qy), 1.0 - 2.0 * (qy * qy + qz * qz))
+    off_y = -BALL_OFFSET_ABS_Y if foot == "right" else BALL_OFFSET_ABS_Y
+    bx = x + np.cos(yaw) * BALL_OFFSET_X - np.sin(yaw) * off_y
+    by = y + np.sin(yaw) * BALL_OFFSET_X + np.cos(yaw) * off_y
+    qadr, vadr = int(model.jnt_qposadr[jid]), int(model.jnt_dofadr[jid])
+    z = float(data.qpos[qadr + 2])
+    data.qpos[qadr : qadr + 7] = [bx, by, z, 1.0, 0.0, 0.0, 0.0]
+    data.qvel[vadr : vadr + 6] = 0.0
+    mujoco.mj_forward(model, data)
+    return float(bx), float(by)
+
+
+def _placement_report(args, foot: str, placed: tuple[float, float] | None) -> str:
+    """What to say about the ball this rollout was going to kick.
+
+    Three outcomes, one place: the ball was placed and the line says where; the
+    caller asked for a placement the scene cannot hold, which is refused; or the
+    foot was only inferred from the weight's name, in which case the rollout runs
+    on the ball-less scene the caller chose - which is not an error, but is said
+    out loud, because a duck kicking air renders as a duck standing still.
+
+    Args:
+        args: The parsed command line, read for an explicit ``--kick-foot``.
+        foot: The foot the kick swings with, ``"left"`` or ``"right"``.
+        placed: What :func:`place_ball_for_kick` returned - the ball's new
+            ``(x, y)``, or ``None`` when the scene carries no ball.
+
+    Returns:
+        One line to print.
+
+    Raises:
+        SystemExit: If ``--kick-foot`` was passed for a scene with no ball,
+            naming the scene that has one.
+    """
+    if placed is not None:
+        return f"  ball placed at ({placed[0]:.3f}, {placed[1]:.3f}) in front of the {foot} foot"
+    if getattr(args, "kick_foot", None):
+        raise SystemExit(
+            f"--kick-foot {foot}: the scene carries no {BALL_JOINT!r} joint; pass --scene scene_ball.xml"
+        )
+    return (
+        f"  no {BALL_JOINT!r} joint in this scene: the {foot}-foot kick swings at nothing; "
+        "pass --scene scene_ball.xml for the geometry the weight was trained on"
+    )
+
+
 def _sim_kwargs(args) -> dict[str, str]:
     """The ``Robot(...)`` keyword arguments the requested scene needs.
 
@@ -244,6 +359,10 @@ async def _rollout(args):
     sim = Robot("microduck", mesh=False, **_sim_kwargs(args))
     sim.reset()
     model, data = sim.mj_model, sim.mj_data
+
+    foot = _kick_foot(args)
+    if foot is not None:
+        print(_placement_report(args, foot, place_ball_for_kick(mujoco, model, data, foot)))
 
     policy = MicroduckPolicy(onnx_path=os.path.abspath(args.onnx))
 
@@ -331,6 +450,14 @@ def main() -> None:
         help="scene file under the microduck asset dir, for a skill trained in a "
         "variant scene (scene_rollers.xml for the roller pair, scene_ball.xml for "
         "the ball-kick pair); omit to use the scene the registry entry declares",
+    )
+    ap.add_argument(
+        "--kick-foot",
+        choices=("left", "right"),
+        default=None,
+        help="place the ball where the kick weights were trained to find it, in front of "
+        "this foot; inferred from the ONNX file name (ball_kick_left / ball_kick_right) "
+        "when omitted",
     )
     ap.add_argument("--duration", type=float, default=8.0, help="seconds of rollout")
     ap.add_argument("--vx", type=float, default=0.3, help="forward velocity command (m/s)")
