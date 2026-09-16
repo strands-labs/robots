@@ -21,10 +21,14 @@ creeping back into the user-facing docs.
 
 from __future__ import annotations
 
+import re
 import tomllib
+from importlib import metadata
 from pathlib import Path
 
 from packaging.requirements import Requirement
+from packaging.specifiers import SpecifierSet
+from packaging.utils import canonicalize_name
 from packaging.version import Version
 
 from strands_robots import dataset_recorder
@@ -461,3 +465,111 @@ def test_troubleshooting_has_a_remedy_for_the_missing_trainer_extra() -> None:
     assert 'uv pip install "lerobot[training]"' in text, (
         "docs/troubleshooting.md names the accelerate symptom without the lerobot[training] remedy"
     )
+
+
+# --- negative contract: no docs install line prescribes a numpy that the
+#     lerobot the [lerobot] extra resolves cannot run on. The Jetson block told
+#     readers to `uv pip install "numpy<2" "pandas==2.1.4"` before installing
+#     `strands-robots[sim-mujoco,lerobot]`; lerobot >= 0.6 declares
+#     numpy>=2.0.0,<2.3.0, so the resolver replaced the pin on the very next
+#     line and the only thing the pre-pin conveyed was a numpy-1 requirement
+#     that does not exist. Derived from lerobot's own metadata rather than
+#     spelled here, so a future numpy range change re-grades the docs. ---
+
+
+def _lerobot_numpy_specifier() -> SpecifierSet:
+    """The numpy range the installed lerobot declares (e.g. ``>=2.0.0,<2.3.0``)."""
+    reqs = [Requirement(r) for r in metadata.requires("lerobot") or ()]
+    numpy_reqs = [r for r in reqs if canonicalize_name(r.name) == "numpy" and r.marker is None]
+    assert numpy_reqs, "installed lerobot declares no unconditional numpy requirement"
+    spec = SpecifierSet()
+    for req in numpy_reqs:
+        spec &= req.specifier
+    return spec
+
+
+def _numpy_versions_lerobot_accepts() -> list[Version]:
+    """Concrete numpy versions inside lerobot's declared range.
+
+    The lower bound of every ``>=`` is itself an accepted release, and the numpy
+    resolved into this environment alongside lerobot is another when it agrees
+    with the declared range. A docs pin has to admit at least one of them.
+    """
+    spec = _lerobot_numpy_specifier()
+    probes = [Version(s.version) for s in spec if s.operator == ">="]
+    installed = Version(metadata.version("numpy"))
+    if spec.contains(installed):
+        probes.append(installed)
+    assert probes, f"cannot derive an accepted numpy version from {spec}"
+    return probes
+
+
+def _code_fragments(text: str) -> list[str]:
+    """Every command a page presents as code: fenced-block lines and inline spans.
+
+    A pip command reaches a reader either inside a ```bash block (the platform
+    install steps) or as an inline span in a troubleshooting table row, and a
+    numpy pin is only advice in those two places -- prose that merely names
+    ``numpy < 2`` to warn against it must not be graded as an instruction.
+    """
+    fragments: list[str] = []
+    in_fence = False
+    for line in text.splitlines():
+        if line.lstrip().startswith("```"):
+            in_fence = not in_fence
+            continue
+        if in_fence:
+            fragments.append(line)
+        else:
+            fragments.extend(re.findall(r"`([^`\n]+)`", line))
+    return fragments
+
+
+_NUMPY_PIN = re.compile(r"numpy\s*(==|>=|<=|~=|!=|<|>)\s*([0-9][0-9a-zA-Z.*+!-]*)")
+
+
+def test_no_docs_install_command_pins_a_numpy_lerobot_forbids() -> None:
+    """An install step must not pin a numpy outside lerobot's declared range.
+
+    Such a pin cannot survive the install it precedes -- the resolver replaces
+    it while pulling lerobot -- so it only misinforms the reader about which
+    numpy the stack needs.
+    """
+    accepted = _numpy_versions_lerobot_accepts()
+    offenders: list[str] = []
+    for path in sorted((_REPO_ROOT / "docs").rglob("*.md")):
+        for fragment in _code_fragments(path.read_text()):
+            if "pip install" not in fragment:
+                continue
+            for operator, version in _NUMPY_PIN.findall(fragment):
+                pin = SpecifierSet(f"{operator}{version}")
+                if not any(pin.contains(candidate) for candidate in accepted):
+                    offenders.append(f"{path.relative_to(_REPO_ROOT)}: {fragment.strip()}")
+    assert not offenders, (
+        "docs install command pins a numpy that the installed lerobot "
+        f"({_lerobot_numpy_specifier()}) forbids, so the same command line undoes it: " + "; ".join(offenders)
+    )
+
+
+def test_numpy_abi_remedy_reinstalls_through_the_lerobot_extra() -> None:
+    """The numpy-ABI remedy must resolve through a declared extra, not bare.
+
+    Reinstalling the offending wheel on its own lets the resolver move numpy
+    freely: a bare ``uv pip install --reinstall pandas`` next to lerobot 0.6.1
+    resolves pandas 3 and numpy 2.5, which lerobot's ``numpy<2.3.0`` forbids.
+    Naming the extra keeps the repair inside the ranges the project declares.
+    """
+    rows = [
+        line.split("|")
+        for line in _TROUBLESHOOTING.read_text().splitlines()
+        if line.startswith("|") and "numpy" in line.split("|")[1] and "Jetson" in line.split("|")[1]
+    ]
+    assert len(rows) == 1, f"expected exactly one numpy-on-Jetson troubleshooting row, found {len(rows)}"
+    remedy = rows[0][3]
+    installs = [f for f in _code_fragments(remedy) if "pip install" in f]
+    assert installs, "the numpy ABI row names no install command"
+    for command in installs:
+        assert "strands-robots[" in command, (
+            f"the numpy ABI remedy reinstalls a package outside any declared extra: {command!r}; "
+            "the resolver is then free to move numpy out of lerobot's range"
+        )

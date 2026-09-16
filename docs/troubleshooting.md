@@ -28,7 +28,7 @@ strands-robots doctor            # or: python -m strands_robots doctor
 | `ImportError: cannot import name '...' from 'lerobot'` | LeRobot version skew | `uv pip install "strands-robots[lerobot]"` (pins `lerobot>=0.6.1,<0.7.0`) |
 | `ImportError: cannot import name 'MolmoAct2Policy'` | `lerobot < 0.6` (`MolmoAct2Policy` ships in lerobot >= 0.6) | `uv pip install "strands-robots[molmoact2]"` |
 | pyav build fails on Jetson/aarch64 | No prebuilt wheel for sm_110 | Use `--no-build-isolation` or install `torchcodec>=0.7` and skip pyav. See [installation](getting-started/installation.md#molmoact2-on-jetson) |
-| numpy ABI mismatch on Jetson | System pandas vs pip numpy | `uv pip install "numpy<2" "pandas==2.1.4"` then reinstall |
+| `numpy.dtype size changed` / `A module that was compiled using NumPy 1.x cannot be run in NumPy 2.x` on Jetson | A wheel built against numpy 1.x (apt `python3-pandas`, an old cached wheel) imported under the numpy 2 that `[lerobot]` requires | In a venv, rebuild the offender through the extra so the resolver keeps lerobot's ranges: `uv pip install --reinstall-package pandas "strands-robots[lerobot]"`. A bare `--reinstall pandas` resolves pandas 3 / numpy 2.5 and leaves `lerobot` requiring `numpy<2.3.0`; pinning `numpy<2` is undone by the next install, since `lerobot >= 0.6` requires `numpy >= 2` |
 | `uv pip install -e .` errors | Wrong cwd | `cd` to repo root first |
 | `uv pip install` fails with `No virtual environment found; run uv venv` | `uv pip` installs into the active venv only and none is active | `uv venv --python 3.12 && source .venv/bin/activate`, then install; or `uv pip install --system` to opt out of the venv |
 
