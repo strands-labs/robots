@@ -115,7 +115,12 @@ from strands_robots.simulation.mujoco.backend import (
 )
 from strands_robots.simulation.mujoco.manipulation import ManipulationMixin
 from strands_robots.simulation.mujoco.motion_primitives import MotionPrimitivesMixin
-from strands_robots.simulation.mujoco.physics import PhysicsMixin, _coerce_rgba
+from strands_robots.simulation.mujoco.physics import (
+    PhysicsMixin,
+    _coerce_rgba,
+    anchor_relative_scene_path,
+    scene_not_found_error,
+)
 from strands_robots.simulation.mujoco.randomization import RandomizationMixin
 from strands_robots.simulation.mujoco.recording import RecordingMixin
 from strands_robots.simulation.mujoco.rendering import RenderingMixin, render_dir_error, resolve_render_dir
@@ -1274,6 +1279,17 @@ class MuJoCoSimEngine(
         ``add_object`` / ``add_camera`` / ``add_robot`` calls mutate it via
         ``spec.recompile(model, data)`` and preserve the on-disk scene.
 
+        ``scene_path`` is read as given. When nothing is there and the path is
+        relative, the scenes directory
+        (:func:`~strands_robots.simulation.mujoco.physics.scene_root`:
+        ``~/.strands_robots/scenes``, or ``STRANDS_ROBOTS_SCENE_ROOT``) is
+        searched too, because that is where a relative
+        :meth:`~strands_robots.simulation.mujoco.physics.PhysicsMixin.export_xml`
+        destination lands - so ``export_xml {"output_path": "scene.xml"}``
+        followed by ``load_scene {"scene_path": "scene.xml"}`` is one round
+        trip in the spelling an agent actually uses. A refusal names both
+        directories it searched.
+
         Notes:
 
         * ``_backend_state["scene_loaded"] = True`` marks the live spec as one
@@ -1293,7 +1309,19 @@ class MuJoCoSimEngine(
         mj = self._mj
 
         if not os.path.exists(scene_path):
-            return {"status": "error", "content": [{"text": f"Scene file not found: {scene_path}"}]}
+            # A relative source is ALSO looked for in the scenes directory,
+            # because that is where a relative export_xml destination lands:
+            # `export_xml {"output_path": "scene.xml"}` followed by
+            # `load_scene {"scene_path": "scene.xml"}` is the documented round
+            # trip, and anchoring only the writer would have made the natural
+            # spelling of it fail. As given wins, so a path that resolves
+            # against the working directory today keeps resolving there; the
+            # scenes directory is consulted only when nothing is at the
+            # caller's path, which cannot change an answer anything got before.
+            anchored = anchor_relative_scene_path(scene_path)
+            if not os.path.exists(anchored):
+                return {"status": "error", "content": [{"text": scene_not_found_error(scene_path)}]}
+            scene_path = anchored
 
         # Compile the new scene into LOCAL model/data first. A malformed MJCF
         # must NOT destroy the currently-live world: previously self._world was

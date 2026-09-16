@@ -14,6 +14,7 @@ description: Every environment variable the package reads, the asset cache layou
 | `STRANDS_ROBOTS_RENDER_ROOT` | Sandbox directory that `Simulation.render(output_path=...)` may write into; per instance, `Simulation(render_dir=...)` / `Robot(name, render_dir=...)` takes precedence | `~/.strands_robots/renders/` |
 | `STRANDS_ROBOTS_RENDER_ALLOW_ABS` | Set `1` to allow `render(output_path=...)` to write absolute paths outside the render sandbox | unset |
 | `STRANDS_ROBOTS_RENDER_MAX_BYTES` | Max PNG size `render(output_path=...)` will persist | `52428800` (50 MB) |
+| `STRANDS_ROBOTS_SCENE_ROOT` | Where a *relative* `export_xml(output_path=...)` lands, and the directory `load_scene(scene_path=...)` searches when a relative path is not where the caller spelled it; absolute paths are used as given | `~/.strands_robots/scenes/` |
 | `STRANDS_ROBOTS_VIDEO_ROOT` | Opt-in sandbox for video/recording output paths (`run_policy(video=...)`, `start_cameras_recording`). Unset = absolute paths allowed (historic contract); set to confine writes | unset |
 | `STRANDS_ROBOTS_VIDEO_ALLOW_ABS` | Set `1` to re-permit absolute paths when `STRANDS_ROBOTS_VIDEO_ROOT` is set | unset |
 | `STRANDS_TRUST_REMOTE_CODE` | Set `1` to allow HF `trust_remote_code` for `lerobot_local` | unset |

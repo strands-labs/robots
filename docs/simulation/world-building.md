@@ -627,6 +627,25 @@ sim.export_xml(output_path="/tmp/handoff.xml")
 other.load_scene(scene_path="/tmp/handoff.xml")   # same scene, same structure
 ```
 
+An absolute `output_path` is written as given. A relative one - `"scene.xml"`,
+`"handoff/scene.xml"` - lands under `~/.strands_robots/scenes/`
+(`STRANDS_ROBOTS_SCENE_ROOT`), not the process working directory, so an agent
+asked to "save the scene" does not drop files into whatever directory the process
+was started from; the success text names the resolved path either way.
+
+`load_scene` reads that same directory, so the round trip holds under one bare
+name - the spelling an agent actually uses:
+
+```python
+sim.export_xml(output_path="handoff.xml")          # -> ~/.strands_robots/scenes/handoff.xml
+other.load_scene(scene_path="handoff.xml")         # same file, found there
+```
+
+A `scene_path` is read AS GIVEN first, so a relative path that resolves against
+the working directory today keeps resolving there; the scenes directory is
+searched only when nothing is at the path the caller spelled. A file that is in
+neither is refused with both directories named.
+
 Mesh, texture and height-field assets are referenced by ABSOLUTE path. MuJoCo
 resolves a relative `file=` against the model's own directory (plus `meshdir` /
 `texturedir`, or the `assetdir` that sets both), and that directory is not part

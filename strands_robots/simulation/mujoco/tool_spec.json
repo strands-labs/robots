@@ -86,7 +86,7 @@
     },
     "scene_path": {
       "type": "string",
-      "description": "Path to MJCF/URDF scene file"
+      "description": "Path to MJCF/URDF scene file. Read as given; a relative path that is not there is then looked for in the scenes directory (~/.strands_robots/scenes, or STRANDS_ROBOTS_SCENE_ROOT), where a relative export_xml destination lands, so exporting and reloading under one bare name round-trips."
     },
     "timestep": {
       "type": "number"
@@ -257,7 +257,7 @@
     },
     "output_path": {
       "type": "string",
-      "description": "Destination file path. render: PNG still, confined to the render sandbox (~/.strands_robots/renders, or STRANDS_ROBOTS_RENDER_ROOT); a bare filename like 'frame.png' is written INTO that sandbox, so the sandbox path never has to be spelled out; set STRANDS_ROBOTS_RENDER_ALLOW_ABS=1 to write outside it. export_xml: MJCF scene, any absolute path accepted. run_policy/start_policy/eval_policy/evaluate_benchmark: rollout MP4. Every sink rejects '..' traversal, a symlinked target, backslash separators and shell metacharacters."
+      "description": "Destination file path. render: PNG still, confined to the render sandbox (~/.strands_robots/renders, or STRANDS_ROBOTS_RENDER_ROOT); a bare filename like 'frame.png' is written INTO that sandbox, so the sandbox path never has to be spelled out; set STRANDS_ROBOTS_RENDER_ALLOW_ABS=1 to write outside it. export_xml: MJCF scene; an absolute path is written as given, a relative one (bare name or with directories) lands under the scenes directory (~/.strands_robots/scenes, or STRANDS_ROBOTS_SCENE_ROOT), never the process working directory. run_policy/start_policy/eval_policy/evaluate_benchmark: rollout MP4. Every sink rejects '..' traversal, a symlinked target, backslash separators and shell metacharacters."
     },
     "fps": {
       "type": "integer",
