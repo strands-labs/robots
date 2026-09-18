@@ -9,7 +9,10 @@ bytes are all exercised - not mocked away. A frame that drifts from the
 
 from __future__ import annotations
 
+import logging
 import time
+
+import pytest
 
 from strands_robots.drivers.base import HardwareDriver, missing_driver_members
 from strands_robots.drivers.microduck import (
@@ -45,15 +48,25 @@ def test_hello_handshake_connects_on_a_matching_version() -> None:
             driver.cleanup()
 
 
-def test_hello_refuses_a_version_mismatch_and_stays_usable() -> None:
-    with MockRobotd(api_version=MICRODUCK_API_VERSION + 1) as server:
+def test_hello_connects_across_a_version_skew_and_logs_both_versions(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    # duck-ipc-proto: "No daemon refuses a call because this number differs" -
+    # robotd bumps API_VERSION for additive methods and refuses a moved shape
+    # by name on the one call that cannot be served. A gate here refused every
+    # robotd built after the pin (28 on main against a pin of 16).
+    with MockRobotd(api_version=MICRODUCK_API_VERSION + 12) as server:
         driver = MicroduckDriver(port=server.path, timeout=2.0)
-        reason = driver.connect_eagerly()
-        assert reason is not None
-        assert "api_version" in reason and str(MICRODUCK_API_VERSION) in reason
-        assert driver.is_connected is False
-        # A write still refuses cleanly rather than raising.
-        assert driver.send_action({"vx": 0.1})["status"] == "error"
+        with caplog.at_level(logging.WARNING, logger="strands_robots.drivers.microduck"):
+            reason = driver.connect_eagerly()
+        try:
+            assert reason is None, reason
+            assert driver.is_connected
+            skew = [r.getMessage() for r in caplog.records if "api_version" in r.getMessage()]
+            assert skew, "the skew must be logged"
+            assert str(MICRODUCK_API_VERSION + 12) in skew[0] and str(MICRODUCK_API_VERSION) in skew[0]
+        finally:
+            driver.cleanup()
 
 
 def test_subscribe_stream_delivers_state_and_maps_15_to_14_joints() -> None:

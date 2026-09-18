@@ -58,7 +58,7 @@ class MockRobotd:
         methods: Every method name received, in order.
     """
 
-    def __init__(self, *, api_version: int = 16, state_interval: float = 0.01) -> None:
+    def __init__(self, *, api_version: int = 28, state_interval: float = 0.01) -> None:
         self._api_version = api_version
         self._state_interval = state_interval
         self._dir = tempfile.mkdtemp(prefix="mock-robotd-")

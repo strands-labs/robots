@@ -1,7 +1,7 @@
 """The Microduck transport knobs are checked, never handed on unexamined.
 
-``MicroduckDriver.__init__`` takes three numeric knobs. Two of them reach a
-consumer that cannot report what it was given:
+``MicroduckDriver.__init__`` takes three numeric knobs. Each reaches a consumer
+that cannot report what it was given:
 
 * ``timeout`` goes to ``socket.settimeout`` and to the reply wait. A ``nan``, an
   ``inf``, a negative or a numeric string raised out of :meth:`connect_eagerly`
@@ -13,9 +13,10 @@ consumer that cannot report what it was given:
   are not JSON (RFC 8259), so a strict daemon parser refuses the frame while
   ``connect_eagerly`` reports the connection as established.
 
-The third, ``api_version``, needs no domain of its own and
-:class:`TestApiVersionIsCoveredByTheHandshake` records the measurement that says
-so: every unusable spelling already produces the named version-mismatch refusal.
+* ``api_version`` is interpolated into the ``hello`` params the same way, as
+  robotd's ``HelloParams.api_version: u32``. It used to be covered by the
+  handshake refusing any reply that did not echo it; that gate also refused
+  every robotd built after the pin, so it is gone and the knob has a domain.
 
 This is the same convention the driver's actuation flags already follow through
 ``boolean_flag_error`` (``tests/drivers/microduck/test_microduck_flag_domain.py``
@@ -72,14 +73,9 @@ UNUSABLE_HZ: list[object] = [
     np.int64(3),
 ]
 
-#: The knobs that must reach a shared domain, and the one that must not need to.
-GUARDED_KNOBS = ("timeout", "subscribe_hz")
-EXEMPT_KNOBS = {
-    "api_version": (
-        "compared against the Hello reply, so every unusable spelling already "
-        "produces the named version-mismatch refusal"
-    )
-}
+#: The knobs that must reach a shared domain; none is exempt.
+GUARDED_KNOBS = ("timeout", "subscribe_hz", "api_version")
+EXEMPT_KNOBS: dict[str, str] = {}
 
 #: The shared numeric domains in ``strands_robots.utils`` this driver may use.
 SHARED_NUMERIC_DOMAINS = (
@@ -217,20 +213,16 @@ class TestTheUsableSpellingsAreUnchanged:
                 driver.cleanup()
 
 
-class TestApiVersionIsCoveredByTheHandshake:
-    """The measurement behind leaving the third numeric knob without a domain."""
+class TestApiVersionIsAPositiveInteger:
+    """Sent as ``HelloParams.api_version: u32``; the handshake no longer gates it."""
 
-    @pytest.mark.parametrize("value", [float("nan"), True, "1"], ids=["nan", "True", "'1'"])
-    def test_an_unusable_api_version_already_yields_the_named_mismatch_refusal(self, value: object) -> None:
-        with MockRobotd(api_version=MICRODUCK_API_VERSION) as server:
-            driver = MicroduckDriver(port=server.path, timeout=2.0, api_version=value)  # type: ignore[arg-type]
-            try:
-                reason = driver.connect_eagerly()
-                assert isinstance(reason, str), "a mismatched version must be reported"
-                assert "api_version" in reason, f"the refusal must name the knob, got {reason!r}"
-                assert driver.is_connected is False
-            finally:
-                driver.cleanup()
+    @pytest.mark.parametrize("value", UNUSABLE_HZ, ids=[repr(v)[:12] for v in UNUSABLE_HZ])
+    def test_an_unusable_api_version_is_refused_naming_the_driver_and_the_knob(self, value: object) -> None:
+        with pytest.raises(ValueError) as caught:
+            MicroduckDriver(port=ABSENT_SOCKET, api_version=value)  # type: ignore[arg-type]
+        reason = str(caught.value)
+        assert "MicroduckDriver" in reason, f"the refusal must name the driver, got {reason!r}"
+        assert "api_version" in reason, f"the refusal must name the knob, got {reason!r}"
 
 
 class TestEveryNumericKnobIsAccountedFor:

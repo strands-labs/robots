@@ -66,10 +66,13 @@ logger = logging.getLogger(__name__)
 #: forwarded (how ``duckctl`` reaches a robot over SSH).
 DEFAULT_SOCKET: str = "/run/robotd.sock"
 
-#: The API version this driver speaks, pinned to ``duck-ipc-proto`` ``API_VERSION``.
-#: The Hello handshake refuses a robotd whose version differs rather than
-#: mis-parsing its frames later.
-MICRODUCK_API_VERSION: int = 16
+#: The ``duck-ipc-proto`` ``API_VERSION`` this driver's frames were checked
+#: against. Sent in Hello and compared with the daemon's answer; a difference is
+#: logged, not refused. duck-ipc-proto's own rule: "No daemon refuses a call
+#: because this number differs" - a route that moved refuses itself by name
+#: (``METHOD_NOT_FOUND``/``INVALID_PARAMS``), and a gate on the handshake would
+#: refuse every serveable call along with it.
+MICRODUCK_API_VERSION: int = 28
 
 #: JSON-RPC version string every frame carries.
 JSONRPC_VERSION: str = "2.0"
@@ -513,9 +516,10 @@ class MicroduckDriver:
             port: The robotd unix socket path. Defaults to
                 :data:`DEFAULT_SOCKET`. For a remote robot, forward its socket to
                 a local path (as ``duckctl`` does over SSH) and pass that path.
-            api_version: API version to send in the Hello handshake, pinned to
+            api_version: API version to send in the Hello handshake, defaults to
                 :data:`MICRODUCK_API_VERSION`. A robotd answering a different
-                version is refused, not mis-parsed.
+                version is connected and the skew logged; each call it cannot
+                serve refuses itself by name.
             timeout: Socket and request timeout in seconds. A positive, finite
                 number: it is handed to ``socket.settimeout`` and to the reply
                 wait, neither of which can report what it was given.
@@ -550,11 +554,15 @@ class MicroduckDriver:
         # refuses the frame while ``connect_eagerly`` reports success; a
         # ``numpy`` integer is not JSON-serialisable at all.  The strict-int
         # domain is the right member because robotd is sent an integer.
+        # ``api_version`` is the same shape on the same wire: ``HelloParams``
+        # is a ``u32`` that robotd decodes with ``deny_unknown_fields``.
         if reason := positive_finite_number_error(timeout, "timeout", "MicroduckDriver"):
             raise ValueError(reason)
         if subscribe_hz is not None and (
             reason := positive_count_error(subscribe_hz, "subscribe_hz", "MicroduckDriver")
         ):
+            raise ValueError(reason)
+        if reason := positive_count_error(api_version, "api_version", "MicroduckDriver"):
             raise ValueError(reason)
 
         self._tool_name = tool_name
@@ -681,9 +689,10 @@ class MicroduckDriver:
         every write refuses "not connected"). Idempotent: a second call on a live
         connection is a no-op success.
 
-        A version mismatch is a *refusal*, not a silent downgrade: the reason
-        names both versions, because a driver that mis-parsed a newer robotd's
-        frames would be worse than one that declined to talk to it.
+        A version mismatch is *reported*, not refused: robotd bumps
+        ``API_VERSION`` for additive methods too, and answers a call it cannot
+        serve with an error naming the method or parameter, so a gate here would
+        refuse a daemon every frame of which this driver reads.
         """
         if self.is_connected:
             return None
@@ -704,12 +713,12 @@ class MicroduckDriver:
 
         their_version = hello.get("api_version")
         if their_version != self._api_version:
-            client.close()
-            self._connect_error = (
-                f"robotd speaks api_version {their_version}, this driver speaks {self._api_version}; "
-                "refusing rather than mis-parsing its frames"
+            logger.warning(
+                "robotd speaks api_version %s, this driver was checked against %s; "
+                "a call whose shape moved will refuse itself by name",
+                their_version,
+                self._api_version,
             )
-            return self._connect_error
 
         client.start_reader(self._on_state)
         try:
