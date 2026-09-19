@@ -156,6 +156,10 @@ _OPTIONS_BY_ACTION: dict[str, tuple[str, ...]] = {
     "monitor": ("baudrate", "timeout"),
 }
 
+# Every action the tool answers; anything else is refused before the port is
+# touched.
+_ACTIONS: tuple[str, ...] = ("list_ports", *_OPTIONS_BY_ACTION)
+
 
 def _register_field_error(value: Any, param: str, action: str) -> str | None:
     """Error text when ``value`` cannot be encoded into its Feetech register field.
@@ -466,6 +470,14 @@ def serial_tool(
         return ports
 
     try:
+        if action not in _ACTIONS:
+            # Graded before the port check: an action that does not exist must
+            # not dial the bus (opening a USB-serial port asserts DTR).
+            return {
+                "status": "error",
+                "content": [{"text": f"Unknown action: {action}\nAvailable: {', '.join(_ACTIONS)}"}],
+            }
+
         if action == "list_ports":
             ports = list_serial_ports()
             return {
@@ -631,8 +643,9 @@ def serial_tool(
             else:
                 return {"status": "error", "content": [{"text": f"Feetech Motor {motor_id} no response"}]}
 
-        elif action == "monitor":
-            # Continuous monitoring (limited time for safety)
+        else:
+            # action == "monitor", the one name left in _ACTIONS after the
+            # refusal above. Continuous monitoring (limited time for safety).
             monitor_data = []
             # The safety window is a duration, so it is measured on
             # time.monotonic(); each record's ``timestamp`` below stays on the
@@ -659,19 +672,6 @@ def serial_tool(
                 "content": [
                     {"text": f"Monitored {len(monitor_data)} data chunks in 5 seconds"},
                     {"json": {"monitor_data": monitor_data}},
-                ],
-            }
-
-        else:
-            ser.close()
-            return {
-                "status": "error",
-                "content": [
-                    {
-                        "text": f"Unknown action: {action}\n"
-                        "Available: list_ports, send, read, send_read,"
-                        " feetech_position, feetech_velocity, feetech_ping, monitor"
-                    }
                 ],
             }
 

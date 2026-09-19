@@ -276,7 +276,9 @@ def test_unknown_action_returns_error(fake_serial_factory):
     text = _texts(result)
     assert "Unknown action: bogus" in text
     assert "list_ports" in text
-    assert created[0].closed
+    # The refusal is graded before the port check, so the bus is never dialled
+    # (opening a USB-serial port asserts DTR, which resets some boards).
+    assert created == [], "an unknown action must not open the serial port"
 
 
 def test_serial_exception_is_caught(monkeypatch):
