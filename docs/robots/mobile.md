@@ -178,7 +178,7 @@ That transport is `requests`, supplied by `pip install 'strands-robots[earthrove
 ```python
 from strands_robots import Robot
 
-rover = Robot("earthrover", mode="real", driver="strands", port="http://10.0.0.9:8001")
+rover = Robot("earthrover", mode="real", driver="strands", port="http://10.0.0.9:8000")
 if (reason := rover.connect_eagerly()) is not None:   # proves GET /data answers
     raise SystemExit(reason)
 
@@ -233,10 +233,10 @@ whenever something answers there.
 
 | `port=` | Result |
 |---|---|
-| omitted, `http://10.0.0.9:8001`, `10.0.0.9:8001`, `https://rover.local:8001` | Accepted. A bare `host:port` is prefixed with `http://`. |
-| `HTTP://10.0.0.9:8001`, `http://[::1]:8001`, `10.0.0.9:8001/rover-7` | Accepted - the scheme is case-insensitive, an IPv6 literal keeps its brackets, and a path prefix survives for an SDK behind a reverse proxy. |
-| `bot.local@10.0.0.9:8001` | **Refused.** Everything before the `@` is userinfo, so `10.0.0.9` is dialled while the address still reads as `bot.local`. |
-| `ws://10.0.0.9:8001` | **Refused.** The SDK is plain HTTP; left alone, `ws` becomes the host and the port you wrote is discarded. |
+| omitted, `http://10.0.0.9:8000`, `10.0.0.9:8000`, `https://rover.local:8000` | Accepted. A bare `host:port` is prefixed with `http://`. |
+| `HTTP://10.0.0.9:8000`, `http://[::1]:8000`, `10.0.0.9:8000/rover-7` | Accepted - the scheme is case-insensitive, an IPv6 literal keeps its brackets, and a path prefix survives for an SDK behind a reverse proxy. |
+| `bot.local@10.0.0.9:8000` | **Refused.** Everything before the `@` is userinfo, so `10.0.0.9` is dialled while the address still reads as `bot.local`. |
+| `ws://10.0.0.9:8000` | **Refused.** The SDK is plain HTTP; left alone, `ws` becomes the host and the port you wrote is discarded. |
 | `/tmp/rover.sock` | **Refused** - that shape belongs to the serial arms. |
 
 A URL that cannot be used at all - `http://`, an out-of-range port, an embedded space -
