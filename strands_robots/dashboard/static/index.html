@@ -51,8 +51,16 @@
   </section>
 
   <section id="view-agent" class="view" hidden>
-    <h1>Agent</h1>
-    <p class="muted">Arrives with the agent slice: a Strands Agent with the robot tool, consent cards for anything that moves.</p>
+    <div class="row between wrap">
+      <h1>Agent</h1>
+      <span id="agent-model" class="mono muted"></span>
+    </div>
+    <p class="muted">A Strands Agent whose tools are the simulations on this page. Anything that moves a robot asks you first.</p>
+    <div id="agent-log" class="card log" aria-live="polite"></div>
+    <form id="agent-form" class="row">
+      <input id="agent-text" type="text" autocomplete="off" placeholder="e.g. start an so101 and raise joint 2 to one radian" required>
+      <button type="submit" id="agent-send">Send</button>
+    </form>
   </section>
 
   <section id="view-settings" class="view" hidden>

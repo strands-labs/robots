@@ -26,7 +26,7 @@ from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
-from strands_robots.dashboard import access, fleet, log_redaction, routes_auth, routes_sim, settings
+from strands_robots.dashboard import access, fleet, log_redaction, routes_agent, routes_auth, routes_sim, settings
 from strands_robots.dashboard.sim_session import SessionStore
 
 logger = logging.getLogger(__name__)
@@ -94,6 +94,7 @@ def create_app() -> FastAPI:
     app.include_router(routes_auth.router)
     app.include_router(fleet.router)
     app.include_router(routes_sim.router)
+    app.include_router(routes_agent.router)
     app.state.safety = routes_sim.Safety(SessionStore())
 
     @app.get("/api/settings")

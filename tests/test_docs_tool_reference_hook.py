@@ -54,20 +54,34 @@ def _published() -> tuple:
     return tuple(item for family in _hook().tools().values() for item in family)
 
 
+def _importable_tools(tree: ast.Module):
+    """Every ``def`` a caller can reach as an attribute: module level, or on a class there.
+
+    A ``@tool`` written inside another function is not one of those. The dashboard's agent
+    console builds its eight (``strands_robots.dashboard.agent_console.build_tools``) per
+    conversation, closed over that conversation's safety object, so nothing can import them
+    and no page could tell a reader how to call one - the same reason a per-instance name is
+    out of scope below.
+    """
+    for node in tree.body:
+        if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef):
+            yield node
+        elif isinstance(node, ast.ClassDef):
+            yield from (item for item in node.body if isinstance(item, ast.FunctionDef | ast.AsyncFunctionDef))
+
+
 def _statically_named_tools() -> set[tuple[str, str]]:
-    """(module, name) for every ``@tool`` in the package whose name is a literal.
+    """(module, name) for every importable ``@tool`` in the package whose name is a literal.
 
     Derived here rather than through the hook, so a hook that stops looking in a directory
     fails this grader instead of quietly shortening the page. A tool whose name the decorator
     computes per instance (the mesh robots build one per robot) names nothing a page could
-    spell and is out of scope.
+    spell and is out of scope, as is one that is not importable at all (:func:`_importable_tools`).
     """
     found: set[tuple[str, str]] = set()
     for path in sorted(_PKG.rglob("*.py")):
         tree = ast.parse(path.read_text(encoding="utf-8"))
-        for node in ast.walk(tree):
-            if not isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef):
-                continue
+        for node in _importable_tools(tree):
             for decorator in node.decorator_list:
                 call = decorator.func if isinstance(decorator, ast.Call) else decorator
                 if not (isinstance(call, ast.Name) and call.id == "tool"):

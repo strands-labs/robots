@@ -92,6 +92,12 @@ _PACKAGE_ROOT = Path(strands_robots.__file__).resolve().parent
 _STRANDS_SYMBOL_FLOORS: dict[tuple[str, str], str] = {
     ("strands", "Agent"): "1.0.0",
     ("strands", "tool"): "1.0.0",
+    # The default model of the 1.x line; the dashboard's agent console builds one
+    # from ``STRANDS_MODEL_ID`` (``strands_robots.dashboard.agent_console``), and
+    # reads the id the SDK itself defaults to rather than keeping a copy of it --
+    # both names are in the 1.0.0 wheel.
+    ("strands.models", "BedrockModel"): "1.0.0",
+    ("strands.models.bedrock", "DEFAULT_BEDROCK_MODEL_ID"): "1.0.0",
     ("strands.tools.decorator", "tool"): "1.0.0",
     ("strands.tools.tools", "AgentTool"): "1.0.0",
     ("strands.types.tools", "AgentTool"): "1.0.0",

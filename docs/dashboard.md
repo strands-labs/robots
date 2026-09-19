@@ -42,7 +42,7 @@ python -m strands_robots dashboard --host 0.0.0.0 --port 8090
 |---|---|---|
 | Fleet | every robot the registry knows, sim and real, and the mesh peers when the `[mesh]` extra is installed | `strands_robots.registry` |
 | Sim | a MuJoCo robot stepping in this process - an MJPEG stream and the same model in your browser | `strands_robots.simulation` |
-| Agent | a Strands Agent with the robot tool; anything that would move hardware pauses on a consent card | `dashboard.agent_hitl`, `dashboard.consent` |
+| Agent | a Strands Agent whose tools are the simulations on this page; anything that moves a robot pauses on a consent card | `dashboard.agent_console`, `dashboard.agent_hitl`, `dashboard.consent` |
 | Settings | the file `~/.strands_robots/dashboard/settings.json` - agent model, mesh endpoints, static token (shown only as set / unset) | `dashboard.settings` |
 
 Every string a route serves is rendered as text, never as markup: a Fleet row can
@@ -50,6 +50,21 @@ carry a mesh peer's name, and script running in this page would be same-origin -
 it carries the session cookie and names this origin as its own, so it is behind
 every guard above by construction. `tests/test_dashboard_static_renders_data_as_text.py`
 reads that rule off the files the wheel ships.
+
+## The Agent tab
+
+Type a sentence; the agent answers with tool calls you can read. Its tools are
+the simulations - list the robots the registry can simulate, start one, read its
+joints, move them, reset, stop, and the e-stop. Every one goes through the same
+safety object the buttons use, so a latched e-stop refuses the agent exactly as
+it refuses a click, and stopping is never refused.
+
+Moving a robot pauses first. `sim_set_joints` raises an interrupt before it runs,
+the page shows what a yes would move (`2 - 1.000 rad`), and *Allow once*, *Allow
+for this conversation* or *Refuse* resumes the same turn. A conversation-wide yes
+covers that one session, lives in the socket and dies with it; every answer is
+written to the operator-response audit log. The model is the one named by
+`STRANDS_MODEL_ID`, and the page shows which it is.
 
 ## The e-stop
 
@@ -82,6 +97,7 @@ an e-stop.
 | `STRANDS_DASH_AUTH_BOOTSTRAP_TOKEN` | minted into `enrol_token` | the proof the first enrolment needs |
 | `DASHBOARD_AUTH_TOKEN` | unset | a static bearer for scripts; a passkey session is still needed to remove a passkey |
 | `DASHBOARD_SETTINGS_FILE` | `~/.strands_robots/dashboard/settings.json` | where Settings are written |
+| `STRANDS_MODEL_ID` | the model the installed SDK defaults to | which Bedrock model the Agent tab talks to |
 
 Every auth duration knob (`STRANDS_DASH_AUTH_TOKEN_TTL`, `SESSION_MAX_AGE`,
 `HANDOFF_TTL`) is documented in the [configuration reference](reference/configuration.md);

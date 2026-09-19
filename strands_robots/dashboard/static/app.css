@@ -110,3 +110,24 @@ button.primary:hover, form button[type=submit]:hover, #login:hover { filter: bri
 .session .foot { display: flex; align-items: center; gap: 0.5rem; padding: 0.5rem 0.8rem; border-top: 1px solid var(--hair); font-family: var(--mono); font-size: 0.7rem; color: var(--ink-2); }
 .session .foot button { margin-left: auto; font: inherit; color: var(--ink-2); background: transparent; border: 1px solid var(--hair); border-radius: 6px; padding: 0.25rem 0.6rem; cursor: pointer; }
 .session .foot button:hover { color: var(--ink); border-color: var(--ink-2); }
+
+/* ---- agent console ---- */
+.mono { font-family: var(--mono); font-size: 0.7rem; letter-spacing: 0.04em; }
+#agent-log { min-height: 14rem; max-height: 60vh; overflow-y: auto; display: flex; flex-direction: column; gap: 0.6rem; margin: 0.8rem 0; }
+#agent-log:empty::before { content: "Nothing yet. The agent sees the same sessions you do."; color: var(--ink-2); }
+.turn { max-width: 70ch; white-space: pre-wrap; line-height: 1.45; }
+.turn.you { align-self: flex-end; background: var(--panel-2); border: 1px solid var(--hair); border-radius: 10px 10px 2px 10px; padding: 0.45rem 0.7rem; }
+.turn.agent { align-self: flex-start; }
+.tool { align-self: flex-start; font-family: var(--mono); font-size: 0.7rem; color: var(--ink-2); border-left: 2px solid var(--hair); padding: 0.15rem 0.6rem; max-width: 80ch; white-space: pre-wrap; }
+.tool.err { border-color: var(--red); }
+.consent { align-self: stretch; border: 1px solid var(--amber, #e6c15a); border-radius: var(--r); padding: 0.75rem 0.9rem; background: rgba(230, 193, 90, 0.06); }
+.consent .what { font-family: var(--mono); font-size: 0.78rem; margin: 0.3rem 0 0.6rem; }
+.consent .row { gap: 0.5rem; }
+.consent button { font: inherit; border-radius: 8px; padding: 0.35rem 0.8rem; cursor: pointer; border: 1px solid var(--hair); background: transparent; color: var(--ink); }
+.consent button.yes { background: var(--green); color: #04140b; border: 0; font-weight: 600; }
+.consent button.no { border-color: var(--red); color: var(--red); }
+.consent.answered { opacity: 0.55; }
+.consent.answered button { display: none; }
+.error { color: var(--red); font-family: var(--mono); font-size: 0.75rem; }
+#agent-form input { flex: 1; }
+#agent-form button[disabled] { opacity: 0.5; cursor: wait; }

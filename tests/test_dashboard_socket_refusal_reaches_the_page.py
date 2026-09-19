@@ -2,7 +2,8 @@
 
 The dashboard refuses a WebSocket with an application close code - 4401 "sign in
 required", 4404 "no such session" - and the route's docstring, its tests and the
-page that opens the socket all read that code as the reason. A close sent
+page that opens the socket all read that code as the reason - ``static/app.js``
+turns 4401 on the agent socket into the login screen and nothing else does. A close sent
 *before* ``accept`` is not a close, though: it is a handshake rejection, which
 an ASGI server answers with HTTP 403, and a browser reports 1006 for every one
 of them alike. So what these cells grade is the ASGI message order, because that
@@ -106,4 +107,22 @@ class TestARefusedSocketSaysWhy:
         """Unaccepted: HTTP 403 to the handshake, and the page is owed no reason."""
         messages = sent_while_refusing(app, "/ws/telemetry/nosuch", {"host": HOST, "origin": "http://evil.example"})
         assert [m["type"] for m in messages] == ["websocket.close"]
+        assert messages[-1]["code"] == 4401
+
+    def test_the_agent_socket_delivers_the_4401_the_page_acts_on(self, app, monkeypatch) -> None:
+        """``app.js``: ``ws.onclose = ev => { if (ev.code === 4401) showLogin(); ... }``.
+
+        Sent before ``accept`` that code is 1006 by the time it reaches the
+        handler, and the operator whose session expired is shown nothing.
+        """
+        import pathlib
+
+        import strands_robots.dashboard as pkg
+
+        app_js = (pathlib.Path(pkg.__file__).parent / "static" / "app.js").read_text(encoding="utf-8")
+        assert "ev.code === 4401" in app_js
+
+        monkeypatch.setenv("STRANDS_DASH_AUTH_ENABLED", "1")
+        messages = sent_while_refusing(app, "/ws/agent", {"host": HOST})
+        assert [m["type"] for m in messages] == ["websocket.accept", "websocket.close"]
         assert messages[-1]["code"] == 4401

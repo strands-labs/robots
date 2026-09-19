@@ -796,7 +796,7 @@ class TestReadyMeansItRenders:
                 hold.wait(30)
                 return super().get_frame(*a, **kw)
 
-        monkeypatch.setattr(routes_sim, "_READY_TIMEOUT", 0.2)
+        monkeypatch.setattr(routes_sim, "READY_TIMEOUT", 0.2)
         monkeypatch.setattr(sim_session, "_default_factory", ParksInTheFirstRender)
         try:
             r = client.post("/api/sim", json={"robot": "so101"})

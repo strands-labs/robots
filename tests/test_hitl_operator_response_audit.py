@@ -45,6 +45,7 @@ from strands.types.tools import ToolUse  # noqa: E402
 
 import strands_robots  # noqa: E402
 import strands_robots._command_gate as gate_mod  # noqa: E402
+import strands_robots.dashboard.agent_console as dash_console_mod  # noqa: E402
 import strands_robots.dashboard.agent_hitl as dash_hitl_mod  # noqa: E402
 import strands_robots.hardware_robot as hw_mod  # noqa: E402
 import strands_robots.tools.g1.use_unitree as unitree_mod  # noqa: E402
@@ -226,6 +227,29 @@ def _drive_dashboard_agent_hitl(response: object) -> dict[str, Any] | None:
     return {"status": "error", "content": [{"text": str(event.cancel_tool)}]}
 
 
+def _drive_dashboard_agent_console(response: object) -> dict[str, Any] | None:
+    """The dashboard agent asking to move a simulated robot's joints.
+
+    Same hook shape as ``_drive_dashboard_agent_hitl`` - a ``BeforeToolCallEvent``
+    that says "no" through ``event.cancel_tool`` - so the same SDK translation
+    applies. A fresh ``Grants`` per drive: an approval here must not silence the
+    next cell's ask.
+    """
+    tool_input = {"session_id": "sim-1", "positions": {"2": 1.0}}
+    hook = dash_console_mod.MotionGate(dash_console_mod.Grants())
+
+    event = MagicMock(name="BeforeToolCallEvent")
+    event.tool_use = {"name": "sim_set_joints", "input": tool_input}
+    event.interrupt.return_value = response
+    event.cancel_tool = False
+
+    hook._gate(event)
+
+    if not event.cancel_tool:
+        return None
+    return {"status": "error", "content": [{"text": str(event.cancel_tool)}]}
+
+
 class _Gate:
     """One HITL gate: how to drive it, and where its interrupt lives.
 
@@ -319,6 +343,16 @@ _GATES: tuple[_Gate, ...] = (
         dash_hitl_mod,
         "_gate",
         owner=dash_hitl_mod.MotionInterruptHook,
+    ),
+    _Gate(
+        "dashboard_agent_console",
+        "dashboard_agent_console",
+        "sim_set_joints",
+        "sim-1",
+        _drive_dashboard_agent_console,
+        dash_console_mod,
+        "_gate",
+        owner=dash_console_mod.MotionGate,
     ),
 )
 

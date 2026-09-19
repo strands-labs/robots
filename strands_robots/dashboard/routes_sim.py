@@ -34,10 +34,11 @@ router = APIRouter(tags=["sim"])
 
 _STREAM_FPS = 12.0
 _TELEMETRY_HZ = 15.0
-#: How long the create route waits for a session to build and render its first
-#: frame. Creating the GL context is the slowest part of starting, so this is
-#: generous; a session that misses it is dropped rather than reported running.
-_READY_TIMEOUT = 60.0
+#: How long a start waits for a session to build and render its first frame -
+#: the create route and the agent's ``sim_start``, which drop a session that
+#: misses it rather than reporting a robot that renders nothing as running.
+#: Creating the GL context is the slowest part of starting, so this is generous.
+READY_TIMEOUT = 60.0
 
 
 class Safety:
@@ -141,7 +142,7 @@ async def create_session(request: Request, who: dict = Depends(access.require_se
         session = safety.store.create(robot)
     except RuntimeError as exc:
         raise HTTPException(429, str(exc))
-    ready = await asyncio.to_thread(session.wait_ready, _READY_TIMEOUT)
+    ready = await asyncio.to_thread(session.wait_ready, READY_TIMEOUT)
     snap = session.snapshot
     if not ready:
         # Ready means built and rendered, and building a GL context is the slow,
@@ -150,7 +151,7 @@ async def create_session(request: Request, who: dict = Depends(access.require_se
         # nothing to stream and a session slot held, so it is dropped here instead
         # of being handed back as a robot the operator can watch.
         await asyncio.to_thread(safety.store.remove, session.id)
-        raise HTTPException(504, f"{robot} did not render a first frame within {_READY_TIMEOUT:.0f}s")
+        raise HTTPException(504, f"{robot} did not render a first frame within {READY_TIMEOUT:.0f}s")
     if snap.state == "error":
         safety.store.remove(session.id)
         raise HTTPException(500, f"could not start {robot}: {snap.error}")
