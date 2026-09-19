@@ -227,6 +227,11 @@ The gate **fails closed**: with no `tool_context` (outside an agent loop), or wh
 environment variables. Only the operator's approve/deny verdict is read - the
 reply text is never echoed back into the agent's context.
 
+The operator is asked **before** the transport takes its process-wide lock, so a
+pending decision does not stall an unrelated read on the same graph - an odometry
+`echo`, a scan, a second robot sharing the transport - for however long the human
+takes to answer. All three transports consult the gate at that same point.
+
 The reply is recorded in the local safety audit log instead, on both outcomes.
 That matters because only `y` / `yes` / `approve` / `approved` count as approval,
 so a reply that carries a reason (`n - not while the cell door is open`) is always

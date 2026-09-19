@@ -36,10 +36,12 @@ standard ROS 2 idiom.
 reach :func:`strands_robots._command_gate.gate_command` whichever caller asked -
 that is the whole point of one shared blocklist - so :func:`ros_action` takes the
 gate as a required ``gate`` argument and consults it at one fixed point in the
-flow: after the backend probe, so a graph that cannot be reached never prompts,
-and after the verb's own required arguments are checked, so an incomplete call is
-reported without asking an operator about it. A caller cannot forget it, and
-cannot move it.
+flow: after the backend probe, so a graph that cannot be reached never prompts;
+after the verb's own required arguments are checked, so an incomplete call is
+reported without asking an operator about it; and before the executor lock, so a
+human deciding does not hold the lock every other caller of this transport - the
+odometry read, the scan, the second robot on the same graph - has to take. A
+caller cannot forget it, and cannot move it.
 """
 
 from __future__ import annotations
@@ -497,6 +499,21 @@ def ros_action(
     if not _backend.available():
         return _err(_INSTALL_HINT)
 
+    # The operator gate is consulted here - after the backend probe, so a graph
+    # that cannot be reached never prompts, and before the lock, so a human
+    # deciding does not hold the process-wide rclpy executor lock and no
+    # publisher joins the graph on a refusal. The lock serialises every caller of
+    # this transport, so asking under it stalled an unrelated ``echo`` - the
+    # odometry read of a second robot on the same graph - for as long as the
+    # operator took to answer. Each condition mirrors its verb's own
+    # required-argument check below, so an incomplete call is reported without
+    # asking an operator about it.
+    for kind, name in (("publish", topic), ("service_call", service), ("action_send_goal", action_name)):
+        if action == kind and name and type:
+            refusal = gate(kind, name)
+            if refusal is not None:
+                return _err(refusal)
+
     try:
         with _backend.lock:
             if action == "list_topics":
@@ -514,8 +531,6 @@ def ros_action(
             if action == "action_send_goal":
                 if not action_name or not type:
                     return _err("action_send_goal requires action_name and type")
-                if (refusal := gate("action_send_goal", action_name)) is not None:
-                    return _err(refusal)
                 import json
 
                 outcome = _action_send_goal(action_name, type, fields, timeout)
@@ -542,16 +557,12 @@ def ros_action(
             if action == "publish":
                 if not topic or not type:
                     return _err("publish requires topic and type")
-                if (refusal := gate("publish", topic)) is not None:
-                    return _err(refusal)
                 _publish(topic, type, fields, count, rate)
                 return _ok(f"published {count} message(s) to {topic}")
 
             if action == "service_call":
                 if not service or not type:
                     return _err("service_call requires service and type")
-                if (refusal := gate("service_call", service)) is not None:
-                    return _err(refusal)
                 import json
 
                 resp = _service_call(service, type, fields, timeout)

@@ -33,6 +33,7 @@ from __future__ import annotations
 
 import ast
 import inspect
+import threading
 from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock
@@ -381,3 +382,112 @@ class TestEveryCommandingTransportConsultsTheGate:
             if "COMMAND_BLOCKLIST = frozenset(" in path.read_text(encoding="utf-8")
         ]
         assert owners == ["_command_gate.py"], f"the command blocklist is defined in {owners}"
+
+
+def _lock_is_free(backend: Any) -> bool:
+    """Whether a second thread can take ``backend.lock`` right now.
+
+    The lock is an ``RLock``, so the thread already holding it re-enters freely -
+    the question is only answerable from another thread, which is also the thread
+    the harm lands on: every other caller of the transport.
+    """
+    taken: list[bool] = []
+
+    def probe() -> None:
+        acquired = backend.lock.acquire(timeout=_LOCK_PROBE_TIMEOUT)
+        taken.append(acquired)
+        if acquired:
+            backend.lock.release()
+
+    thread = threading.Thread(target=probe)
+    thread.start()
+    thread.join()
+    return taken[0]
+
+
+#: Long enough that a held lock is not mistaken for scheduler noise, short enough
+#: that the failing case costs a fraction of a second per row.
+_LOCK_PROBE_TIMEOUT = 0.5
+
+
+class TestNoOperatorIsAskedUnderTheTransportLock:
+    """A human thinking must not stall every other caller of the transport.
+
+    Each transport serialises its callers through one process-wide lock - the
+    rclpy executor is not re-entrant, DDS access is serialised, and one
+    ``roslibpy.Ros`` is shared per ``(host, port)``. ``ctx.interrupt()`` blocks
+    for as long as the operator takes to answer, so consulting the gate under
+    that lock hands a human the transport: an unrelated ``echo`` on the same
+    graph - the odometry read of a second robot, a scan - waits out the decision.
+
+    Measured on the three transports before this pin existed, with the operator
+    being asked about a ``publish`` onto a blocklisted topic::
+
+        use_ros        lock free while asking: False
+        use_rtps       lock free while asking: True
+        use_rosbridge  lock free while asking: True
+
+    ``use_ros`` consulted the gate inside ``with _backend.lock:``; the two
+    siblings hoisted it above. Both halves below are table-driven over every
+    transport rather than written against the one that diverged, so the next one
+    to grow a lock is graded on arrival.
+    """
+
+    @pytest.mark.parametrize(("label", "tool", "module", "msg_type"), _TRANSPORTS)
+    def test_the_transport_lock_is_free_while_the_operator_is_asked(
+        self, label: str, tool: Any, module: Any, msg_type: str
+    ) -> None:
+        observed: list[bool] = []
+        ctx = MagicMock()
+
+        def ask(*_args: Any, **_kwargs: Any) -> str:
+            observed.append(_lock_is_free(module._backend))
+            return "n"
+
+        ctx.interrupt.side_effect = ask
+        result = _publish(tool, msg_type, ctx)
+
+        assert observed, f"{label} did not ask the operator about {_BLOCKED}"
+        assert result["status"] == "error"
+        assert observed == [True], (
+            f"{label} asked the operator while holding its transport lock: every other "
+            f"caller of this transport - a read, a second robot on the same graph - waits "
+            f"out the human decision"
+        )
+
+    @pytest.mark.parametrize(("label", "entry_point", "_factory", "_tool", "_msg_type"), _SHARED_TRANSPORTS)
+    def test_no_gate_call_sits_inside_a_lock_block(
+        self, label: str, entry_point: Any, _factory: Any, _tool: Any, _msg_type: str
+    ) -> None:
+        """The same rule structurally, so a new verb cannot reintroduce it.
+
+        The behavioural half above exercises ``publish``; this reads the whole
+        dispatch, so a ``service_call`` or an ``action_send_goal`` that consults
+        the gate under the lock is caught without a row of its own.
+        """
+        source = Path(inspect.getsourcefile(entry_point) or "").read_text(encoding="utf-8")
+        dispatch = next(
+            node
+            for node in ast.walk(ast.parse(source))
+            if isinstance(node, ast.FunctionDef) and node.name == entry_point.__name__
+        )
+        lock_blocks = [
+            node
+            for node in ast.walk(dispatch)
+            if isinstance(node, ast.With)
+            and any(
+                isinstance(item.context_expr, ast.Attribute) and item.context_expr.attr == "lock" for item in node.items
+            )
+        ]
+        assert lock_blocks, f"{label}: the scan found no lock block in {entry_point.__name__} to grade"
+        gated_under_lock = [
+            node.lineno
+            for block in lock_blocks
+            for node in ast.walk(block)
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == "gate"
+        ]
+        assert not gated_under_lock, (
+            f"{label}: the operator gate is consulted under the transport lock at "
+            f"line(s) {gated_under_lock}, so a human deciding holds the lock every "
+            f"other caller of this transport has to take"
+        )
