@@ -1,0 +1,3 @@
+### Fixed: the Booster T1 driver reads its mode through the vendor's out-parameter
+
+`BoosterDriver.read_mode` called `B1LocoClient.GetMode()` with no argument, but the vendor binding is `GetMode(get_mode_response) -> int`: the mode lands in the `GetModeResponse` you pass in and the return value is a status code. On a real T1 the call raised `TypeError`, which `read_mode` did not catch, so `get_status` failed on every connected robot. The driver now passes a `GetModeResponse`, reads the mode name from it when the code is 0, and reports `None` for any other code instead of an uninitialised field.
