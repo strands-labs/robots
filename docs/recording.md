@@ -192,9 +192,9 @@ sim.stop_recording()          # flushes any trailing rollout automatically
 Without `n_episodes`, a `save_episode()` or a `reset()`, all 20 rollouts append to one buffer that
 `stop_recording` flushes as a single `episode_index=0`; `clear_episode_buffer()` discards a partial
 rollout instead. LeRobot computes `stats.json` per episode, so per-rollout boundaries keep statistics
-correct across the `reset()` teleport. Every backend cuts the boundary through the same rule, except
-a partial Isaac reset (`reset(env_ids=[...])`) - whether the recorded rollout ended is not knowable
-from `env_ids`, so call `save_episode()` yourself.
+correct across the `reset()` teleport. Every backend cuts the boundary through the same rule, with no
+exception: Isaac's `reset()` refuses `env_ids` rather than resetting everything, so every reset is a
+boundary.
 
 ## See also
 

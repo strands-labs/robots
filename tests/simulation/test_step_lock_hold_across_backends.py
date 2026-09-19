@@ -188,6 +188,10 @@ def _isaac_stub(lock: CountingLock, tick: Any = None, batch: int | None = None) 
         _sim_time=0.0,
         _step_count=0,
         _world=types.SimpleNamespace(step=world_step),
+        # A scene PhysX's tensor view still covers. ``step`` refuses a stale
+        # view before it takes a single tick, so a stub omitting this would
+        # never reach the batched loop whose lock schedule is the measurement.
+        _physics_view_stale=False,
         # Main-thread-affinity opt-out (#1896): these tests measure lock
         # scheduling, not kit-thread affinity, and the interleave case
         # deliberately drives ``step`` from a worker thread while a contender

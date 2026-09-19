@@ -53,8 +53,12 @@ from typing import Any
 import pytest
 
 from strands_robots.simulation.isaac.config import IsaacConfig
-from strands_robots.simulation.isaac.simulation import IsaacSimulation
+from strands_robots.simulation.isaac.simulation import IsaacSimulation, _RobotState
 from strands_robots.utils import positive_count_error
+
+# The ``cloner`` fixture comes from tests/simulation/isaac/conftest.py: replicate
+# now really clones, so every count that IS honored needs the cloner extension
+# present, and this suite runs where Isaac Sim is not installed.
 
 #: The configured default this scene carries, so a substituted count is
 #: distinguishable from any requested one.
@@ -98,7 +102,7 @@ def _stub(configured: int = _CONFIGURED) -> types.SimpleNamespace:
         _world_created=True,
         _world=None,
         _config=IsaacConfig(num_envs=configured),
-        _robots={"arm": object()},
+        _robots={"arm": _RobotState(name="arm", prim_path="/World/Robots/arm", joint_names=["j0"])},
         _objects={},
         _cameras={},
         _action_controllers={},
@@ -142,15 +146,30 @@ class TestACountThatCanBeHonoredIsAccepted:
         assert IsaacConfig(num_envs=count).num_envs == count
 
     @pytest.mark.parametrize("count", _ACCEPTED)
-    def test_the_request_is_honored_and_reported(self, count: int) -> None:
+    def test_the_request_is_honored_and_reported(self, count: int, cloner: Any) -> None:
+        """The count reaches the payload and the recorded active count.
+
+        ``replicate`` builds a real fleet now, so this needs the cloner
+        extension. What it grades is unchanged: the resolved count is what the
+        payload and ``_num_envs_active`` carry.
+        """
         stub = _stub()
 
         result = IsaacSimulation.replicate(stub, num_envs=count)  # type: ignore[arg-type]
 
-        assert result["status"] == "success"
+        assert result["status"] == "success", result
         assert result["content"][0]["json"]["num_envs"] == count
-        assert stub._num_envs_active == count
-        assert f"Replicated to {count} environments" in result["content"][0]["text"]
+        if count == 1:
+            # One environment is the scene already on the stage, so nothing is
+            # cloned and the sim is deliberately left un-replicated - setting
+            # the flag would refuse every later add_robot on the strength of a
+            # call that created nothing.
+            assert stub._num_envs_active == 1
+            assert stub._replicated is False
+            assert "nothing was cloned" in result["content"][0]["text"]
+        else:
+            assert stub._num_envs_active == count
+            assert f"Cloned the scene into {count} environments" in result["content"][0]["text"]
 
 
 class TestACountThatCannotBeHonoredIsRefusedByBothOwners:
@@ -192,19 +211,33 @@ class TestBothOwnersQuoteTheSharedDomain:
 class TestAnUnstatedCountStillTakesTheConfiguredOne:
     """``None`` is the one spelling of "not supplied", and it keeps its meaning."""
 
-    def test_it_replicates_to_the_configured_count(self) -> None:
+    def test_it_replicates_to_the_configured_count(self, cloner: Any) -> None:
         stub = _stub()
 
         result = IsaacSimulation.replicate(stub, num_envs=None)  # type: ignore[arg-type]
 
-        assert result["status"] == "success"
+        assert result["status"] == "success", result
         assert result["content"][0]["json"]["num_envs"] == _CONFIGURED
         assert stub._num_envs_active == _CONFIGURED
 
-    def test_the_default_is_reached_without_naming_the_argument(self) -> None:
+    def test_the_default_is_reached_without_naming_the_argument(self, cloner: Any) -> None:
         stub = _stub()
 
         assert IsaacSimulation.replicate(stub)["content"][0]["json"]["num_envs"] == _CONFIGURED  # type: ignore[arg-type]
+
+    def test_the_resolution_is_visible_even_with_no_cloner(self) -> None:
+        """The config default is resolved BEFORE the cloner is consulted.
+
+        Worth its own case because it needs no fake at all: the refusal names the
+        resolved count, so "None took the configured count" is observable on a
+        host with no Isaac Sim - which is where this suite usually runs.
+        """
+        stub = _stub()
+
+        result = IsaacSimulation.replicate(stub, num_envs=None)  # type: ignore[arg-type]
+
+        assert result["status"] == "error"
+        assert f"{_CONFIGURED} environments cannot be created" in result["content"][0]["text"]
 
 
 class TestASuppliedZeroIsNotReadAsUnstated:
@@ -234,15 +267,23 @@ class TestARefusedCountIsNotPartiallyApplied:
         assert stub._replicated is False
 
     def test_the_scene_is_not_locked_against_further_robots(self) -> None:
-        """``add_robot`` refuses once ``_replicated`` latches, so it must not latch."""
+        """``add_robot`` refuses once ``_replicated`` latches, so it must not latch.
+
+        Reached through ``usd_path=`` with the USD loader stood in. It used to go
+        through ``data_config="panda"``, which resolved a *procedural builder* -
+        a route since deleted for reporting success while creating no prims. What
+        is graded is unchanged: a refused ``replicate`` must leave the scene open
+        to further robots.
+        """
         stub = _stub()
+        stub._load_usd_robot = lambda prim_path, usd_path, position: (["j0"], None)
 
         IsaacSimulation.replicate(stub, num_envs=2.7)  # type: ignore[arg-type]
-        added = IsaacSimulation.add_robot(stub, "second", data_config="panda")  # type: ignore[arg-type]
+        added = IsaacSimulation.add_robot(stub, "second", usd_path="/assets/arm.usda")  # type: ignore[arg-type]
 
-        assert added["status"] == "success"
+        assert added["status"] == "success", added
 
-    def test_a_later_usable_request_still_replicates(self) -> None:
+    def test_a_later_usable_request_still_replicates(self, cloner: Any) -> None:
         stub = _stub()
 
         assert IsaacSimulation.replicate(stub, num_envs="4")["status"] == "error"  # type: ignore[arg-type]

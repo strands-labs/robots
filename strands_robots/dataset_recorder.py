@@ -1418,6 +1418,8 @@ class DatasetRecorder:
         image_writer_threads: int = 4,
         video_backend: str | None = None,
         camera_key_map: dict[str, str] | None = None,
+        joint_names: list[str] | None = None,
+        extra_state_specs: list[tuple[str, list[str]]] | None = None,
     ) -> "DatasetRecorder":
         """Resume recording into an EXISTING LeRobotDataset (append episodes).
 
@@ -1458,6 +1460,16 @@ class DatasetRecorder:
                 Encoder selection is controlled by ``vcodec`` (not this param).
             camera_key_map: Optional remap of observed camera stream names to
                 the declared schema names (see create()).
+            joint_names: The scalar state keys, in schema order - the same list
+                :meth:`create` recorded the dataset with. Only read alongside
+                ``extra_state_specs``.
+            extra_state_specs: The vector state sources the dataset was created
+                with, as ``(source_key, [components])``. Pass whatever was
+                passed to :meth:`create`: a resumed recorder inherits the
+                EXPANDED column names from disk but cannot recover the source
+                keys they were flattened from, and ``add_frame`` reads the
+                sources. Omitting them for a dataset that has vector columns
+                records zeros in every one of them, silently.
 
         Returns:
             A DatasetRecorder wrapping the resumed dataset.
@@ -1515,6 +1527,31 @@ class DatasetRecorder:
 
         dataset = LeRobotDatasetCls.resume(**resume_kwargs)
         recorder = cls(dataset=dataset, task=task, camera_key_map=camera_key_map)
+        # The same source-key knowledge :meth:`create` records, for the same
+        # reason - and it has to be passed in, because a resumed recorder cannot
+        # derive it from the dataset it opens.
+        #
+        # ``add_frame`` reads the SOURCE keys (``base_pos``) and flattens each
+        # into the expanded schema columns (``base_pos.x`` ...). Left unset, the
+        # fallback below it reads the EXPANDED names off the on-disk schema, and
+        # an observation carrying ``base_pos`` as a vector answers ``None`` to
+        # every one of them - so the zero-fill fires per component, per frame,
+        # and every appended episode records the base at the origin, at rest.
+        # The vector length still matches the schema and the backends' hooks
+        # pass ``required_action_keys``, which disables the missing-column
+        # refusal, so nothing raises and nothing logs: a resumed floating-base
+        # episode is silently unusable for the locomotion training it was
+        # recorded for. Measured before this line existed: an observation with
+        # ``base_pos=[1.0, 2.0, 9.0]`` recorded ``[0, 0, 0]`` on the append while
+        # the joint columns beside it recorded correctly, which is what kept it
+        # invisible.
+        #
+        # All three simulation backends pass ``extra_state_specs`` to
+        # :meth:`create` and call :meth:`resume`, so this belongs here rather
+        # than in any one of them.
+        if extra_state_specs:
+            scalar_source = list(joint_names) if joint_names else []
+            recorder._state_source_keys = scalar_source + [k for k, _ in extra_state_specs]
         # Seed counters from the existing dataset so reporting reflects totals.
         try:
             recorder.episode_count = int(dataset.meta.total_episodes)

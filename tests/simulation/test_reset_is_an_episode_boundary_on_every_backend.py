@@ -262,16 +262,56 @@ class TestTheRuleHasOneOwner:
         assert "is itself an episode boundary while recording" in doc
 
 
-class TestAPartialIsaacResetIsNotABoundary:
-    """A partial reset re-initializes some envs; one stream's rollout may not have ended."""
+class TestIsaacRefusesAResetItCannotPerform:
+    """Isaac's ``env_ids`` is refused, so there is no partial reset to except.
 
-    def test_env_ids_leaves_the_buffer_open(self) -> None:
+    This class replaces one that pinned the opposite - a partial reset leaving
+    the recording buffer open, on the stated grounds that whether the recorded
+    robot's rollout ended is not knowable from ``env_ids``. That reasoning was
+    sound about a partial reset and the backend never performed one:
+    ``world.reset()`` was called unconditionally and ``env_ids`` selected only
+    the message. So the premise was false, and the behaviour it justified was
+    the harmful half - the frames either side of a whole-world teleport were
+    concatenated into one open episode, putting a physically impossible
+    transition in a dataset with nothing raised. The conclusion does not survive
+    for another reason, which is why this is a replacement and not a rename.
+    """
+
+    def test_env_ids_is_refused(self) -> None:
+        engine, state, _ = _isaac_engine()
+
+        result = engine.reset(env_ids=[0])
+
+        assert result["status"] == "error", result
+        assert "env_ids is not supported" in result["content"][0]["text"]
+
+    def test_a_refused_reset_leaves_the_recording_untouched(self) -> None:
+        """Refused ahead of every side effect: no flush, and no discard either."""
         engine, state, _ = _isaac_engine()
         recorder = _FakeRecorder(pending=10)
         _recording(state, recorder)
 
         result = engine.reset(env_ids=[0])
 
-        assert result["status"] == "success", result
+        assert result["status"] == "error", result
         assert recorder.save_calls == 0
         assert recorder.episode_frame_count == 10
+
+    def test_an_empty_selection_is_refused_too(self) -> None:
+        """``[]`` is a selection that names nothing, not an absent one - the
+        subset-selector rule. Read by truthiness it would reach the whole-world
+        reset and be reported as the caller's own request."""
+        engine, state, _ = _isaac_engine()
+
+        assert engine.reset(env_ids=[])["status"] == "error"
+
+    def test_the_whole_world_reset_is_still_a_boundary(self) -> None:
+        """The control: removing the branch must not cost the flush."""
+        engine, state, _ = _isaac_engine()
+        recorder = _FakeRecorder(pending=10)
+        _recording(state, recorder)
+
+        result = engine.reset()
+
+        assert result["status"] == "success", result
+        assert recorder.save_calls == 1

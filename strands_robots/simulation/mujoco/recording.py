@@ -521,6 +521,8 @@ class RecordingMixin(DatasetRecordingMixin):
                     root=root,
                     task=task,
                     vcodec=vcodec,
+                    joint_names=joint_names,
+                    extra_state_specs=base_state_specs,
                 )
                 # resume() inherits the feature schema from disk; it does NOT
                 # check it against the CURRENT scene. Adding a robot or swapping

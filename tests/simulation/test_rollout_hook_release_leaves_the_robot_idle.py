@@ -44,6 +44,8 @@ neither optional physics stack is needed.
 
 from __future__ import annotations
 
+import ast
+import pathlib
 import sys
 import threading
 from collections.abc import Sequence
@@ -187,7 +189,7 @@ class TestIsaacFreesTheRobotItsRecordingHookClaimed:
     """Isaac: the flag its primitives and its busy guard refuse on comes down."""
 
     @staticmethod
-    def _engine() -> Any:
+    def _engine(names: tuple[str, ...] = ("so100",)) -> Any:
         from strands_robots.simulation.isaac.config import IsaacConfig
         from strands_robots.simulation.isaac.simulation import IsaacSimulation, _RobotState
 
@@ -203,13 +205,14 @@ class TestIsaacFreesTheRobotItsRecordingHookClaimed:
         engine._world = object()  # non-None Isaac World stand-in: "world created"
         engine._world_created = True
         engine._robots = {
-            "so100": _RobotState(
-                name="so100",
-                prim_path="/World/Robots/so100",
+            name: _RobotState(
+                name=name,
+                prim_path=f"/World/Robots/{name}",
                 joint_names=list(_SO100_JOINTS),
                 data_config="so100",
                 articulation=_Articulation(),
             )
+            for name in names
         }
         engine._cameras = {}
         engine._objects = {}
@@ -253,6 +256,43 @@ class TestIsaacFreesTheRobotItsRecordingHookClaimed:
         refusal = engine.stop_policy("so100")
         assert refusal["status"] == "error"
         assert "IsaacSimulation keeps no durable per-robot rollout claim" in refusal["content"][0]["text"]
+
+    def test_robot_name_none_releases_the_robot_the_rollout_resolved(self, monkeypatch):
+        """``None`` is the documented spelling for "the only robot", and it is that
+        robot the hook raised the flag on - so it is that robot the release must
+        reach. The facade resolves the name before it builds the hook, so both
+        halves of the seam are handed the same resolved name and the argument's
+        spelling cannot separate them."""
+        _stub_rollout(monkeypatch)
+        engine = self._engine()
+
+        assert engine.run_policy(None, n_steps=3)["status"] == "success"
+
+        assert engine._robots["so100"].policy_running is False
+
+    def test_a_sibling_robot_is_untouched(self, monkeypatch):
+        """Releasing every robot would clear a flag another rollout legitimately
+        holds. Only the robot this rollout drove comes down."""
+        _stub_rollout(monkeypatch)
+        engine = self._engine(("so100", "other"))
+        engine._robots["other"].policy_running = True
+
+        assert engine.run_policy("so100", n_steps=3)["status"] == "success"
+
+        assert engine._robots["so100"].policy_running is False
+        assert engine._robots["other"].policy_running is True
+
+    def test_an_unresolvable_name_is_refused_before_a_robot_is_claimed(self, monkeypatch):
+        """With two robots ``None`` names no rollout, and the facade refuses it
+        before it builds the hook - so the refusal costs no robot its idle state,
+        rather than needing a release to undo a claim that was made anyway."""
+        _stub_rollout(monkeypatch)
+        engine = self._engine(("so100", "other"))
+
+        with pytest.raises(ValueError, match="Multiple robots registered"):
+            engine.run_policy(None, n_steps=3)
+
+        assert all(robot.policy_running is False for robot in engine._robots.values())
 
 
 class TestNewtonDoesNotReportAHaltOnAnIdleSimulation:
@@ -311,3 +351,61 @@ class TestMuJoCoWasAlreadyCorrect:
             assert sim._world.robots["arm"].request_policy_stop() is False
         finally:
             sim.cleanup()
+
+
+class TestTheReleaseHasOneOwnerOnTheBackendsWithNoOverride:
+    """A second owner of the release is a duplicate, not a belt-and-braces.
+
+    Isaac and Newton reach the guarantee through the seam the facade calls; they
+    have no ``run_policy`` override, which is the whole reason
+    ``_release_run_policy_hook`` exists. A backend that *also* lowers the flag in
+    an override of its own would give one rollout two releases and one contract
+    two homes -- the shape ``main`` already carries an open process finding about
+    (two implementations of one fix, both merged), and the shape that reads as
+    harmless precisely because both halves work.
+
+    So the population is derived from the source rather than listed: every method
+    of the backend package that lowers the flag, and each expected member is named
+    with the reason it may.
+
+    MuJoCo is deliberately not pinned here. It is the reference column this
+    module's docstring describes -- it reaches the same guarantee through its own
+    ``run_policy`` override, and lowers the flag in four places (``_drive_rollout``,
+    ``run_multi_policy``, ``reset`` and ``cleanup``), so "one owner" is not the
+    invariant that holds for it.
+    """
+
+    @staticmethod
+    def _lowers_the_flag(package: str) -> set[str]:
+        """Every ``Class.method`` in *package* that assigns the flag ``False``."""
+        root = pathlib.Path(package.replace(".", "/"))
+        found: set[str] = set()
+        for module in sorted(root.glob("*.py")):
+            text = module.read_text()
+            for cls in (n for n in ast.walk(ast.parse(text)) if isinstance(n, ast.ClassDef)):
+                for member in cls.body:
+                    if isinstance(member, ast.FunctionDef | ast.AsyncFunctionDef):
+                        body = ast.get_source_segment(text, member) or ""
+                        if "policy_running = False" in body:
+                            found.add(f"{cls.name}.{member.name}")
+        return found
+
+    def test_isaac_lowers_the_flag_only_where_it_owns_the_loop(self) -> None:
+        assert self._lowers_the_flag("strands_robots/simulation/isaac") == {
+            # The facade's seam: the rollout ``SimEngine.run_policy`` drives.
+            "IsaacRecordingMixin._release_run_policy_hook",
+            # Its own loop, released in its own ``finally``.
+            "IsaacSimulation.run_multi_policy",
+            # The field's initial value, not a release.
+            "_RobotState.__init__",
+        }
+
+    def test_newton_lowers_the_flag_only_in_the_release(self) -> None:
+        assert self._lowers_the_flag("strands_robots/simulation/newton") == {
+            "NewtonRecordingMixin._release_run_policy_hook",
+        }
+
+    def test_the_scan_reaches_the_packages_it_grades(self) -> None:
+        """A scan pointed at the wrong tree finds nothing and reports it as clean."""
+        for package in ("strands_robots/simulation/isaac", "strands_robots/simulation/newton"):
+            assert self._lowers_the_flag(package), f"no flag assignment found under {package}"

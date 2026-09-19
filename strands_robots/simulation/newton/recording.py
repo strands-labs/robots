@@ -398,7 +398,14 @@ class NewtonRecordingMixin(DatasetRecordingMixin):
 
             if resume_existing:
                 logger.info("Resuming existing dataset for append: %s", dataset_dir)
-                resumed = _DatasetRecorder.resume(repo_id=repo_id, root=root, task=task, vcodec=vcodec)
+                resumed = _DatasetRecorder.resume(
+                    repo_id=repo_id,
+                    root=root,
+                    task=task,
+                    vcodec=vcodec,
+                    joint_names=joint_names,
+                    extra_state_specs=base_state_specs,
+                )
                 self._verify_resume_schema(resumed, state_names_full, camera_keys, camera_dims, fps=fps)
                 recorder = resumed
             else:

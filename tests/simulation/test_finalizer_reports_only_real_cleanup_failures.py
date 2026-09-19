@@ -297,14 +297,50 @@ class TestIsaacReprNeverHidesAFailure:
         assert "AttributeError" not in text
 
     def test_repr_still_describes_an_instance_that_has_its_state(self) -> None:
-        """The tolerance must not cost the informative form."""
+        """The tolerance must not cost the informative form.
+
+        The conclusion is unchanged; two of the values it reads are not. This used to
+        assert ``num_envs=4`` and ``device='cpu'`` straight off the config, and both
+        of those were the echo-the-request shape the device-reporting fix removed:
+
+        * ``num_envs`` now reports ``_num_envs_active``, the count ``replicate()``
+          actually built, because ``config.num_envs`` is that call's *default* and
+          "setting it alone creates nothing" - so an engine that has replicated
+          nothing reports 1, which is true, where 4 was a plan.
+        * ``device`` now reports what the physics context resolved, falling back to
+          the configured value only when there is no world to ask - which is this
+          case, so the configured value is still what appears here.
+
+        What this test is actually for - an instance carrying its state gets the
+        informative repr rather than the partial-construction one - is asserted
+        directly now, rather than inferred from one field's value.
+        """
         engine = IsaacSimulation.__new__(IsaacSimulation)
         engine._config = type("_Cfg", (), {"num_envs": 4, "device": "cpu", "headless": True})()
         engine._world_created = False
+        engine._num_envs_active = 4
+
         text = repr(engine)
+
+        assert "partially constructed" not in text, "an instance with its state took the fallback"
         assert "num_envs=4" in text
         assert "device='cpu'" in text
         assert "world=none" in text
+
+    def test_the_informative_form_survives_a_missing_active_env_count(self) -> None:
+        """``_num_envs_active`` is a class default, so reading it cannot force the
+        fallback. Without that default this method made the repr LESS tolerant than
+        the test above requires - a skeleton holding its config rendered as
+        "partially constructed", losing information exactly where a traceback needs
+        it."""
+        engine = IsaacSimulation.__new__(IsaacSimulation)
+        engine._config = type("_Cfg", (), {"num_envs": 4, "device": "cpu", "headless": True})()
+        engine._world_created = False
+
+        text = repr(engine)
+
+        assert "partially constructed" not in text
+        assert "num_envs=1" in text, "the class default is the honest answer when nothing replicated"
 
 
 # Structural parity: no backend ships without declaring construction complete.

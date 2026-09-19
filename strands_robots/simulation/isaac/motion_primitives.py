@@ -18,8 +18,10 @@ semantics").
 ``move_to`` reuses the shared damped-least-squares IK bridge
 (:class:`strands_robots.simulation.ik.MinkIKBridge`), which operates on the
 MuJoCo model of the robot: Isaac registry robots carry MJCF sources, so the
-kinematic model the solve runs on is resolved from the robot's
-``data_config``. The Isaac articulation's joint ordering/namespacing is
+kinematic model the solve runs on is the description the robot was BUILT
+from (the URDF ``add_robot`` imported, or the MJCF an imported USD was
+converted from - MuJoCo compiles both), falling back to the ``data_config``
+registry lookup only for a robot with no recorded description. The Isaac articulation's joint ordering/namespacing is
 reconciled with the MJCF-side solution through an explicit NAME-KEYED map
 (MJCF joint name -> articulation DOF index); a solved joint that cannot be
 mapped is a structured refusal, never a positional/flat-index write
@@ -56,7 +58,9 @@ stepping a torn-down stage.
 
 from __future__ import annotations
 
+import logging
 import math
+import os
 from typing import TYPE_CHECKING, Any
 
 import numpy as np
@@ -72,6 +76,8 @@ from strands_robots.simulation.motion_primitives_base import (
     _err,
     _quat_angle_error,
 )
+
+logger = logging.getLogger(__name__)
 
 
 class IsaacMotionPrimitivesMixin(MotionPrimitivesCore):
@@ -92,8 +98,13 @@ class IsaacMotionPrimitivesMixin(MotionPrimitivesCore):
         _sim_time: float
         _step_count: int
         _pump_running: bool
+        _physics_view_stale: bool
 
         def _on_main_thread(self) -> bool:
+            """Provided by ``IsaacSimulation``; declared here for type-checkers."""
+            raise NotImplementedError
+
+        def _reapply_wrenches(self) -> None:
             """Provided by ``IsaacSimulation``; declared here for type-checkers."""
             raise NotImplementedError
 
@@ -177,6 +188,25 @@ class IsaacMotionPrimitivesMixin(MotionPrimitivesCore):
                     "for the rollout to finish (Isaac policy loops clear the flag on exit)."
                 ),
             )
+        # A primitive drive loop advances ``_sim_time`` like ``step`` and
+        # ``send_action`` do - ``_primitive_tick``'s own comment says so - so it
+        # owes the same refusal when PhysX's tensor view no longer covers the
+        # scene. Without it the loop ticked a dead view and then blamed the
+        # SERVO: measured, ``rotate_wrist`` after a dynamic ``add_object``
+        # burned its 6 ticks and reported "residual 0.3000 rad", sending the
+        # caller after a tolerance or a gain for a joint that was never going to
+        # move. Refused here rather than in each of ``move_to`` /
+        # ``rotate_wrist`` / ``set_gripper``, because this is the preamble all
+        # three already share.
+        # Imported here rather than at module scope because ``simulation`` imports
+        # THIS module to build ``IsaacSimulation`` (line 45 there), so a top-level
+        # import is a cycle. The refusal has one owner regardless - copying the
+        # wording is what this avoids.
+        from strands_robots.simulation.isaac.simulation import _physics_view_stale_error
+
+        stale = _physics_view_stale_error(self, action)
+        if stale is not None:
+            return None, None, stale
         return robot_name, robot, None
 
     def _primitive_abort_reason(self, action: str, robot_name: str) -> dict[str, Any] | None:
@@ -197,6 +227,16 @@ class IsaacMotionPrimitivesMixin(MotionPrimitivesCore):
             return _err(f"{action}: robot '{robot_name}' was removed mid-run; aborting.")
         if robot.policy_running:
             return _err(f"{action}: a policy started on '{robot_name}' mid-run; aborting.")
+        # The same mid-run window this method exists for: the loop releases the
+        # lock between ticks, so a worker thread's dynamic add_object can
+        # invalidate the tensor view while the primitive is driving. Aborting
+        # names the view, where continuing would spend the remaining ticks on a
+        # scene PhysX no longer covers and then report a residual.
+        if self._physics_view_stale:
+            return _err(
+                f"{action}: a dynamic body was added or removed mid-run, so PhysX's tensor view "
+                "no longer covers the scene; aborting. Call reset() before retrying."
+            )
         return None
 
     def _run_primitive_on_kit(self, action: str, fn: Any) -> dict[str, Any]:
@@ -336,6 +376,13 @@ class IsaacMotionPrimitivesMixin(MotionPrimitivesCore):
         caller passes IS the physics-step budget. Renders when the config is
         not headless, matching ``send_action``.
         """
+        # Replay the latched wrench before advancing, as ``step`` and
+        # ``send_action`` do: PhysX's ``apply_force_at_pos`` acts for ONE tick and
+        # ``apply_force`` stores the latch without touching PhysX, so a tick that
+        # does not re-push it is a tick the force is absent from. A primitive drive
+        # loop advances ``_sim_time`` like any other.
+        if getattr(self, "_applied_wrenches", None):
+            self._reapply_wrenches()
         self._world.step(render=self._config.render_mode != "headless")
         self._sim_time += self._config.physics_dt
         self._step_count += 1
@@ -428,37 +475,77 @@ class IsaacMotionPrimitivesMixin(MotionPrimitivesCore):
         """Compile the MuJoCo model the IK solve runs on: ``(mujoco, model, None)`` or an error.
 
         The shared IK bridge (:class:`strands_robots.simulation.ik.MinkIKBridge`)
-        operates on a compiled ``mujoco.MjModel``; Isaac registry robots carry
-        MJCF sources, so the kinematic model is resolved from the robot's
-        ``data_config`` through the same
+        operates on a compiled ``mujoco.MjModel``. The model compiled is, in
+        order of preference: the robot's own recorded ``description_path`` (the
+        URDF ``add_robot`` imported, or the MJCF an imported USD was converted
+        from - the file that IS simulating, so the kinematics cannot diverge
+        from the stage), else the robot's ``data_config`` through the same
         :func:`~strands_robots.simulation.model_registry.resolve_model` lookup
         the MuJoCo backend's ``add_robot`` uses (this module's ``resolve_model``
-        global is the patch point for tests). Every failure - no
-        ``data_config``, nothing resolves, ``mujoco`` not importable, the file
-        does not compile - is a structured error naming the remedy, never a
-        raise or a silent identity model.
+        global is the patch point for tests). When both exist and resolve to
+        different files, the description wins and the divergence is logged at
+        WARNING, because the convergence check runs by FK on the IK model
+        itself - a divergent registry model would confirm a pose the stage
+        end-effector does not hold. Every failure - no source of any kind,
+        nothing resolves, ``mujoco`` not importable, the file does not compile
+        - is a structured error naming the remedy, never a raise or a silent
+        identity model.
         """
+        # The robot's OWN description wins over a registry lookup, because the
+        # IK model must be the kinematics that are simulating. ``add_robot``
+        # records the MuJoCo-compilable file the articulation was built from -
+        # the URDF it imported, or the MJCF an imported USD was converted from
+        # (MuJoCo compiles both) - and solving on anything else is solving on a
+        # guess: the registry model a ``data_config`` names can differ from the
+        # loaded asset while sharing every joint name, and the convergence
+        # check runs by FK on the IK model itself, so a divergent model
+        # CONFIRMS a pose the stage end-effector does not hold. ``getattr``
+        # because two dozen test skeletons build ``_RobotState`` by hand.
+        description = getattr(robot, "description_path", None)
         data_config = getattr(robot, "data_config", None)
-        if not data_config:
+        if description:
+            path = description
+            if data_config:
+                # Both present: the description still wins, and a divergence is
+                # worth a warning because the caller may believe the registry
+                # model is what solves. Same-file is the common case (the name
+                # path resolves the registry file and records it as the
+                # description), so compare real paths before speaking.
+                registry_path = resolve_model(data_config)
+                if registry_path is not None and os.path.realpath(registry_path) != os.path.realpath(path):
+                    logger.warning(
+                        "move_to: robot '%s' was built from %s but its data_config '%s' resolves "
+                        "to %s. The IK solve runs on the loaded description (the file that is "
+                        "simulating); the registry model is ignored.",
+                        robot.name,
+                        path,
+                        data_config,
+                        registry_path,
+                    )
+        elif data_config:
+            path = resolve_model(data_config)
+            if path is None:
+                return (
+                    None,
+                    None,
+                    _err(
+                        f"move_to: no MJCF/URDF model resolves for data_config '{data_config}', so "
+                        "there is no kinematic model for the IK solve. Register one "
+                        "(strands_robots.simulation.model_registry.register_urdf), or drive the "
+                        "joints directly with action='send_action'."
+                    ),
+                )
+        else:
             return (
                 None,
                 None,
                 _err(
-                    f"move_to: robot '{robot.name}' has no data_config, so the registry MJCF the "
-                    "IK solve runs on cannot be resolved. Re-add the robot with data_config=..., "
-                    "or drive the joints directly with action='send_action'."
-                ),
-            )
-        path = resolve_model(data_config)
-        if path is None:
-            return (
-                None,
-                None,
-                _err(
-                    f"move_to: no MJCF/URDF model resolves for data_config '{data_config}', so "
-                    "there is no kinematic model for the IK solve. Register one "
-                    "(strands_robots.simulation.model_registry.register_urdf), or drive the "
-                    "joints directly with action='send_action'."
+                    f"move_to: robot '{robot.name}' carries no MuJoCo-compilable description "
+                    "(it was loaded from a plain USD, which MuJoCo cannot compile) and no "
+                    "data_config, so the model the IK solve runs on cannot be resolved. "
+                    "Re-add the robot from its URDF or MJCF (urdf_path=/mjcf_path=), pass "
+                    "data_config=<registry model>, or drive the joints directly with "
+                    "action='send_action'."
                 ),
             )
         try:

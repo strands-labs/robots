@@ -525,13 +525,28 @@ class TestIsaacAddRobot:
         assert result["status"] == "error"
         assert "not applied on the Isaac" in result["content"][0]["text"]
 
-    def test_a_numpy_position_and_identity_quaternion_still_spawn(self):
+    def test_a_numpy_position_and_identity_quaternion_clear_the_pose_guards(self):
+        """A usable pose is not what stops this call, which is all this grades.
+
+        It used to assert ``status == "success"``, which worked only because the
+        call reached a "procedural" branch that created nothing at all. That
+        branch now resolves and imports a real description, so on a host with no
+        Isaac Sim the call correctly fails at the import instead - and asserting
+        success here would be asserting that the fiction is still there.
+
+        So this pins what the pose domain actually owns: neither guard fires. The
+        same shape as ``test_z_aligned_vector_passes_validation`` in
+        ``tests/simulation/isaac/test_backend_parity.py``, which reads a
+        downstream Isaac failure as proof that validation was cleared.
+        """
         stub = _isaac_stub()
         result = IsaacSimulation.add_robot(
             stub, "arm", data_config="panda", position=np.array([0.4, 0.2, 0.0]), orientation=GOOD_ORIENTATION
         )
-        assert result["status"] == "success", result
-        assert list(stub._robots) == ["arm"]
+        text = result["content"][0]["text"]
+        assert "'position'" not in text
+        assert "'orientation'" not in text
+        assert "not applied on the Isaac" not in text
 
 
 class TestIsaacMoveObject:

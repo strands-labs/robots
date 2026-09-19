@@ -72,7 +72,7 @@ import types
 import pytest
 
 from strands_robots.simulation.base import SimEngine
-from strands_robots.simulation.isaac.simulation import IsaacConfig, IsaacSimulation
+from strands_robots.simulation.isaac.simulation import IsaacConfig, IsaacSimulation, _RobotState
 from strands_robots.simulation.newton.simulation import NewtonSimEngine
 from strands_robots.utils import FREE_CAMERA_TOKENS, entity_name_error
 
@@ -477,18 +477,19 @@ class TestIsaacRefusesTheSameNames:
         assert result["status"] == "error"
         assert "'name'" not in result["content"][0]["text"]
 
-    def test_an_addressable_robot_name_reaches_the_procedural_lookup(self):
-        """An addressable name still resolves a procedural robot and registers it.
+    def test_an_addressable_robot_name_is_not_what_stops_the_call(self):
+        """The positive half: the guard refuses exactly the unaddressable names.
 
-        The procedural branch needs no Isaac Sim, so this is the positive half of
-        the contract: the guard rejects exactly the unaddressable names and
-        nothing else.
+        It used to assert ``status == "success"`` and a registered robot, which
+        held only because the call reached a "procedural" branch that created
+        nothing. That branch now resolves and imports a real description, so on a
+        host with no Isaac Sim the call fails at the import - which is past this
+        guard, and past it is all this cell is about. Asserting success again
+        would be asserting the fiction back into existence.
         """
         stub = _isaac_stub()
         result = IsaacSimulation.add_robot(stub, "arm", data_config="panda")  # type: ignore[arg-type]
-        assert result["status"] == "success", result
-        assert list(stub._robots) == ["arm"]
-        assert stub._prim_registry == ["/World/Robots/arm"]
+        assert "'name'" not in result["content"][0]["text"]
 
     def test_a_refused_empty_name_never_reaches_the_prune(self):
         """Regression for the corruption an empty name used to cause.
@@ -506,12 +507,16 @@ class TestIsaacRefusesTheSameNames:
         ``tests/simulation/isaac/test_removing_a_robot_prunes_at_the_prim_path_boundary.py``,
         where a name that DOES extend another exercises the same rule.
         """
+        # The two survivors are registered directly. Going through ``add_robot``
+        # needed a real asset and a live stage once the "procedural" branch was
+        # replaced by real resolution, and neither is anything a prune reads: the
+        # registries below are its whole input.
         stub = _isaac_stub()
         for label in ("arm", "helper"):
-            assert (
-                IsaacSimulation.add_robot(stub, label, data_config="panda")["status"]  # type: ignore[arg-type]
-                == "success"
-            )
+            prim_path = f"/World/Robots/{label}"
+            stub._robots[label] = _RobotState(name=label, prim_path=prim_path, joint_names=[])
+            stub._prim_registry.append(prim_path)
+
         assert IsaacSimulation.add_robot(stub, "", data_config="panda")["status"] == "error"  # type: ignore[arg-type]
 
         stub._action_controllers = {}
