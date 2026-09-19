@@ -107,6 +107,25 @@ _DEFAULT_INTERRUPT_ACTIONS: frozenset[str] = frozenset({"emergency_stop", "broad
 #: set, and a third fleet-wide action cannot be added to one and not the other.
 _FLEET_WIDE_ACTIONS: frozenset[str] = frozenset({"emergency_stop", "broadcast"})
 
+#: Every action the tool answers, in the order the docstring lists them. The
+#: name is graded against this tuple before any other step, so a typo is refused
+#: by name rather than by whatever gate it reaches first - in a robot-less
+#: process that gate was the gateway bring-up and "no local mesh found".
+_ACTIONS: tuple[str, ...] = (
+    "peers",
+    "status",
+    "tell",
+    "send",
+    "rpc",
+    "broadcast",
+    "stop",
+    "emergency_stop",
+    "subscribe",
+    "unsubscribe",
+    "watch",
+    "inbox",
+)
+
 
 # Sentinel raised by the resolver when the env var holds an unknown token.
 # Surfaced as a structured tool error so a typo fails loud rather than
@@ -1327,6 +1346,15 @@ def robot_mesh(
         * Every ``tell`` / ``send`` / ``broadcast`` / ``stop`` /
           ``emergency_stop`` / ``rpc`` is audited.
     """
+    # Grade the action name before anything else. Below this point the tool
+    # records a rate-limit slot, probes Device Connect and brings up a gateway
+    # mesh (one heartbeat wait) for whatever name it was handed, and an
+    # unknown one then fell through every dispatch branch to be answered by
+    # "no local mesh found" - a remedy for a different problem.
+    if action not in _ACTIONS:
+        _audit_tool_action(action, target, False, "unknown action")
+        return _err(f"unknown action: {action!r}. Valid: {', '.join(_ACTIONS)}.")
+
     # Resolve which actions require a human-in-the-loop interrupt for THIS
     # call. Consumers configure the set via STRANDS_MESH_HITL_ACTIONS; the
     # default gates every physical-actuation action (emergency_stop,
@@ -1838,17 +1866,13 @@ def robot_mesh(
         _audit_tool_action(action, sub_name, True, "")
         return _ok(f"[unsub] unsubscribed from '{sub_name}'")
 
-    if action == "rpc":
-        return _err(
-            "rpc (device-native function call) requires Device Connect, which is "
-            "unavailable or has discovered no devices in this context. The built-in "
-            "Zenoh mesh has no equivalent. Ensure the agent connected via "
-            "device_connect_agent_tools.connect() and the target is online."
-        )
-
+    # ── action: rpc ───────────────────────────────────────────────────────
+    # The one member of _ACTIONS the branches above do not answer.
     return _err(
-        f"unknown action: {action!r}. Valid: peers, status, tell, send, rpc, "
-        "broadcast, stop, emergency_stop, subscribe, unsubscribe, watch, inbox."
+        "rpc (device-native function call) requires Device Connect, which is "
+        "unavailable or has discovered no devices in this context. The built-in "
+        "Zenoh mesh has no equivalent. Ensure the agent connected via "
+        "device_connect_agent_tools.connect() and the target is online."
     )
 
 
