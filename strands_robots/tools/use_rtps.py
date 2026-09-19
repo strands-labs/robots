@@ -58,6 +58,10 @@ from strands_robots._command_gate import gate_command
 from strands_robots.rtps.participant import GATE_TOOL, _err, never_gated, rtps_action
 from strands_robots.tools._numeric_options import numeric_option_error
 
+# Every verb this tool answers. Graded first, so a misspelled action is named
+# before the participant's backend probe answers it with an install recipe.
+_ACTIONS: tuple[str, ...] = ("status", "types", "advertise", "publish", "subscribe", "echo")
+
 # Which numeric options each action actually consumes. ``status``, ``types``,
 # ``advertise`` and ``subscribe`` read none of them, so the guard below is driven
 # by this table rather than validating the whole signature unconditionally - a
@@ -103,6 +107,9 @@ def use_rtps(
     Returns:
         A Strands tool result dict ``{"status": ..., "content": [{"text": ...}]}``.
     """
+    if action not in _ACTIONS:
+        return _err(f"unknown action: {action!r}. Valid: {', '.join(_ACTIONS)}")
+
     # Numeric options are checked here, ahead of the participant's backend probe,
     # so the same caller mistake is reported identically whether or not
     # cyclonedds is installed - and so a refusal happens before a writer joins
@@ -114,8 +121,7 @@ def use_rtps(
 
     # Each verb forwards the options it reads and no others, and only ``publish``
     # is handed a gate that can reach an operator: the read paths cannot prompt
-    # at all, rather than being trusted not to. An action outside this vocabulary
-    # falls through to the participant, which names it in its refusal.
+    # at all, rather than being trusted not to.
     if action == "publish":
         return rtps_action(
             action=action,
@@ -130,9 +136,7 @@ def use_rtps(
         return rtps_action(action=action, topic=topic, type=type, count=count, timeout=timeout, gate=never_gated)
     if action == "advertise":
         return rtps_action(action=action, topic=topic, type=type, gate=never_gated)
-    if action in ("status", "types"):
-        return rtps_action(action=action, gate=never_gated)
-    return rtps_action(action=action, topic=topic, type=type, gate=never_gated)
+    return rtps_action(action=action, gate=never_gated)
 
 
 __all__ = ["use_rtps"]

@@ -228,6 +228,23 @@ def test_unknown_action_errors(monkeypatch: pytest.MonkeyPatch) -> None:
     assert "unknown action" in _texts(result)
 
 
+def test_unknown_action_is_named_before_the_backend_probe(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A typo'd verb is refused by name on a box without cyclonedds, not answered by the install recipe."""
+    monkeypatch.setattr(participant_mod._backend, "available", lambda: False)
+    forwarded: list[str] = []
+
+    def _participant(action: str, **_: Any) -> dict[str, Any]:
+        forwarded.append(action)
+        return {"status": "error", "content": [{"text": "participant reached"}]}
+
+    monkeypatch.setattr(rtps_mod, "rtps_action", _participant)
+    result = use_rtps(action="pubilsh")
+    assert result["status"] == "error"
+    assert "pubilsh" in _texts(result)
+    assert "publish" in _texts(result) and "cyclonedds" not in _texts(result)
+    assert forwarded == []
+
+
 # subscribe / echo (the read-side participant path) -------------------------
 
 
