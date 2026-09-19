@@ -83,6 +83,13 @@ CAMERA_VIEWS: tuple[str, ...] = ("front", "rear")
 #: minute blind.
 MAX_MOVE_DURATION_S: float = 30.0
 
+#: How often a timed :meth:`EarthRoverDriver.move` re-sends its twist while it
+#: holds. The SDK's dead-man watchdog (``CONTROL_WATCHDOG_S``, default 3 s)
+#: stops the rover once no fresh command has been confirmed for that long, so a
+#: twist sent once and left alone drives for 3 s however long the hold is; the
+#: SDK README asks moving clients to stream at about 10 Hz.
+MOVE_REFRESH_PERIOD_S: float = 0.1
+
 #: The latitude the SDK reports when the rover has no GPS fix. It is a real
 #: number on the wire, so a summary that printed it would read as a position
 #: off the coast of Antarctica rather than as no fix.
@@ -760,9 +767,12 @@ class EarthRoverDriver:
         """Command a twist by axis, optionally held for a bounded time then stopped.
 
         With ``duration_s`` unset this is sugar over :meth:`send_action`: one
-        twist goes out and the rover keeps rolling until the next command, which
-        is the SDK's own contract. With it set the twist is held for that long
-        and a zero twist follows, and the answer reports **both** halves - a
+        twist goes out and the rover keeps rolling until the next command or
+        until the SDK's dead-man watchdog stops it, which is the SDK's own
+        contract. With it set the twist is re-sent every
+        :data:`MOVE_REFRESH_PERIOD_S` for that long, so the watchdog never
+        fires mid-hold, and a zero twist follows; the answer reports **both**
+        halves - a
         move whose trailing stop did not reach the SDK is not a completed move,
         because the rover is still rolling, so that outcome is an error naming
         the stop.
@@ -791,7 +801,13 @@ class EarthRoverDriver:
         moved = self.send_action({"linear": linear, "angular": angular})
         if duration_s is None or moved["status"] != "success":
             return moved
-        time.sleep(float(duration_s))
+        deadline = time.monotonic() + float(duration_s)
+        while (remaining := deadline - time.monotonic()) > 0:
+            time.sleep(min(MOVE_REFRESH_PERIOD_S, remaining))
+            if remaining <= MOVE_REFRESH_PERIOD_S:
+                break
+            if self.send_action({"linear": linear, "angular": angular})["status"] != "success":
+                break
         stopped = self.stop_task()
         outcome = {
             "commanded": moved["content"][0]["json"].get("commanded"),
