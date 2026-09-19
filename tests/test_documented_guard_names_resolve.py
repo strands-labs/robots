@@ -38,6 +38,7 @@ appears.
 from __future__ import annotations
 
 import ast
+import functools
 import re
 from pathlib import Path
 
@@ -76,22 +77,31 @@ def _iter_files(suffixes: frozenset[str]) -> list[Path]:
     return files
 
 
-def _public_utils_guards() -> list[str]:
+@functools.cache
+def _public_utils_guards() -> tuple[str, ...]:
     """Every public callable ``utils.py`` defines, derived from its AST."""
     tree = ast.parse((REPO_ROOT / "strands_robots" / "utils.py").read_text(encoding="utf-8"))
-    return sorted(
-        node.name
-        for node in tree.body
-        if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef) and not node.name.startswith("_")
+    return tuple(
+        sorted(
+            node.name
+            for node in tree.body
+            if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef) and not node.name.startswith("_")
+        )
     )
 
 
-def _defined_names() -> set[str]:
+@functools.cache
+def _defined_names() -> frozenset[str]:
     """Every name bound at any scope across the tree's Python sources.
 
     Deliberately generous: an import alias, a class attribute and a nested
     function all count. A name that is bound *anywhere* is a name a reader can
     find, which is the property this sweep is about.
+
+    Cached because the tree does not change during a session and seven cells
+    ask the same question of it: the walk parses every Python file under the
+    definition directories, and what is kept is the set of names, not the
+    parsed trees.
     """
     names: set[str] = set()
     for path in _iter_files(frozenset({".py"})):
@@ -115,10 +125,10 @@ def _defined_names() -> set[str]:
             elif isinstance(node, ast.ImportFrom):
                 for alias in node.names:
                     names.add(alias.asname or alias.name)
-    return names
+    return frozenset(names)
 
 
-def _unresolvable_private_spellings(guards: list[str], defined: set[str]) -> list[str]:
+def _unresolvable_private_spellings(guards: tuple[str, ...], defined: frozenset[str]) -> list[str]:
     """Underscored spellings of public guards that resolve to nothing."""
     return [f"_{guard}" for guard in guards if f"_{guard}" not in defined]
 

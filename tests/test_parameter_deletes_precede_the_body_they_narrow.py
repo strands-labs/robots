@@ -42,6 +42,7 @@ here, so the rule is graded rather than merely satisfied.
 from __future__ import annotations
 
 import ast
+import functools
 from pathlib import Path
 from typing import NamedTuple
 
@@ -147,8 +148,12 @@ def _scanned_areas() -> tuple[str, ...]:
     return tuple(areas)
 
 
-def _scan_tree() -> list[ParameterDelete]:
+@functools.cache
+def _scan_tree() -> tuple[ParameterDelete, ...]:
     """Return every parameter ``del`` in the repository.
+
+    Cached: the tree does not change during a session, and both cells that
+    read it want the same walk.
 
     Returns:
         One entry per qualifying statement across :func:`_scanned_areas`.
@@ -164,7 +169,7 @@ def _scan_tree() -> list[ParameterDelete]:
                 found.extend(parameter_deletes(source, str(module.relative_to(_REPO_ROOT))))
             except SyntaxError:  # pragma: no cover - a fixture of deliberately bad source
                 continue
-    return found
+    return tuple(found)
 
 
 class TestNoParameterDeleteIsTerminal:

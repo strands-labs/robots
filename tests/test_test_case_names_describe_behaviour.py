@@ -34,8 +34,10 @@ release.
 from __future__ import annotations
 
 import ast
+import functools
 import pathlib
 import re
+from collections.abc import Sequence
 
 import pytest
 
@@ -54,8 +56,13 @@ _REVIEW_ROUND_TOKEN = re.compile(r"[Ff]ollowups?")
 _MINIMUM_SCANNED_NAMES = 15_000
 
 
-def _test_case_names() -> list[tuple[pathlib.Path, int, str]]:
-    """Every ``class Test*`` and ``def test_*`` name in both test trees."""
+@functools.cache
+def _test_case_names() -> tuple[tuple[pathlib.Path, int, str], ...]:
+    """Every ``class Test*`` and ``def test_*`` name in both test trees.
+
+    Cached: the tree does not change during a session, and both cells that
+    read it want the same walk.
+    """
     found: list[tuple[pathlib.Path, int, str]] = []
     for tree in _TEST_TREES:
         for path in sorted((_REPO_ROOT / tree).rglob("*.py")):
@@ -68,10 +75,10 @@ def _test_case_names() -> list[tuple[pathlib.Path, int, str]]:
                     found.append((path, node.lineno, node.name))
                 elif isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef) and node.name.startswith("test_"):
                     found.append((path, node.lineno, node.name))
-    return found
+    return tuple(found)
 
 
-def _provenance_named(names: list[tuple[pathlib.Path, int, str]]) -> list[str]:
+def _provenance_named(names: Sequence[tuple[pathlib.Path, int, str]]) -> list[str]:
     """The offending names, formatted with the token that disqualified each."""
     offenders: list[str] = []
     for path, lineno, name in names:

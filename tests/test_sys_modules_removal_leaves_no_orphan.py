@@ -149,8 +149,10 @@ never restores the entry, so both halves agree on the fresh module.
 from __future__ import annotations
 
 import ast
+import functools
 import sys
 from collections.abc import Iterator, Sequence
+from dataclasses import dataclass
 from pathlib import Path
 
 import pytest
@@ -210,6 +212,44 @@ def _parse(path: Path) -> ast.Module | None:
         return None
 
 
+@dataclass(frozen=True)
+class _Reading:
+    """What the three rules read off one graded file."""
+
+    rel: str
+    patched: frozenset[str]
+    removals: tuple[tuple[int, str, str], ...]
+    reimports: tuple[tuple[int, str, str, bool], ...]
+    prefix_purges: tuple[tuple[int, str, str], ...]
+
+
+@functools.cache
+def _readings() -> tuple[_Reading, ...]:
+    """Every graded file, parsed once and read by all three rules.
+
+    The tree does not change during a session, so parsing it is paid once here
+    rather than once per rule and again per cell that asks for the protected
+    set - nine walks of both test trees before, one now. What is held per file
+    is the four small tuples the rules read, never the parsed tree, so the
+    cache costs the result set and not the trees.
+    """
+    readings: list[_Reading] = []
+    for path in _graded_files():
+        tree = _parse(path)
+        if tree is None:
+            continue
+        readings.append(
+            _Reading(
+                rel=path.relative_to(_REPO_ROOT).as_posix(),
+                patched=frozenset(_patched_module_level_imports(tree)),
+                removals=tuple(unrestored_removals(tree)),
+                reimports=tuple(reimporting_cells(tree)),
+                prefix_purges=tuple(unrestored_prefix_purges(tree)),
+            )
+        )
+    return tuple(readings)
+
+
 def _patched_module_level_imports(tree: ast.Module) -> set[str]:
     """Dotted names this module binds at import time and patches attributes on."""
     bindings = _module_level_bindings(tree)
@@ -234,13 +274,9 @@ def _patched_module_level_imports(tree: ast.Module) -> set[str]:
 def protected_modules() -> dict[str, set[str]]:
     """Modules whose identity a removal can orphan, and the files that patch them."""
     protected: dict[str, set[str]] = {}
-    for path in _graded_files():
-        tree = _parse(path)
-        if tree is None:
-            continue
-        rel = path.relative_to(_REPO_ROOT).as_posix()
-        for dotted in _patched_module_level_imports(tree):
-            protected.setdefault(dotted, set()).add(rel)
+    for reading in _readings():
+        for dotted in reading.patched:
+            protected.setdefault(dotted, set()).add(reading.rel)
     return protected
 
 
@@ -383,15 +419,13 @@ def orphaning_removals() -> list[str]:
     """Every removal of a protected module the removing function does not undo."""
     protected = protected_modules()
     offenders: list[str] = []
-    for path in _graded_files():
-        tree = _parse(path)
-        if tree is None:
-            continue
-        rel = path.relative_to(_REPO_ROOT).as_posix()
-        for lineno, function, key in unrestored_removals(tree):
+    for reading in _readings():
+        for lineno, function, key in reading.removals:
             if key in protected:
                 holders = ", ".join(sorted(protected[key]))
-                offenders.append(f"{rel}:{lineno} in {function}() removes {key!r}, which is patched by {holders}")
+                offenders.append(
+                    f"{reading.rel}:{lineno} in {function}() removes {key!r}, which is patched by {holders}"
+                )
     return offenders
 
 
@@ -859,16 +893,12 @@ def reimporting_cells(tree: ast.Module) -> list[tuple[int, str, str, bool]]:
 def splitting_reimports() -> list[str]:
     """Every cell that re-imports a module and leaves the parent binding split."""
     offenders: list[str] = []
-    for path in _graded_files():
-        tree = _parse(path)
-        if tree is None:
-            continue
-        rel = path.relative_to(_REPO_ROOT).as_posix()
-        for lineno, function, key, restored in reimporting_cells(tree):
+    for reading in _readings():
+        for lineno, function, key, restored in reading.reimports:
             if not restored:
                 parent, _, leaf = key.rpartition(".")
                 offenders.append(
-                    f"{rel}:{lineno} in {function}() re-imports {key!r} without restoring {leaf!r} on {parent}"
+                    f"{reading.rel}:{lineno} in {function}() re-imports {key!r} without restoring {leaf!r} on {parent}"
                 )
     return offenders
 
@@ -889,12 +919,7 @@ class TestAReimportPutsTheParentBindingBack:
 
     def test_the_reimporting_cells_are_found(self) -> None:
         """So a clean result means the scan looked, rather than found nothing to look at."""
-        found = {
-            (path.relative_to(_REPO_ROOT).as_posix(), key)
-            for path in _graded_files()
-            if (tree := _parse(path)) is not None
-            for _, _, key, _ in reimporting_cells(tree)
-        }
+        found = {(reading.rel, key) for reading in _readings() for _, _, key, _ in reading.reimports}
         assert len(found) >= _MINIMUM_REIMPORTS, (
             f"only {len(found)} re-importing cells read as in scope; the scan is no "
             f"longer reaching {_TEST_TREES} under {_REPO_ROOT}: {sorted(found)}"
@@ -1096,15 +1121,11 @@ def orphaning_prefix_purges() -> list[str]:
     """Every unrestored prefix purge that reaches a module a sibling patches."""
     protected = protected_modules()
     offenders: list[str] = []
-    for path in _graded_files():
-        tree = _parse(path)
-        if tree is None:
-            continue
-        rel = path.relative_to(_REPO_ROOT).as_posix()
-        for lineno, function, prefix in unrestored_prefix_purges(tree):
+    for reading in _readings():
+        for lineno, function, prefix in reading.prefix_purges:
             for name, holders in sorted(_protected_under(prefix, protected).items()):
                 offenders.append(
-                    f"{rel}:{lineno} in {function}() purges {prefix!r}*, which takes "
+                    f"{reading.rel}:{lineno} in {function}() purges {prefix!r}*, which takes "
                     f"{name!r} - patched by {', '.join(sorted(holders))}"
                 )
     return offenders
