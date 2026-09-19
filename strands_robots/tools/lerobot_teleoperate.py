@@ -988,7 +988,7 @@ def lerobot_teleoperate(
         by ``auto_accept_calibration`` below.
 
     Args:
-        action: Action to perform (start, stop, list, status, replay)
+        action: Action to perform (start, stop, list, status, replay, dagger)
         session_name: Session identifier (auto-generated for start, required for stop/status)
         background: Run session in background with logging (default: True).
             Must be a boolean: it selects an execution posture rather than

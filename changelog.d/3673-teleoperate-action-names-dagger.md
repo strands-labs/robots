@@ -1,0 +1,1 @@
+### Fixed: `lerobot_teleoperate`'s `action` parameter description named five verbs while the tool dispatched six, so an agent reading the tool spec could never discover `dagger`, the only route to a lerobot-rollout DAgger session from this tool. The description now lists every dispatched verb, and a test keeps the two in step.
