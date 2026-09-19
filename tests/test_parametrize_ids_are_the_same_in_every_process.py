@@ -80,21 +80,44 @@ def _dotted_tail(node: ast.expr) -> str:
     return ""
 
 
-def _lambda_renders_the_value(node: ast.Lambda) -> bool:
-    """Whether an ``ids=`` lambda puts the value's own rendering in the ID.
+def _renders_one_of(names: set[str], body: ast.expr) -> bool:
+    """Whether ``body`` puts the rendering of a value bound to one of ``names`` in the ID.
 
-    ``lambda v: type(v).__name__`` - the spelling two suites already use for a
-    table of stand-in objects - is stable; ``lambda v: repr(v)`` is not.
+    ``type(v).__name__`` - the spelling two suites already use for a table of
+    stand-in objects - is stable; ``repr(v)``, ``str(v)``, ``f"{v}"`` and a bare
+    ``v`` are not, and slicing the text (``repr(v)[:24]``) does not make them so:
+    ``<object object at 0x7f5c`` is 24 characters, so the truncation keeps
+    exactly the address prefix that differs between two processes.
     """
-    names = {argument.arg for argument in node.args.args}
-    if isinstance(node.body, ast.Name) and node.body.id in names:
+    if isinstance(body, ast.Name) and body.id in names:
         return True
-    for inner in ast.walk(node.body):
+    for inner in ast.walk(body):
         if isinstance(inner, ast.Call) and _dotted_tail(inner.func) in _REPR_IDS:
             return True
         if isinstance(inner, ast.FormattedValue) and isinstance(inner.value, ast.Name) and inner.value.id in names:
             return True
     return False
+
+
+def _lambda_renders_the_value(node: ast.Lambda) -> bool:
+    """Whether an ``ids=`` lambda puts the value's own rendering in the ID."""
+    return _renders_one_of({argument.arg for argument in node.args.args}, node.body)
+
+
+def _comprehension_renders_the_values(node: ast.ListComp) -> bool:
+    """Whether an ``ids=[... for v in table]`` list renders the rows it walks.
+
+    A comprehension is a lambda spelled inline: the element expression plays
+    the body and the ``for`` targets play the parameters. It is graded the same
+    way, because the ID it produces is the same string.
+    """
+    names = {
+        target.id
+        for generator in node.generators
+        for target in ast.walk(generator.target)
+        if isinstance(target, ast.Name)
+    }
+    return _renders_one_of(names, node.elt)
 
 
 def _ids_render_the_values(keywords: list[ast.keyword]) -> bool:
@@ -103,6 +126,8 @@ def _ids_render_the_values(keywords: list[ast.keyword]) -> bool:
         if keyword.arg == "ids":
             if isinstance(keyword.value, ast.Lambda):
                 return _lambda_renders_the_value(keyword.value)
+            if isinstance(keyword.value, ast.ListComp):
+                return _comprehension_renders_the_values(keyword.value)
             return _dotted_tail(keyword.value) in _REPR_IDS
     return False
 
@@ -199,8 +224,25 @@ def test_no_parametrize_table_is_built_from_the_clock_or_an_address() -> None:
             '@pytest.mark.parametrize("v", [memoryview(b"ab")], ids=lambda v: repr(v))\ndef test_x(v): pass\n',
             "memoryview() labelled by its repr",
         ),
+        (
+            # The shape that shipped in tests/mesh/test_iot_provisioning_flag_domain.py:
+            # a comprehension over the table, and a slice that keeps the address.
+            'T = [1, object()]\n@pytest.mark.parametrize("v", T, ids=[repr(v)[:24] for v in T])\ndef test_x(v): pass\n',
+            "object() labelled by its repr",
+        ),
+        (
+            'T = [object()]\n@pytest.mark.parametrize("v", T, ids=[f"{v}" for v in T])\ndef test_x(v): pass\n',
+            "object() labelled by its repr",
+        ),
     ],
-    ids=["clock", "entropy", "address-via-table", "address-via-lambda"],
+    ids=[
+        "clock",
+        "entropy",
+        "address-via-table",
+        "address-via-lambda",
+        "address-via-comprehension",
+        "address-via-f-string",
+    ],
 )
 def test_the_check_reports_each_way_an_id_can_drift(source: str, expected: str) -> None:
     """A grader that reports nothing on a clean tree has to be shown to report."""
@@ -219,8 +261,19 @@ def test_the_check_reports_each_way_an_id_can_drift(source: str, expected: str) 
         '@pytest.mark.parametrize("v", [1])\ndef test_x(v): assert time.time() > v\n',
         # The spelling two suites already use for a table of stand-in objects.
         '@pytest.mark.parametrize("v", [object()], ids=lambda v: type(v).__name__)\ndef test_x(v): pass\n',
+        # A comprehension over literals is the same stable spelling as ids=repr.
+        'T = [1, "x", None]\n@pytest.mark.parametrize("v", T, ids=[repr(v)[:24] for v in T])\ndef test_x(v): pass\n',
+        # A comprehension that labels the row by type, as the lambda above does.
+        'T = [object()]\n@pytest.mark.parametrize("v", T, ids=[type(v).__name__ for v in T])\ndef test_x(v): pass\n',
     ],
-    ids=["literals-by-repr", "address-numbered-by-pytest", "clock-in-the-body", "address-labelled-by-type"],
+    ids=[
+        "literals-by-repr",
+        "address-numbered-by-pytest",
+        "clock-in-the-body",
+        "address-labelled-by-type",
+        "comprehension-over-literals",
+        "comprehension-labelled-by-type",
+    ],
 )
 def test_a_stable_table_is_not_reported(source: str) -> None:
     """The check has to leave the 230 tables that already spell IDs by repr alone."""

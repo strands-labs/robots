@@ -66,6 +66,24 @@ UNUSABLE: list[Any] = [
 USABLE: list[Any] = [True, False, np.True_, np.False_, np.array(True), np.array(False)]
 
 
+def _case_id(value: Any) -> str:
+    """A label for a table row that is the same in every process.
+
+    ``repr`` reads well for the literals above, but ``object()`` inherits the
+    default ``__repr__``, which prints the instance's address. That address
+    differs per interpreter, so the row's test ID differed between pytest-xdist
+    workers and the whole suite failed to collect in parallel - "Different tests
+    were collected between gw0 and gw1", before a single test ran. Truncating
+    the text did not hide it: ``<object object at 0x7f5c`` is 24 characters, so
+    ``repr(v)[:24]`` kept exactly the prefix that moves. That row is labelled by
+    type instead, the spelling
+    :mod:`tests.drivers.test_telemetry_coercion_refuses_the_same_non_readings`
+    already uses.
+    """
+    text = repr(value)
+    return type(value).__name__ if " at 0x" in text else text[:24]
+
+
 class _NotFound(Exception):
     """Stands in for ``iot.exceptions.ResourceNotFoundException``."""
 
@@ -164,7 +182,7 @@ class TestTheDomain:
     def test_a_boolean_is_accepted(self, value: Any) -> None:
         assert boolean_flag_error(value, "confirm", "ctx") is None
 
-    @pytest.mark.parametrize("value", UNUSABLE, ids=[repr(v)[:24] for v in UNUSABLE])
+    @pytest.mark.parametrize("value", UNUSABLE, ids=_case_id)
     def test_a_non_boolean_is_refused(self, value: Any) -> None:
         assert boolean_flag_error(value, "confirm", "ctx") is not None
 
@@ -231,7 +249,7 @@ class TestProvisionRobotHonoursBothPostures:
 class TestProvisionRobotRefusesANonBooleanOptOut:
     """A truthy spelling of *off* must not resolve to the grant-bearing policy."""
 
-    @pytest.mark.parametrize("value", UNUSABLE, ids=[repr(v)[:24] for v in UNUSABLE])
+    @pytest.mark.parametrize("value", UNUSABLE, ids=_case_id)
     def test_it_is_refused(self, iot: _RecordingIot, tmp_path: Path, value: Any) -> None:
         with pytest.raises(ValueError, match=r"allow_estop_publish must be a boolean"):
             _provision(tmp_path, allow_estop_publish=value)
