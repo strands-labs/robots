@@ -124,3 +124,33 @@ def test_underlying_exception_is_caught_and_reported() -> None:
         result = download_assets(action="download", robots="so100")
     assert result["status"] == "error"
     assert "boom" in result["content"][0]["text"]
+
+
+def test_download_of_an_unknown_robot_is_an_error_naming_it(monkeypatch, tmp_path) -> None:
+    """A name the registry does not list fetches nothing, so the verdict is not success.
+
+    Regression: ``download_robots`` only logged the unknown name and the tool
+    returned ``status='success'`` with ``Downloaded: 0, Skipped: 0, Failed: 0``,
+    so a typo in ``robots=`` read as a completed download.
+    """
+    monkeypatch.setattr("strands_robots.assets.download.get_user_assets_dir", lambda: tmp_path)
+    result = download_assets(action="download", robots="no_such_robot_xyz")
+    assert result["status"] == "error"
+    assert "no_such_robot_xyz" in result["content"][0]["text"]
+
+
+def test_download_with_a_failed_clone_is_an_error() -> None:
+    """A clone that failed is reported as failed, not as a success with a footnote."""
+    fake_result = {
+        "downloaded": 1,
+        "skipped": 0,
+        "failed": 1,
+        "method": "git",
+        "assets_dir": "/d",
+        "failed_details": {"badbot": "clone failed"},
+        "unknown_names": [],
+    }
+    with patch(f"{_MOD}.download_robots", return_value=fake_result):
+        result = download_assets(action="download", robots="so100,badbot")
+    assert result["status"] == "error"
+    assert "badbot" in result["content"][0]["text"]
