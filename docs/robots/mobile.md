@@ -243,6 +243,43 @@ A URL that cannot be used at all - `http://`, an out-of-range port, an embedded 
 is left to `requests`, which already names it; `connect_eagerly()` returns that reason
 rather than raising.
 
+## Yahboom ROSMASTER M3 Pro (sim)
+
+`yahboom_m3pro` is a mecanum-wheel chassis carrying the DOFBOT-Pro arm - five
+bus-servo joints plus a gripper - with an Orbbec camera on the wrist and a
+second camera on the chassis. The asset auto-downloads from
+[dimwael/yahboom_m3pro_description](https://github.com/dimwael/yahboom_m3pro_description),
+an MJCF generated from the vendor SolidWorks URDF; its `DESIGN.md` lists every
+deviation from that URDF.
+
+```python
+from strands_robots import Robot
+
+sim = Robot("yahboom_m3pro", keyframe="home")   # the vendor "grasp init" pose
+sim.render(camera_name="wrist")                 # Orbbec view, measured intrinsics
+sim.move_to(robot_name="yahboom_m3pro", position=[0.2, 0.0, 0.15])
+```
+
+Three things about the model are worth knowing before driving it:
+
+* **The base is kinematic.** Cylinder wheels cannot strafe and mecanum rollers
+  are out of scope, so the chassis rides three joints - `base_x`, `base_y`
+  (slides, **world-frame** m/s) and `base_yaw` (rad/s) - each with a velocity
+  actuator. The wheels are visual only. A body-frame `cmd_vel` has to be
+  rotated by the current yaw before it is written to `base_x` / `base_y`.
+* **The gripper is a two-crank simplification.** `gripper` drives `rlink1`, an
+  equality mirrors `llink1`, and the coupler bars ride rigidly on the cranks,
+  so the jaws rotate rather than stay parallel. `ctrl` low is closed, high is
+  open (registry `gripper` block), and the full servo travel is reachable.
+* **The cameras carry the real intrinsics** - fx 477.57, fy 477.56,
+  cx 319.38, cy 238.64 at 640x480 - so `get_camera_params` reads the same `K`
+  the physical RGB camera reports. The wrist camera's *pose* is a nominal
+  mount aimed at the `tcp` site; a hand-eye calibration replaces it.
+
+There is no hardware path yet: `mode="real"` has nowhere to go until a driver
+for Yahboom's expansion-board servo bus lands, so the entry declares no
+`hardware` block and `list_driver_coverage()["yahboom_m3pro"]` is `()`.
+
 ## See also
 
 - [Humanoids](humanoids.md) - bipedal alternatives.

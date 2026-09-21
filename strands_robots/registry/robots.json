@@ -985,6 +985,36 @@
         "lerobot_type": "lekiwi"
       }
     },
+    "yahboom_m3pro": {
+      "description": "Yahboom ROSMASTER M3 Pro (mecanum base + DOFBOT-Pro 6-DOF arm: 5 servos + gripper, 9 actuators)",
+      "category": "mobile_manip",
+      "joints": 10,
+      "asset": {
+        "dir": "yahboom_m3pro",
+        "model_xml": "m3pro/m3pro.xml",
+        "scene_xml": "scene.xml",
+        "source": {
+          "type": "github",
+          "repo": "dimwael/yahboom_m3pro_description",
+          "subdir": "mjcf"
+        }
+      },
+      "gripper": {
+        "actuators": [
+          "gripper"
+        ],
+        "closed": "low",
+        "open": "high"
+      },
+      "aliases": [
+        "m3pro",
+        "m3_pro",
+        "rosmaster_m3_pro",
+        "rosmaster_m3pro",
+        "yahboom_m3_pro",
+        "yahboom_rosmaster_m3_pro"
+      ]
+    },
     "robot_soccer_kit": {
       "description": "Robot Soccer Kit (multi-robot soccer, 65-DOF total)",
       "category": "mobile",

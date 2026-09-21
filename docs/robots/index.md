@@ -58,7 +58,7 @@ sim = Robot("aloha")
 
     [:octicons-arrow-right-24: Mobile catalog](mobile.md)
 
--   :material-truck:{ .lg .middle } **Mobile manip** · 5
+-   :material-truck:{ .lg .middle } **Mobile manip** · 6
 
     ---
 
