@@ -334,6 +334,7 @@ class MinkIKBridge:
         )
         self._posture_task = mink.PostureTask(model=model, cost=posture_cost)
         self._tasks = [self._frame_task, self._posture_task]
+        self._limits = self._build_limits(model, self._dof_mask)
         logger.info(
             "%s ready [ee=%s/%s solver=%s nq=%d]",
             self._LOG_LABEL,
@@ -342,6 +343,62 @@ class MinkIKBridge:
             self.solver,
             model.nq,
         )
+
+    def _build_limits(self, model: Any, dof_mask: np.ndarray | None) -> list[Any]:
+        """The QP limits: joint ranges, plus a zero velocity bound on every uncommanded joint.
+
+        The mask in :meth:`solve` zeroes the velocity of an uncommanded DOF *after*
+        the QP has solved, which is too late: the QP has already spent the task on
+        those DOFs. On a robot whose base rides slide or hinge joints - a planar
+        or kinematic mobile base - the cheapest way to move the end-effector is to
+        move the base, so the arm's share of the solution is small, the mask then
+        discards the base's share, and the arm alone never converges. Measured on
+        a five-joint arm on a planar base: a target its arm reaches by forward
+        kinematics solved to a residual of 0.31 m with every arm joint pinned at a
+        limit; bounding the base velocities to zero *inside* the QP solves the same
+        target to 0.001 m.
+
+        A free joint cannot carry a velocity bound (``mink.VelocityLimit`` refuses
+        it), so a floating base keeps the post-solve mask as its only exclusion -
+        the behaviour it always had. Every other joint whose DOFs are all
+        uncommanded gets a zero bound, and :class:`mink.ConfigurationLimit` keeps
+        the commanded joints inside their ranges, which is what the position
+        servos that realise the answer can honour.
+
+        A ``mink`` that ships neither limit class (a stand-in module in a test, or
+        a release older than the limits API) gets no limits and therefore the
+        post-solve mask alone - the historical behaviour, rather than a refusal
+        from a path that used to work.
+
+        Args:
+            model: The MuJoCo model the bridge solves on.
+            dof_mask: The boolean ``nv`` mask of commanded DOFs, or ``None``.
+
+        Returns:
+            The limits to hand to ``mink.solve_ik`` - a list, possibly empty.
+        """
+        mink = self._mink
+        configuration_limit = getattr(mink, "ConfigurationLimit", None)
+        velocity_limit = getattr(mink, "VelocityLimit", None)
+        if configuration_limit is None or velocity_limit is None:
+            return []
+        import mujoco  # mink depends on it, so it is importable wherever the bridge is
+
+        limits: list[Any] = [configuration_limit(model)]
+        if dof_mask is None:
+            return limits
+        zero_velocity: dict[str, np.ndarray] = {}
+        for jnt_id in range(int(model.njnt)):
+            jnt_type = int(model.jnt_type[jnt_id])
+            if jnt_type == int(mujoco.mjtJoint.mjJNT_FREE):
+                continue
+            start = int(model.jnt_dofadr[jnt_id])
+            width = 3 if jnt_type == int(mujoco.mjtJoint.mjJNT_BALL) else 1
+            if not dof_mask[start : start + width].any():
+                zero_velocity[model.joint(jnt_id).name] = np.zeros(width)
+        if zero_velocity:
+            limits.append(velocity_limit(model, zero_velocity))
+        return limits
 
     @staticmethod
     def _build_dof_mask(nv: int, commanded_dofs: Sequence[int] | None) -> np.ndarray | None:
@@ -484,7 +541,12 @@ class MinkIKBridge:
         self._frame_task.set_target(target)
 
         for _ in range(self.max_iters):
-            velocity = mink.solve_ik(self._configuration, self._tasks, self.dt, self.solver, self.damping)
+            if self._limits:
+                velocity = mink.solve_ik(
+                    self._configuration, self._tasks, self.dt, self.solver, self.damping, limits=self._limits
+                )
+            else:
+                velocity = mink.solve_ik(self._configuration, self._tasks, self.dt, self.solver, self.damping)
             if self._dof_mask is not None:
                 # Project the step onto the commandable subspace before
                 # integrating. Zeroing here rather than post-filtering the
