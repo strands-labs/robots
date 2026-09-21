@@ -359,11 +359,21 @@ class MinkIKBridge:
         target to 0.001 m.
 
         A free joint cannot carry a velocity bound (``mink.VelocityLimit`` refuses
-        it), so a floating base keeps the post-solve mask as its only exclusion -
-        the behaviour it always had. Every other joint whose DOFs are all
-        uncommanded gets a zero bound, and :class:`mink.ConfigurationLimit` keeps
-        the commanded joints inside their ranges, which is what the position
-        servos that realise the answer can honour.
+        it), and neither can an *unnamed* one (the limit is keyed by joint name,
+        and ``''`` is not a name it resolves), so both keep the post-solve mask as
+        their only exclusion - the behaviour every joint had before. Every other
+        joint whose DOFs are all uncommanded gets a zero bound.
+
+        :class:`mink.ConfigurationLimit` keeps the *commanded* joints inside their
+        ranges, which is what the position servos that realise the answer can
+        honour. It is narrowed to those joints on purpose: a whole-model limit also
+        binds the frozen ones, and an uncommanded joint whose seed sits past its
+        range - a gripper squeezing an object under MuJoCo's soft limit, a drawer
+        pressed against its stop, both routine on the ``move_to`` path, which seeds
+        from live ``data.qpos`` and never commands the gripper - would then demand
+        a corrective step the zero velocity bound forbids, and the QP raises
+        ``NoSolutionFound``. A frozen joint is already pinned twice (velocity
+        bound and post-solve mask), so it needs no position bound.
 
         A ``mink`` that ships neither limit class (a stand-in module in a test, or
         a release older than the limits API) gets no limits and therefore the
@@ -384,21 +394,42 @@ class MinkIKBridge:
             return []
         import mujoco  # mink depends on it, so it is importable wherever the bridge is
 
-        limits: list[Any] = [configuration_limit(model)]
+        position_limit = configuration_limit(model)
         if dof_mask is None:
-            return limits
+            return [position_limit]
         zero_velocity: dict[str, np.ndarray] = {}
+        frozen_dofs: list[int] = []
         for jnt_id in range(int(model.njnt)):
             jnt_type = int(model.jnt_type[jnt_id])
-            if jnt_type == int(mujoco.mjtJoint.mjJNT_FREE):
-                continue
             start = int(model.jnt_dofadr[jnt_id])
             width = 3 if jnt_type == int(mujoco.mjtJoint.mjJNT_BALL) else 1
-            if not dof_mask[start : start + width].any():
-                zero_velocity[model.joint(jnt_id).name] = np.zeros(width)
+            if jnt_type == int(mujoco.mjtJoint.mjJNT_FREE) or dof_mask[start : start + width].any():
+                continue
+            frozen_dofs.extend(range(start, start + width))
+            name = model.joint(jnt_id).name
+            if name:
+                zero_velocity[name] = np.zeros(width)
+        self._narrow_position_limit(position_limit, frozen_dofs, int(model.nv))
+        limits: list[Any] = [position_limit]
         if zero_velocity:
             limits.append(velocity_limit(model, zero_velocity))
         return limits
+
+    @staticmethod
+    def _narrow_position_limit(limit: Any, frozen_dofs: list[int], nv: int) -> None:
+        """Drop the frozen DOFs from a ``ConfigurationLimit``'s hinge/slide rows.
+
+        ``indices`` and ``projection_matrix`` are the attributes
+        ``compute_qp_inequalities`` reads for hinge and slide joints; the ball-joint
+        rows live on private arrays whose names this does not assume, so a frozen
+        *ball* joint keeps its position bound (a ball limit bounds a rotation
+        magnitude a seed cannot sit past under the soft constraint the same way).
+        """
+        if not frozen_dofs:
+            return
+        keep = np.array([int(i) for i in limit.indices if int(i) not in set(frozen_dofs)], dtype=int)
+        limit.indices = keep
+        limit.projection_matrix = np.eye(nv)[keep] if len(keep) > 0 else None
 
     @staticmethod
     def _build_dof_mask(nv: int, commanded_dofs: Sequence[int] | None) -> np.ndarray | None:
