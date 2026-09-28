@@ -67,6 +67,15 @@ _KIND_BY_CODE: dict[str, str] = {
 _CODE_BY_KIND: dict[str, str] = {kind: code for code, kind in _KIND_BY_CODE.items()}
 
 
+#: Every variable a consent grant may write - derived from the contract, never spelled twice.
+#: This is the consent routes' own allowlist for the ``.env`` file: these keys are gate-bearing
+#: by design (a grant IS a gate opening), so they are refused on the general ``/api/config``
+#: page surface and admitted only here, one kind + one subject at a time.
+GRANT_ENV_KEYS: frozenset[str] = frozenset(
+    {_AGENT_MOTION_ENV, _TELEOP_SLEW_ENV, *refusal_codes.REFUSAL_GRANTS.values()}
+)
+
+
 def _env_var(kind: str) -> str:
     """The variable a grant of ``kind`` writes, read from the contract."""
     if kind == "agent_physical_motion":

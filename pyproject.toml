@@ -62,11 +62,23 @@ dependencies = [
     # operator gate uses at module import time,
     # ``strands.interrupt.InterruptException`` and
     # ``strands.types._events.ToolInterruptEvent`` (both absent from the 1.12.0
-    # wheel), so they sit on the floor rather than raise it. See
+    # wheel), so they sit on the floor rather than raise it.
+    #
+    # The bound is 1.57.0 rather than 1.13.0 because the dashboard's voice
+    # console (``strands_robots.dashboard.voice``) drives the experimental
+    # bidirectional-streaming agent, whose surface was renamed twice inside 1.x:
+    # the input it sends, ``strands.experimental.bidi.types.media.AudioDelta``,
+    # first ships in 1.57.0 (with the ``get_audio_config()`` it reads the stream
+    # rates from), which is what sets this floor. The rest of that surface is
+    # older: ``strands.experimental.bidi.BidiAgent`` and
+    # ``strands.experimental.bidi.tools.stop_conversation`` from 1.19.0,
+    # ``strands.experimental.bidi.models.bedrock.BedrockNovaSonicModel`` and
+    # ``strands.experimental.bidi.models.openai.OpenAIRealtimeModel`` from
+    # 1.55.0. See
     # tests/test_strands_agents_floor_ships_the_imported_api.py, which owns that
     # measurement, grades the members the gate calls, and fails the moment a
     # newer strands symbol is imported without raising this floor.
-    "strands-agents>=1.13.0,<2.0.0",
+    "strands-agents>=1.57.0,<2.0.0",
     "numpy>=1.21.0,<3.0.0",
     "opencv-python-headless>=4.5.0,<5.0.0",
     # Pillow < 12.3.0 carries eleven HIGH advisories (heap OOB write in
@@ -614,7 +626,7 @@ ros2 = [
 # Delegate to strands-agents' own [ollama] extra (bounded pin, ollama>=0.4.8,<1.0.0)
 # so the client version stays in sync with the code that imports it.
 ollama = [
-    "strands-agents[ollama]>=1.13.0,<2.0.0",
+    "strands-agents[ollama]>=1.57.0,<2.0.0",
 ]
 # Remote policy inference (client/server split): stream observations from a
 # CPU/edge robot host to a remote GPU PolicyServer and receive action chunks
@@ -656,10 +668,29 @@ sagemaker = [
 # through an unrelated package -- which is why the gap survived local runs.
 dashboard = [
     "fastapi>=0.110,<1.0",
-    "uvicorn>=0.27,<1.0",
+    # [standard] carries websockets, which every /ws/* route needs; without it uvicorn answers 404.
+    "uvicorn[standard]>=0.27,<1.0",
     "webauthn>=2.0,<4.0",
     "python-multipart>=0.0.9,<1.0",
     "PyJWT>=2.0,<3.0",
+    # The device roster: serial ports for arms, cameras for previews and recording.
+    "pyserial>=3.5,<4.0",
+    "opencv-python-headless>=4.8,<5.0",
+]
+# The dashboard's voice operator (``strands_robots.dashboard.voice``): the
+# experimental bidirectional-streaming agent and its two speech-to-speech
+# backends, Nova Sonic and OpenAI Realtime. Separate from [dashboard] because
+# ``[bidi]`` pulls the Bedrock runtime SDK, which an operator who never opens
+# the microphone should not have to install; the /ws/voice route refuses with
+# this extra's name when it is absent. Not a member of [all]: [bidi] pins awscrt
+# to one exact release and [mesh-iot]'s awsiotsdk to another, so the bundle
+# would not resolve. The OpenAI backend needs only
+# ``websockets``, which the base dependency supplies at >=17.0 (strands' own
+# ``bidi-openai`` extra would cap it below 17). Gemini Live is not offered:
+# its SDK, google-genai, caps websockets below 17 as well, so it cannot be
+# installed next to this package.
+voice = [
+    "strands-agents[bidi]>=1.57.0,<2.0.0",
 ]
 all = [
     "strands-robots[groot-service]",
@@ -681,6 +712,10 @@ all = [
     "strands-robots[sagemaker]",
     "strands-robots[earthrover]",
     "strands-robots[dashboard]",
+    # Not [voice]: strands-agents[bidi] pins awscrt to one exact release through
+    # aws-sdk-bedrock-runtime[awscrt], and awsiotsdk ([mesh-iot]) pins awscrt to
+    # a different exact release, so the two extras cannot resolve into one
+    # environment. Voice is installed on its own, next to [dashboard].
 ]
 dev = [
     "pytest>=6.0,<10.0.0",
@@ -757,6 +792,19 @@ dependencies = [
 # inference runs on GPU. The sole remaining override is the diffusers security
 # floor.
 [tool.uv]
+# [voice] and [mesh-iot] each pin awscrt to a different exact release (through
+# aws-sdk-bedrock-runtime[awscrt] and awsiotsdk), so no one environment holds
+# both; declaring the conflict lets the universal lock resolve each on its own.
+conflicts = [
+    [
+        { extra = "voice" },
+        { extra = "mesh-iot" },
+    ],
+    [
+        { extra = "voice" },
+        { extra = "all" },
+    ],
+]
 # SECURITY floors for transitive packages. Each of these arrives only through
 # another dependency (cbor2/ujson under autobahn, twisted under roslibpy,
 # pyopenssl under twisted), so nothing in [project] declares a version for

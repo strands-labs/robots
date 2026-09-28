@@ -38,7 +38,10 @@ logger = logging.getLogger(__name__)
 #: (observed on macOS with SO-101, vid ``0x1a86`` pid ``0x55d3``), so keyword
 #: matching alone misses them entirely and ``mode="auto"`` silently falls back
 #: to sim with hardware attached.
-SERVO_BUS_VIDS: frozenset[int] = frozenset({0x1A86, 0x0403})  # WCH CH34x, FTDI
+#: The WCH CH34x adapter the SO-10x arms ship with; the dashboard's
+#: ``likely_robot`` hint reads it from here so the id is spelled once.
+WCH_CH34X_VID: int = 0x1A86
+SERVO_BUS_VIDS: frozenset[int] = frozenset({WCH_CH34X_VID, 0x0403})  # WCH CH34x, FTDI
 
 #: Substrings that identify a servo bus by name, matched against the device
 #: description and manufacturer.

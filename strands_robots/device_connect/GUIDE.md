@@ -1,5 +1,7 @@
 # Device Connect Integration
 
+> **Removed in 0.7.** `Robot(...).run()` and every name in `strands_robots.device_connect` raise a `DeprecationWarning` in 0.6. Serve a robot with `Robot(..., mesh=True)` and reach it with the `robot_mesh` tool.
+
 Strands Robots uses [Device Connect](https://github.com/arm/device-connect), a **device-aware runtime** by Arm - to handle discovery, presence, structured RPC, event routing, and safety - so you can focus on building cross-device experiences instead of re-implementing infrastructure.
 
 > **Fallback behavior:** If `device-connect-edge` is not installed, Strands Robots automatically falls back to a built-in Zenoh P2P mesh (`zenoh_mesh.py`) for basic peer discovery and coordination. Device Connect is the recommended and primary networking layer.

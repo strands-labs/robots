@@ -297,6 +297,9 @@ robot-viewer[fullscreen] { aspect-ratio: auto; height: 100%; border-radius: 0; m
 robot-viewer[fullscreen-fallback] { position: fixed; inset: 0; z-index: 1000; aspect-ratio: auto; width: 100vw; height: 100vh; height: 100dvh; border-radius: 0; border: 0; margin: 0; }
 body.sr-viewer-fullscreen { overflow: hidden; }
 .sr-hero robot-viewer { margin: 0; aspect-ratio: 1 / 1; }
+.sr-pick { display: flex; align-items: center; justify-content: flex-end; gap: 0.5rem; margin-top: 0.6rem; font-size: 0.72rem; color: var(--sr-muted); }
+.sr-pick select { font: inherit; font-family: var(--md-code-font-family); font-size: 0.72rem; color: var(--md-default-fg-color); background: var(--sr-card-bg); border: 1px solid var(--sr-card-border); border-radius: 8px; padding: 0.35rem 0.6rem; min-height: 2rem; cursor: pointer; }
+.sr-pick select:focus-visible { outline: 2px solid var(--sr-accent); outline-offset: 1px; }
 
 /* Side-by-side fences */
 .sr-pair { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 1rem; }

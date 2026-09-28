@@ -30,6 +30,7 @@ routes is visible at the route table, not buried in a string list here.
 from __future__ import annotations
 
 import hmac
+import time
 from typing import Any
 from urllib.parse import urlsplit
 
@@ -187,6 +188,10 @@ async def refuse_socket(ws: WebSocket, code: int) -> None:
         ws: The socket to refuse. It must not have been accepted yet.
         code: The application close code, 4000-4999.
     """
+    if code == 4401:
+        tally = getattr(ws.app.state, "refusals", None)
+        if tally is not None:
+            tally.record(client=(ws.client.host if ws.client else "?"), path=ws.url.path, now=time.time())
     if origin_is_self(ws):  # type: ignore[arg-type]  # WebSocket answers headers like a Request
         await ws.accept()
     await ws.close(code=code)

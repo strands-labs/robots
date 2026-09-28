@@ -963,11 +963,22 @@ def _attach_device_connect(instance: Any, canonical: str, mode: str, peer_id: st
     Mirrors the mesh attach above: stores peer metadata and binds ``.run()`` so
     ``Robot("so100").run()`` brings the device online as a Device Connect device
     (the primary networking layer), blocking until Ctrl+C.
+
+    Warns:
+        DeprecationWarning: From ``.run()``, always. Device Connect is removed in
+            0.7 (#3818); ``Robot(..., mesh=True)`` serves the robot instead.
     """
     instance._peer_id = peer_id or getattr(instance, "peer_id", None) or f"{canonical}-{os.urandom(3).hex()}"
     instance._peer_type = "sim" if mode == "sim" else "robot"
     instance._device_connect_runtime = None
-    instance.run = lambda: _run_device_connect_foreground(instance)
+
+    def run() -> None:
+        from strands_robots.device_connect import _announce_removal  # noqa: PLC0415 - deferred like below
+
+        _announce_removal("Robot(...).run()")
+        _run_device_connect_foreground(instance)
+
+    instance.run = run
 
 
 #: Seconds to wait for the Ctrl+C teardown before exiting anyway. Matches

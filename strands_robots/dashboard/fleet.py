@@ -63,17 +63,6 @@ def mesh_peers() -> dict[str, Any]:
     return {"status": "on" if active else "off", "peers": peers}
 
 
-@router.get("/fleet")
-async def fleet(mode: str = "all", _: dict = Depends(access.require_session)) -> dict[str, Any]:
-    """Every robot the registry knows and every mesh peer this process has heard."""
-    from strands_robots.registry.robots import LIST_ROBOTS_MODES
-
-    if mode not in LIST_ROBOTS_MODES:
-        raise HTTPException(400, f"mode must be one of {', '.join(LIST_ROBOTS_MODES)}")
-    robots = registry_robots(mode)
-    return {"robots": robots, "count": len(robots), "mesh": mesh_peers()}
-
-
 @router.get("/robots/{name}")
 async def robot(name: str, _: dict = Depends(access.require_session)) -> dict[str, Any]:
     """One registry entry in full, with the resolved local model path if any."""

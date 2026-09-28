@@ -633,6 +633,10 @@ _WRITTEN_BOUND_ALLOWED = {
     # This test states the rule, so it quotes the below-floor spellings the rule
     # forbids.
     "tests/test_dependency_audit.py",
+    # The rendered changelog is the historical record CHANGELOG.md is (see the note
+    # on _EXTRA_SCAN_ROOTS): a release entry names the floor THAT release shipped
+    # with, and raising the floor later must not rewrite what an old release said.
+    "docs/reference/changelog.md",
 }
 
 

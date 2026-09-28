@@ -24,7 +24,15 @@ MOTION_ENV = "STRANDS_DASH_AGENT_PHYSICAL_MOTION"
 
 #: Actions that can put a real robot in motion. Everything else -- including every way of STOPPING
 #: one -- is deliberately outside this set.
-GATED_ACTIONS: frozenset[str] = frozenset({"task"})
+GATED_ACTIONS: frozenset[str] = frozenset({"task", "teleop_receive"})
+
+#: How each gated action reads in a refusal: pointing a follower at a live leader stream is
+#: immediate motion (the follower snaps to the leader's pose the moment the command lands),
+#: so it is gated exactly as starting a task is.
+_ACTION_PHRASE: dict[str, str] = {
+    "task": "starting a task on",
+    "teleop_receive": "pointing the follower {shown} at a live leader stream",
+}
 
 _TRUE = ("1", "true", "yes", "on")
 
@@ -79,13 +87,15 @@ def agent_motion_allowed(
         }
 
     shown = target.strip() or "that robot"
+    phrase = _ACTION_PHRASE.get(act, "starting a task on")
+    doing = phrase.format(shown=shown) if "{shown}" in phrase else f"{phrase} {shown}"
     return {
         "allowed": False,
         "physical": True,
         "gated": True,
         "granted": False,
         "reason": (
-            f"refused: starting a task on {shown} would MOVE REAL HARDWARE ({why}), and this "
+            f"refused: {doing} would MOVE REAL HARDWARE ({why}), and this "
             f"dashboard does not let the agent start physical motion on its own. Nothing was sent. "
             f"The human can press play on {shown}'s card, which confirms the motion and checks that "
             f"the policy fits that robot, or ask for a simulated peer instead. To let the agent do "

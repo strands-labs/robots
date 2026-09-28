@@ -42,6 +42,8 @@ name whose implementation genuinely needs ``device_connect_edge``. Static tools
 from __future__ import annotations
 
 import importlib
+import os
+import warnings
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:  # pragma: no cover - typing-only, never executed
@@ -82,6 +84,22 @@ __all__ = [
 # budget for the shipped 30 seconds. Expiry is a failed bring-up, not a slow one
 # that later succeeds -- the wrapper has already returned by then.
 _INIT_TIMEOUT_S: float = 30.0
+
+
+# Frames inside the package are skipped when a removal warning is attributed,
+# so it lands on the caller's line however many package layers it crossed
+# (``strands_robots.init_device_connect`` resolves through two ``__getattr__``).
+_PACKAGE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__))) + os.sep
+
+
+def _announce_removal(name: str) -> None:
+    """Warn that ``name`` leaves with Device Connect in 0.7, naming the mesh."""
+    warnings.warn(
+        f"{name} is Device Connect, which is removed in 0.7; serve the robot on the mesh with "
+        "Robot(..., mesh=True) and reach it with the robot_mesh tool",
+        DeprecationWarning,
+        skip_file_prefixes=(_PACKAGE_DIR,),
+    )
 
 
 # How long ``init_device_connect_sync`` waits for the bring-up thread to return
@@ -152,10 +170,16 @@ def __getattr__(name: str) -> Any:
     leaf ``strands_robots.device_connect.reachy_transport`` be imported on a
     stock install: importing that leaf executes this ``__init__`` first, and
     with this contract that ``__init__`` succeeds.
+
+    Warns:
+        DeprecationWarning: On first resolve of a public name. The package is
+            removed in 0.7 (#3818); ``Robot(..., mesh=True)`` replaces it.
     """
     # Public name from the export table -- resolve to a symbol its module carries.
     module_name = _ATTR_TO_MODULE.get(name)
     if module_name is not None:
+        if name in __all__:
+            _announce_removal(f"{__name__}.{name}")
         module = importlib.import_module(module_name)
         value = getattr(module, name)
         # Cache on the package so subsequent lookups skip __getattr__ entirely

@@ -113,6 +113,20 @@ _STRANDS_SYMBOL_FLOORS: dict[tuple[str, str], str] = {
     ("strands.hooks", "HookProvider"): "1.0.0",
     ("strands.hooks", "HookRegistry"): "1.0.0",
     ("strands.hooks", "BeforeToolCallEvent"): "1.13.0",
+    # The dashboard's voice console (``strands_robots.dashboard.voice``) drives
+    # the experimental bidirectional-streaming agent, whose surface was renamed
+    # twice inside 1.x. Measured against the wheels: ``strands/experimental/bidi/``
+    # is absent through 1.18.0; ``BidiAgent`` and ``stop_conversation`` arrive in
+    # 1.19.0; the model classes move to ``models.bedrock.BedrockNovaSonicModel``
+    # and ``models.openai.OpenAIRealtimeModel`` in 1.55.0; and the input the
+    # console sends, ``types.media.AudioDelta``, together with the
+    # ``get_audio_config()`` it reads the stream rates from, arrive in 1.57.0,
+    # which is what sets the floor.
+    ("strands.experimental.bidi", "BidiAgent"): "1.19.0",
+    ("strands.experimental.bidi.tools", "stop_conversation"): "1.19.0",
+    ("strands.experimental.bidi.models.bedrock", "BedrockNovaSonicModel"): "1.55.0",
+    ("strands.experimental.bidi.models.openai", "OpenAIRealtimeModel"): "1.55.0",
+    ("strands.experimental.bidi.types.media", "AudioDelta"): "1.57.0",
 }
 
 

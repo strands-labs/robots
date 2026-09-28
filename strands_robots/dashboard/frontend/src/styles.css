@@ -1,0 +1,1956 @@
+/*
+ * Design tokens first, then primitives, then components.
+ *
+ * The rule that keeps this readable: colour is *semantic* (ok / warn / danger),
+ * never decorative. Green means the robot answered, red means it did not - so a
+ * red panel on this dashboard always means "something physical may be wrong",
+ * and nothing else is allowed to borrow that colour.
+ */
+:root {
+  /* palette */
+  --bg: #0a0e14;
+  --panel: #11161f;
+  --panel2: #161d29;
+  --panel3: #1c2432;
+  --border: #1f2937;
+  --border-hi: #2c3a4f;
+  --text: #e6edf3;
+  --dim: #8b98a9;
+  /* Q147: --dim is the DISABLED colour (see above), and five CLICKABLE rules were wearing it — the nav
+     chips, the settings tabs, the dock's minimise button, the apply chip and the glass button. Contrast
+     was never the problem (5.77:1 on --panel2, AA-clear); the SEMANTIC COLLISION was: the palette says
+     "this colour means you cannot click it" and then paints the record entry point with it. --quiet is
+     the same restraint without that claim, and it keeps --dim honest. */
+  --quiet: #a9b7c7;
+  /* UX_REVIEW #2: --dim is the DISABLED colour (.btn:disabled, .btn.go:disabled
+     both paint it). Enabled secondary buttons used it too, so a clickable
+     control and a dead one were the same grey. --text-2 is the "enabled, not
+     primary" tone — and it retro-fills the two places that already referenced
+     the token with a hardcoded fallback. */
+  --text-2: #c3cedb;
+  --green: #00e5a0;
+  --blue: #4a9eff;
+  --red: #ff4d5e;
+  --amber: #ffb454;
+
+  /* semantic */
+  --ok: var(--green);
+  --warn: var(--amber);
+  --danger: var(--red);
+  --accent: var(--blue);
+  /* --accent and --danger are tuned to be read AS TEXT on the dark background
+   * (7.02:1 and 5.96:1). Used as a FILL under white text they invert the
+   * problem: #fff on #4a9eff is 2.75:1 and on #ff4d5e is 3.24:1, both under AA.
+   * These darker twins are for filled surfaces only - white on them measures
+   * 4.90:1 and 4.98:1, and each still clears 3:1 against the page. */
+  --accent-fill: #2a6fd0;
+  --danger-fill: #d92038;
+  /* the focus ring is its own colour: bright enough to be seen against glass,
+   * the panels AND a camera frame */
+  --focus: #7cc0ff;
+
+  /* space scale */
+  --s1: 4px; --s2: 6px; --s3: 8px; --s4: 12px; --s5: 16px; --s6: 24px; --s7: 32px;
+
+  /* radius scale */
+  --r1: 5px; --r2: 8px; --r3: 10px; --r4: 14px; --r5: 20px; --rpill: 999px;
+
+  /* type */
+  --mono: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, monospace;
+  --fs-micro: 10.5px; --fs-tiny: 11.5px; --fs-small: 12px; --fs-body: 13.5px; --fs-lg: 16px;
+
+  /* elevation + motion */
+  --shadow1: 0 2px 8px #0006;
+  --shadow2: 0 12px 40px #000a;
+  --dur-fast: .12s; --dur: .2s; --dur-slow: .35s;
+
+  /* the dock overlays the bottom of the viewport everywhere */
+  --dock-h: 84px;
+
+  font-size: 15px;
+}
+
+* { box-sizing: border-box; margin: 0; padding: 0; }
+
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: -apple-system, 'SF Pro Text', Inter, system-ui, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  overscroll-behavior: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  /* Q163: the iteration count is the half that was missing, and without it this rule made things
+   * WORSE than no rule at all. A duration of .001s on a FINITE animation is "instantly done" —
+   * correct. On `infinite alternate` it is a 1000Hz STROBE: the amber busy dot and the live mic
+   * ring kept flipping opacity every millisecond. People set Reduce Motion for vestibular reasons
+   * and for PHOTOSENSITIVITY, so the shortcut aimed at them produced the one effect they most need
+   * not to see. Four rules elsewhere say `animation: none` by hand and were escaping exactly this,
+   * which is the tell: a global rule that individual rules keep having to opt out of is wrong.
+   * Capping the count stills every loop after one 1ms cycle, and no meaning is lost — both pulsing
+   * indicators also carry colour and a glow, so they still say "busy" and "live" while standing still. */
+  * { animation-duration: .001s !important; animation-iteration-count: 1 !important; transition-duration: .001s !important; }
+}
+
+.stage { min-height: 100dvh; display: flex; flex-direction: column; }
+.mono { font-family: var(--mono); }
+.small { font-size: var(--fs-tiny); }
+.spacer { flex: 1; }
+.ok { color: var(--ok); }
+.bad { color: var(--danger); }
+
+/* ── primitives ────────────────────────────────────── */
+.hint { color: var(--dim); font-size: var(--fs-small); line-height: 1.5; }
+.hint code, .empty-fleet code, .drawer-body code, .sheet code {
+  color: var(--accent); background: var(--panel); padding: 1px 5px; border-radius: var(--r1);
+  font-family: var(--mono); font-size: .92em;
+}
+.hint.warn { color: var(--warn); }
+.hint.local-only { color: var(--dim); }
+
+.badge {
+  font-size: var(--fs-micro); font-weight: 700; letter-spacing: .06em; text-transform: uppercase;
+  padding: 3px 7px; border-radius: var(--r1); white-space: nowrap;
+}
+.badge.warn { color: var(--warn); background: color-mix(in srgb, var(--warn) 14%, transparent); }
+.badge.danger { color: var(--danger); background: color-mix(in srgb, var(--danger) 14%, transparent); }
+/* Clickable warning chip: informative, not alarming (UX review #5) */
+.badge.warnchip {
+  color: var(--warn); background: color-mix(in srgb, var(--warn) 12%, transparent);
+  border: 1px solid color-mix(in srgb, var(--warn) 35%, transparent);
+  cursor: pointer; font-family: inherit;
+  /* R4: it is a BUTTON (it opens the mesh security panel), so it obeys the
+     same 24px floor as the chips beside it. */
+  min-height: 24px; box-sizing: border-box;
+}
+.badge.warnchip:hover { background: color-mix(in srgb, var(--warn) 22%, transparent); }
+/* Plain-language explainer block inside the settings drawer */
+.explain {
+  font-size: var(--fs-small); line-height: 1.55; color: var(--text);
+  background: color-mix(in srgb, var(--warn) 8%, transparent);
+  border: 1px solid color-mix(in srgb, var(--warn) 25%, transparent);
+  border-radius: var(--r2); padding: 10px 12px; margin-bottom: var(--s4);
+}
+.explain b { color: var(--warn); }
+
+.chip {
+  font-size: 11px; color: var(--quiet); background: var(--panel2);
+  border: 1px solid var(--border); border-radius: var(--rpill);
+  padding: 4px 10px; cursor: pointer; white-space: nowrap;
+  transition: border-color var(--dur), color var(--dur);
+  /* R4: the nav chips measured 20-23px tall on a phone — 1 to 4px short of the
+     24px minimum, which is exactly the miss that makes a thumb tap the page
+     instead of the button. The pill grows downward from its own box; the text
+     size and the fleet bar's layout are untouched. */
+  min-height: 24px; display: inline-flex; align-items: center; justify-content: center;
+  box-sizing: border-box;
+}
+.chip:hover { border-color: var(--border-hi); color: var(--text); }
+/* UX_REVIEW #10: a nav entry whose backend cannot actually do the thing. Amber,
+   dashed — the house language for "this works, but not for real". */
+.chip.rehearsal { color: var(--warn); border-color: color-mix(in srgb, var(--warn) 45%, transparent); border-style: dashed; }
+.chip.rehearsal:hover { color: var(--warn); border-color: var(--warn); }
+/* R1: the same language on the button that opens a recording session — a
+   rehearsal must not wear the confident green of the real thing. */
+.btn.go.rehearsal { background: color-mix(in srgb, var(--warn) 22%, transparent); color: var(--warn); border: 1px dashed color-mix(in srgb, var(--warn) 60%, transparent); }
+.btn.go.rehearsal:disabled { background: var(--panel2); color: var(--dim); border-style: solid; }
+.chip.on { border-color: var(--accent); color: var(--accent); }
+.chip.static { cursor: default; }
+
+.dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
+.dot.on { background: var(--ok); box-shadow: 0 0 8px var(--ok); }
+.dot.off { background: var(--dim); }
+.dot.busy { background: var(--warn); box-shadow: 0 0 8px var(--warn); animation: pulse .8s infinite alternate; }
+/* Q164: under forced colours (Windows High Contrast, and the OS-level contrast themes) the browser
+ * REPLACES background-color with its own palette, so three dots that differ only in hue render
+ * identically — "live", "working" and "gone" become the same mark. Shape survives what colour does
+ * not: filled, accented, and a dashed hollow ring. box-shadow is dropped in that mode by the UA,
+ * which is why the glow is not the distinguishing signal here. */
+@media (forced-colors: active) {
+  .dot { border: 1px solid CanvasText; background: Canvas; }
+  .dot.on { background: CanvasText; }
+  .dot.busy { background: Highlight; border-color: Highlight; }
+  .dot.off { background: Canvas; border-style: dashed; border-color: GrayText; }
+}
+
+.btn {
+  min-width: 42px; border: none; border-radius: var(--r2); font-size: 15px; cursor: pointer;
+  padding: 8px 10px; color: var(--text); background: var(--panel2);
+  transition: transform var(--dur-fast), background var(--dur), border-color var(--dur);
+}
+.btn:active { transform: scale(.94); }
+.btn.go { background: var(--ok); color: #05130d; font-weight: 700; }
+.btn.go:disabled { background: var(--panel2); color: var(--dim); cursor: default; transform: none; }
+.btn.stop { background: var(--danger-fill); color: #fff; }
+.btn.ghost { background: none; border: 1px solid var(--border); color: var(--text-2); font-size: var(--fs-small); }
+/* ...and a ghost that really IS dead keeps the dim grey, so colour and opacity
+   both say so. */
+.btn.ghost:disabled { color: var(--dim); }
+.btn.ghost:hover { border-color: var(--border-hi); color: var(--text); }
+.btn.ghost.on { border-color: var(--accent); color: var(--accent); }
+.btn.ghost.danger, .btn.danger { color: var(--danger); }
+.btn.danger { background: color-mix(in srgb, var(--danger) 16%, transparent); border: 1px solid color-mix(in srgb, var(--danger) 45%, transparent); font-size: var(--fs-small); font-weight: 700; }
+.btn.danger:hover { background: color-mix(in srgb, var(--danger) 28%, transparent); }
+.btn.danger.big { font-size: 15px; padding: 14px 20px; width: 100%; letter-spacing: .06em; }
+.btn:disabled { opacity: .55; cursor: default; }
+
+.field { display: flex; flex-direction: column; gap: var(--s1); margin-bottom: var(--s4); min-width: 0; flex: 1; }
+.field > span { font-size: 11px; color: var(--dim); letter-spacing: .03em; }
+.field > span em { color: var(--dim); opacity: .8; font-style: normal; }
+.field > span b { color: var(--warn); }
+/* The API field name, kept beside the human label (JOURNEYS #13): quiet enough
+   that it is not read on every visit, present enough to copy into a script. */
+.field > span code.ident {
+  margin-left: 6px; font-size: 10px; opacity: .55;
+  font-family: var(--mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+  background: rgba(255,255,255,.05); border-radius: 4px; padding: 0 4px;
+}
+/* Settings metadata: one-line "what this does" + how the change applies */
+.field-meta { font-size: 10.5px; line-height: 1.45; color: var(--dim); font-style: normal; opacity: .85; }
+.field-err { font-size: 11px; color: var(--danger, #ff4d5e); font-style: normal; }
+.apply-chip { padding: 1px 6px; border-radius: 8px; font-size: 9.5px; white-space: nowrap;
+  border: 1px solid rgba(255,255,255,.14); color: var(--quiet); }
+.apply-chip.live { color: #7de3a0; border-color: rgba(125,227,160,.35); }
+.apply-chip.next-turn { color: #7cc0ff; border-color: rgba(124,192,255,.35); }
+.apply-chip.mesh-restart, .apply-chip.startup { color: #ffc46b; border-color: rgba(255,196,107,.35); }
+/* Settings search: find a field without knowing which tab hides it */
+.settings-search { position: relative; padding: 0 var(--s4); margin-bottom: var(--s2); }
+.settings-search input {
+  width: 100%; background: var(--panel2); color: var(--text);
+  border: 1px solid var(--border); border-radius: var(--r2);
+  padding: 7px 10px; font-size: var(--fs-small); font-family: inherit;
+}
+.settings-search .search-results {
+  list-style: none; margin: var(--s1) 0 0; padding: var(--s1);
+  background: var(--panel2); border: 1px solid var(--border); border-radius: var(--r2);
+  max-height: 260px; overflow-y: auto;
+}
+.settings-search .search-results button {
+  display: block; width: 100%; text-align: left; background: none; border: 0;
+  color: var(--text); padding: 6px 8px; border-radius: var(--r1, 6px);
+  cursor: pointer; font-family: inherit; font-size: var(--fs-small);
+}
+.settings-search .search-results button:hover,
+.settings-search .search-results button:focus-visible { background: rgba(124,192,255,.12); }
+.settings-search .search-results b { font-weight: 600; }
+.settings-search .search-results .tabname {
+  font-size: 9.5px; color: var(--dim); border: 1px solid rgba(255,255,255,.14);
+  border-radius: 8px; padding: 1px 6px; margin-left: 6px; text-transform: uppercase;
+}
+.settings-search .search-results em {
+  display: block; font-style: normal; font-size: 10.5px; color: var(--dim); margin-top: 2px;
+}
+.field input, .field select, .field textarea {
+  background: var(--panel2); color: var(--text); border: 1px solid var(--border);
+  border-radius: var(--r2); padding: 8px 10px; font-size: var(--fs-small); font-family: inherit;
+  width: 100%; min-width: 0;
+}
+.field textarea { font-family: var(--mono); font-size: 11.5px; line-height: 1.5; resize: vertical; }
+.field input:focus, .field select:focus, .field textarea:focus { outline: none; border-color: var(--accent); }
+.field.missing input, .field.missing select { border-color: var(--warn); }
+.field.check { flex-direction: row; align-items: flex-start; gap: var(--s3); }
+.field.check input { width: auto; margin-top: 2px; }
+.field.check span { font-size: var(--fs-small); color: var(--text); }
+.field.env input { font-family: var(--mono); font-size: 11.5px; }
+.row { display: flex; gap: var(--s4); flex-wrap: wrap; }
+
+.kv { display: grid; grid-template-columns: auto 1fr; gap: var(--s1) var(--s4); font-size: var(--fs-small); margin-bottom: var(--s4); }
+.kv dt { color: var(--dim); }
+.kv dd { color: var(--text); word-break: break-word; white-space: pre-wrap; }
+
+.result {
+  font-size: var(--fs-tiny); font-family: var(--mono); word-break: break-word;
+  border-radius: var(--r2); padding: var(--s2) var(--s3); line-height: 1.5;
+}
+.result.ok { color: var(--ok); background: color-mix(in srgb, var(--ok) 10%, transparent); }
+.result.bad { color: var(--danger); background: color-mix(in srgb, var(--danger) 10%, transparent); }
+/* A scan that RAN and found nothing is neither success nor failure — it needs its
+   own colour, or it reads as one of the two things it is not. */
+.result.warn { color: var(--warn); background: color-mix(in srgb, var(--warn) 10%, transparent); }
+/* A notice that carries a REMEDY needs the remedy on its own line: the two sentences
+   answer different questions ("what is wrong" / "what do I type"), and run together in
+   a mono block at --fs-tiny they read as one paragraph nobody finishes. */
+.result .hint { display: block; margin-top: var(--s1); font-family: var(--mono); }
+.result details { margin-top: var(--s1); }
+.result summary { cursor: pointer; opacity: .75; }
+.result pre { white-space: pre-wrap; margin-top: var(--s1); opacity: .85; }
+
+/* ── fleet bar ─────────────────────────────────────── */
+.fleetbar {
+  position: sticky; top: 0; z-index: 50;
+  display: flex; align-items: center; justify-content: space-between;
+  gap: var(--s3); padding: 10px 14px;
+  /* the fixed safety layer owns the top-right corner; keep header content out
+   * from under it so nothing overlaps STOP ALL */
+  padding-right: 136px;
+  padding-top: calc(10px + env(safe-area-inset-top));
+  background: var(--glass-2);
+  backdrop-filter: blur(var(--glass-blur-lg)) saturate(var(--glass-sat));
+  -webkit-backdrop-filter: blur(var(--glass-blur-lg)) saturate(var(--glass-sat));
+  border-bottom: 1px solid var(--glass-border);
+}
+.brand { display: flex; align-items: center; gap: 10px; }
+.logo { display: flex; align-items: center; }
+/* The mark's back strand is structure, the front one is the live signal, so it
+ * carries the same green that means "the robot answered" everywhere else. */
+.mark .mark-back { fill: color-mix(in srgb, var(--text) 42%, transparent); }
+.mark .mark-front { fill: var(--ok); }
+.brand:hover .mark .mark-front { filter: drop-shadow(0 0 6px color-mix(in srgb, var(--ok) 55%, transparent)); }
+
+.brand h1 { font-size: 15px; font-weight: 700; letter-spacing: .04em; }
+.brand .sub { font-size: var(--fs-tiny); color: var(--dim); font-family: var(--mono); }
+.brand .backend { opacity: .65; }
+.fleet-right { display: flex; align-items: center; gap: var(--s3); flex-wrap: wrap; justify-content: flex-end; }
+.peers { color: var(--dim); font-size: 12.5px; }
+.conn { font-size: var(--fs-tiny); font-weight: 700; letter-spacing: .1em; padding: 3px 8px; border-radius: var(--rpill); }
+.conn.open { color: var(--ok); background: color-mix(in srgb, var(--ok) 12%, transparent); }
+.conn.connecting { color: var(--warn); background: color-mix(in srgb, var(--warn) 12%, transparent); }
+.conn.closed, .conn.unauthorized { color: var(--danger); background: color-mix(in srgb, var(--danger) 12%, transparent); }
+/* UX_REVIEW #3: a scoped verdict ("LIVE · page only", when the mesh session is
+   closed) must not keep the healthy green — the words narrow the claim and the
+   colour has to agree, or the eye reads the green and skips the words. */
+.conn.warn { color: var(--warn); background: color-mix(in srgb, var(--warn) 12%, transparent); }
+.conn.bad { color: var(--danger); background: color-mix(in srgb, var(--danger) 12%, transparent); }
+/* ── safety layer ──────────────────────────────────────
+ * z-index 200 sits above every overlay in this file (70 sheet backdrop,
+ * 80 drawer, 90 confirm sheet, 100 auth gate). The stop is reachable from
+ * every screen or it is not a stop. See components/EstopButton.tsx. */
+.estop-layer {
+  position: fixed; z-index: 200;
+  top: calc(8px + env(safe-area-inset-top)); right: 14px;
+  pointer-events: none;
+}
+.estop-layer .estop { pointer-events: auto; }
+.estop {
+  border: 1px solid color-mix(in srgb, var(--danger) 45%, transparent);
+  /* opaque: this button is read on top of drawers and sheets, not just the page */
+  background: color-mix(in srgb, var(--danger) 16%, var(--bg));
+  box-shadow: var(--shadow2);
+  color: var(--danger); font-weight: 700; font-size: 14px;
+  /* 44px min-height: this is the control a scared human aims at, Apple's
+     touch minimum applies to it more than to anything else on the page. */
+  padding: 11px 14px; min-height: 44px; border-radius: var(--r3); cursor: pointer;
+  transition: background var(--dur);
+}
+.estop:hover { background: color-mix(in srgb, var(--danger) 30%, var(--bg)); }
+/* The link is down, so pressing this may not reach the arms. Deliberately still
+   RED and still the biggest thing in the corner - dimming it to a grey ghost
+   would make the operator hunt for the brake at the exact moment they need it.
+   The dashed edge is the only difference the eye must decode, and the title
+   carries the sentence (see lib/linkHealth). */
+.estop.unreachable {
+  border-style: dashed;
+  border-color: var(--danger);
+  background: color-mix(in srgb, var(--danger) 10%, var(--bg));
+}
+@keyframes pulse { to { opacity: .72; } }
+.safety { font-size: var(--fs-small); font-weight: 700; }
+.safety.estop { color: var(--danger); border: none; background: none; box-shadow: none; }
+.safety.resume { color: var(--ok); }
+
+/* ── toast ─────────────────────────────────────────── */
+.toast {
+  display: flex; align-items: center; gap: var(--s4); flex-wrap: wrap;
+  margin: var(--s4) var(--s4) 0; padding: var(--s3) var(--s4);
+  background: var(--panel); border: 1px solid var(--border-hi);
+  border-radius: var(--r3); font-size: var(--fs-small); box-shadow: var(--shadow1);
+}
+.toast.warn { border-color: color-mix(in srgb, var(--warn) 45%, transparent); color: var(--warn); }
+/* A frozen frame counter mid-take is not a warning, it is a fault: the number
+   the operator is reading as proof of capture has stopped meaning anything. */
+.toast.bad { border-color: color-mix(in srgb, var(--danger) 55%, transparent); color: var(--danger); }
+.toast .btn.go { padding: 5px 12px; font-size: var(--fs-small); }
+
+/* ── grid layout ───────────────────────────────────── */
+.grid {
+  display: grid; gap: var(--s4); padding: var(--s4);
+  /* minmax(0,1fr), NOT 1fr: a bare 1fr track is minmax(auto,1fr) and auto floors
+     at the widest card's MIN-CONTENT, so on a 390px phone one card whose camera
+     pair will not shrink blew the track to 445px and the whole app scrolled
+     sideways (measured, iteration 11). Clamping the floor lets the card shrink
+     and keeps any stubborn child's overflow inside that card. */
+  grid-template-columns: minmax(0, 1fr);
+  /* the agent dock is fixed over the bottom edge */
+  padding-bottom: calc(var(--dock-h) + env(safe-area-inset-bottom));
+}
+@media (min-width: 640px)  { .grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+@media (min-width: 1024px) { .grid { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
+@media (min-width: 1500px) { .grid { grid-template-columns: repeat(4, minmax(0, 1fr)); } }
+
+/* ── robot card ────────────────────────────────────── */
+.card {
+  /* the sheen is layered into the background rather than an ::before, because a
+   * positioned pseudo-element would paint over the card's own content */
+  background: linear-gradient(180deg, rgb(255 255 255 / .06), rgb(255 255 255 / 0) 40%), var(--glass-2);
+  border: 1px solid var(--glass-border);
+  border-radius: var(--r4);
+  padding: var(--s4);
+  display: flex; flex-direction: column; gap: 10px;
+  backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-sat));
+  -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-sat));
+  transition: opacity var(--dur-slow), border-color var(--dur) var(--ease-out),
+              background var(--dur) var(--ease-out);
+}
+.card:hover, .card:focus-within { border-color: var(--glass-border-hi); background: linear-gradient(180deg, rgb(255 255 255 / .08), rgb(255 255 255 / 0) 40%), var(--glass-3); }
+
+/* Zero-UI: a card's CONTROLS are not its content. The camera frame and the
+ * joint bars stay at full strength; the chrome around them (the twin toggle,
+ * the camera switcher, the policy row) drops its outline until the pointer or
+ * the keyboard arrives. Text colour is never dimmed by this - only borders and
+ * fills move, so contrast ratios hold at rest. */
+.card .twinbtn, .card .controls select, .card .controls input, .card .camswitch .chip {
+  border-color: transparent;
+  transition: border-color var(--dur) var(--ease-out), background var(--dur) var(--ease-out);
+}
+.card:hover .twinbtn, .card:focus-within .twinbtn,
+.card:hover .controls select, .card:focus-within .controls select,
+.card:hover .controls input, .card:focus-within .controls input,
+.card:hover .camswitch .chip, .card:focus-within .camswitch .chip {
+  border-color: var(--glass-border);
+}
+/* an active choice is content, so it never recedes */
+.card .camswitch .chip.on, .card .controls select:focus, .card .controls input:focus { border-color: var(--accent) !important; }
+.card.stale { opacity: .38; filter: grayscale(.7); }
+.card.running { border-color: color-mix(in srgb, var(--warn) 40%, var(--border)); }
+.card.failed { border-color: color-mix(in srgb, var(--danger) 45%, var(--border)); }
+.card-head { display: flex; align-items: center; gap: var(--s3); min-width: 0; }
+.typebadge {
+  font-size: var(--fs-micro); font-weight: 800; letter-spacing: .1em; text-transform: uppercase;
+  padding: 3px 7px; border-radius: var(--r1);
+}
+.typebadge.robot { color: var(--ok); background: color-mix(in srgb, var(--ok) 13%, transparent); }
+.typebadge.sim { color: var(--accent); background: color-mix(in srgb, var(--accent) 13%, transparent); }
+.peername {
+  font-family: var(--mono); font-size: 13px; font-weight: 600; color: var(--text);
+  background: none; border: none; cursor: pointer; text-align: left;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  /* R4: measured 86x15 — the button that OPENS a robot was half the 24px minimum
+     target, and it is the primary action of the whole card. The height comes
+     from vertical padding and a min-height, never from the font, and the
+     horizontal padding stays 0 so the name still starts flush with the type
+     badge (the card head is a flex row; a left inset would shift every card). */
+  padding: 5px 0; min-height: 24px; display: inline-flex; align-items: center;
+  box-sizing: border-box; max-width: 100%;
+}
+.peername:hover { color: var(--accent); }
+.host { color: var(--dim); font-size: 11px; margin-left: auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 90px; flex-shrink: 1; min-width: 0; }
+/* R8 (measured 390px): on the card that carries a role badge the ROBOT NAME
+   collapsed to 39px — `so101…`, indistinguishable from the arm beside it — while
+   an 80px badge and a hostname truncated to `cagatays…` kept their space. On a
+   single-machine desk fleet that hostname is identical on every card, so it was
+   costing identity to say nothing. The name now takes the slack, the badges never
+   shrink, and below 640px the hostname steps out (it is still in the detail head,
+   one tap away, in full). */
+.peername { flex: 1 1 auto; min-width: 6ch; }
+.card-head .typebadge, .card-head .rolebadge, .card-head .originbadge, .card-head .badge { flex-shrink: 0; }
+@media (max-width: 639px) { .card-head .host { display: none; } }
+.stale-note { font-size: var(--fs-tiny); color: var(--warn); font-family: var(--mono); }
+.twinbtn {
+  background: none; border: 1px solid var(--border); color: var(--accent);
+  border-radius: var(--r1); font-size: 13px; padding: 3px 8px; cursor: pointer;
+  /* R4: 57x20 measured — a button that spawns a process must clear 24px too. */
+  min-height: 24px; display: inline-flex; align-items: center; justify-content: center;
+  box-sizing: border-box;
+}
+.twinbtn {
+  /* R2: it carries words now, so it needs the mono/micro treatment of the rest
+     of the card head and must not push the name out of the row. */
+  font-family: var(--mono); font-size: var(--fs-micro); letter-spacing: .02em;
+  white-space: nowrap; flex-shrink: 0;
+}
+.twinbtn:hover { border-color: var(--accent); }
+/* a LIVE twin is a running process — that is content, so it never recedes */
+.twinbtn.on {
+  color: var(--accent); border-color: color-mix(in srgb, var(--accent) 55%, transparent) !important;
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+}
+
+/* cameras */
+.cams { display: grid; gap: var(--s2); grid-template-columns: 1fr; }
+.cams.multi { grid-template-columns: repeat(2, 1fr); }
+.camtile { position: relative; border-radius: var(--r3); overflow: hidden; background: #000; aspect-ratio: 4/3; }
+.camtile.big { aspect-ratio: 16/10; border-radius: var(--r4); }
+.camtile img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.camstate {
+  position: absolute; inset: 0; display: flex; flex-direction: column;
+  align-items: center; justify-content: center; gap: var(--s1); text-align: center;
+  color: var(--dim); font-family: var(--mono); padding: var(--s4);
+}
+.camstate b { font-size: var(--fs-small); color: var(--text); font-weight: 600; }
+.camstate span { font-size: var(--fs-tiny); }
+.camlabel {
+  position: absolute; left: var(--s2); bottom: var(--s2);
+  font-size: var(--fs-micro); font-family: var(--mono);
+  color: #fff; background: #000c; padding: 2px 6px; border-radius: var(--r1);
+}
+.camlabel.live { color: var(--ok); }
+.camlabel em { font-style: normal; opacity: .8; }
+/* the per-tile settings affordance: quiet until the tile is hovered/focused */
+.camcfg {
+  position: absolute; right: var(--s2); bottom: var(--s2);
+  min-width: 24px; min-height: 24px; line-height: 1;
+  color: #fff; background: #000c; border: 1px solid transparent; border-radius: var(--r1);
+  cursor: pointer; opacity: 0; transition: opacity .15s;
+}
+.camtile:hover .camcfg, .camtile:focus-within .camcfg, .camcfg:focus { opacity: 1; }
+.camcfg:hover { border-color: var(--border-hi); }
+/* a phone never hovers — the affordance must not be reachable-by-secret there */
+@media (hover: none) { .camcfg { opacity: 1; } }
+.chip.addcam { align-self: flex-start; }
+.camswitch { display: flex; gap: var(--s2); flex-wrap: wrap; }
+
+/* joints */
+.joints { display: flex; flex-direction: column; gap: var(--s1); }
+.joints.empty { color: var(--dim); font-size: 11px; padding: var(--s1) 2px; }
+/* An empty strip that means something is WRONG (lib/jointAbsence.ts): an arm that
+   publishes state without joint positions is locked out or its bus read is failing,
+   and it used to read the same dim grey as a peer that simply has no joints. */
+.joints.empty[data-tone="attention"] { color: var(--warn, #ffb454); }
+.joints.empty .hint { display: block; color: var(--dim); font-size: 10px; margin-top: 3px; line-height: 1.35; }
+/* A remedy is prose (the measured ones run 396-617 chars), and a grid tile is not a document:
+   unclamped, one silent arm made a 268px card 60% remedy and pushed every sibling down the page.
+   Four lines keep the ACTIONABLE first sentence ("Ask the OS who holds it first: lsof ...") while
+   the element's title holds all of it, and the detail drawer / record panel render it unclamped. */
+.card .joints.empty .hint {
+  display: -webkit-box; -webkit-line-clamp: 4; -webkit-box-orient: vertical;
+  overflow: hidden; cursor: help;
+}
+.joint { display: flex; align-items: center; gap: var(--s3); }
+.jname { font-size: 10px; font-family: var(--mono); color: var(--dim); width: 88px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex-shrink: 0; }
+/* Joint-strip freshness (lib/jointFreshness.ts). A frozen stream must not keep
+   presenting the last frame as the arm's position: the values fade and the note
+   says what they actually are. `lagging` stays fully legible - it is probably
+   still roughly right, and dimming it would cry wolf. */
+.jstale { font-size: 9.5px; color: var(--warn, #ffb454); padding: 2px 0 0 2px; line-height: 1.3; }
+.jstale.frozen { color: var(--bad, #ff6b6b); font-weight: 600; }
+.joints[data-fresh="frozen"] .jval,
+.joints[data-fresh="frozen"] .jbar { opacity: .42; }
+.joints[data-fresh="frozen"] .jfill { filter: saturate(.35); }
+@media (max-width: 480px) { .jstale { font-size: 9px; } }
+.jlegend { font-size: 9px; color: var(--dim); opacity: .75; letter-spacing: .01em; padding: 2px 0 0 2px; line-height: 1.3; }
+@media (max-width: 480px) { .jlegend { font-size: 8.5px; } }
+.jval { font-size: 10px; font-family: var(--mono); color: var(--text); width: 44px; text-align: right; flex-shrink: 0; font-variant-numeric: tabular-nums; }
+.jbar { position: relative; flex: 1; height: 5px; background: var(--panel2); border-radius: 3px; overflow: hidden; }
+.jfill { height: 100%; background: linear-gradient(90deg, var(--accent), var(--ok)); border-radius: 3px; transition: width var(--dur-fast) linear; }
+.jvel { position: absolute; right: 2px; top: 1px; width: 3px; height: 3px; border-radius: 50%; background: var(--warn); }
+
+.jointtable { width: 100%; border-collapse: collapse; font-size: 11px; margin-bottom: var(--s4); }
+.jointtable th { text-align: left; color: var(--dim); font-weight: 500; font-size: var(--fs-micro); text-transform: uppercase; letter-spacing: .08em; padding: var(--s1) var(--s2); }
+.jointtable td { padding: 3px var(--s2); border-top: 1px solid var(--border); font-family: var(--mono); }
+.jointtable td:first-child { font-family: inherit; color: var(--dim); }
+
+/* telemetry */
+.telemetry { display: flex; align-items: center; gap: var(--s3); flex-wrap: wrap; }
+.spark { width: 74px; height: 18px; flex-shrink: 0; }
+.spark polyline { fill: none; stroke: var(--accent); stroke-width: 1.2; vector-effect: non-scaling-stroke; }
+.metric { font-size: var(--fs-micro); font-family: var(--mono); color: var(--dim); }
+.metric.moving { color: var(--warn); }
+/* UX_REVIEW #6: promote "what is it doing NOW". The one fact an operator checks
+   before putting a hand near the arm should not be the least visible text on the
+   card — it is a chip with a dot, amber and pulsing while the joints change. */
+.motionchip {
+  display: inline-flex; align-items: center; gap: 5px;
+  font-size: var(--fs-micro); font-family: var(--mono); letter-spacing: .02em;
+  padding: 1px 7px 1px 6px; border-radius: var(--rpill, 999px);
+  border: 1px solid transparent;
+}
+.motiondot { width: 6px; height: 6px; border-radius: 50%; background: currentColor; flex-shrink: 0; }
+.motionchip.still { color: var(--ok); background: color-mix(in srgb, var(--ok) 10%, transparent); border-color: color-mix(in srgb, var(--ok) 28%, transparent); }
+.motionchip.moving { color: var(--warn); background: color-mix(in srgb, var(--warn) 14%, transparent); border-color: color-mix(in srgb, var(--warn) 50%, transparent); font-weight: 700; }
+.motionchip.moving .motiondot { animation: pulse .8s infinite alternate; }
+/* Not measured is not reassuring: dashed border, muted text, and deliberately
+   NOT the ok colour that a real "still" measurement earns. */
+.motionchip.unknown { color: var(--muted); background: transparent; border-style: dashed; border-color: color-mix(in srgb, var(--muted) 45%, transparent); }
+.motionchip.unknown .motiondot { background: transparent; box-shadow: inset 0 0 0 1.5px currentColor; }
+@media (prefers-reduced-motion: reduce) { .motionchip.moving .motiondot { animation: none; } }
+.metric.warn { color: var(--danger); }
+
+.streamline { font-size: var(--fs-tiny); color: var(--warn); font-family: var(--mono); }
+
+/* ── run form ──────────────────────────────────────── */
+.runform { display: flex; flex-direction: column; gap: var(--s2); }
+.controls { display: flex; gap: var(--s2); }
+.controls select {
+  background: var(--panel2); color: var(--text); border: 1px solid var(--border);
+  border-radius: var(--r2); padding: 8px 6px; font-size: var(--fs-small); max-width: 110px;
+}
+.controls input {
+  flex: 1; min-width: 0;
+  background: var(--panel2); color: var(--text); border: 1px solid var(--border);
+  border-radius: var(--r2); padding: 8px 10px; font-size: 13px;
+}
+.controls input::placeholder { color: var(--dim); opacity: .5; }
+.controls input:focus, .controls select:focus { outline: none; border-color: var(--accent); }
+.needs {
+  background: color-mix(in srgb, var(--warn) 10%, transparent); border: 1px dashed color-mix(in srgb, var(--warn) 45%, transparent);
+  color: var(--warn); font-size: var(--fs-tiny); text-align: left;
+  border-radius: var(--r2); padding: var(--s2) var(--s3); cursor: pointer;
+}
+.advanced {
+  background: var(--panel2); border: 1px solid var(--border); border-radius: var(--r3);
+  padding: var(--s4) var(--s4) var(--s2);
+}
+.advanced .field { margin-bottom: var(--s3); }
+.advanced-actions { display: flex; align-items: center; gap: var(--s3); flex-wrap: wrap; margin-bottom: var(--s2); }
+.validation { font-size: var(--fs-tiny); font-family: var(--mono); border-radius: var(--r2); padding: var(--s2) var(--s3); word-break: break-word; }
+.validation.ok { color: var(--ok); background: color-mix(in srgb, var(--ok) 10%, transparent); }
+.validation.bad { color: var(--danger); background: color-mix(in srgb, var(--danger) 10%, transparent); }
+
+/* ── empty state ───────────────────────────────────── */
+.empty-fleet {
+  flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center;
+  gap: var(--s4); padding: var(--s7) var(--s6) calc(var(--dock-h) + var(--s6)); text-align: center;
+}
+.empty-icon { font-size: 44px; opacity: .6; }
+.empty-fleet h2 { font-size: 18px; font-weight: 600; }
+.empty-fleet p { color: var(--dim); font-size: var(--fs-body); max-width: 46ch; }
+.empty-fleet pre {
+  background: var(--panel); border: 1px solid var(--border); border-radius: var(--r4);
+  padding: var(--s5) var(--s6); font-size: 12.5px; text-align: left; color: var(--ok);
+  overflow-x: auto; max-width: 100%;
+}
+.tokenprompt { display: flex; gap: var(--s3); }
+.tokenprompt input {
+  background: var(--panel2); color: var(--text); border: 1px solid var(--border);
+  border-radius: var(--r2); padding: 10px 12px; font-size: var(--fs-body); min-width: 220px;
+}
+.tokenprompt input:focus { outline: none; border-color: var(--accent); }
+
+/* ── drawer (settings / activity / devices) ────────── */
+.drawer-backdrop {
+  position: fixed; inset: 0; z-index: 80;
+  background: #000a; backdrop-filter: blur(3px);
+  display: flex; justify-content: flex-end;
+  animation: fade var(--dur) ease-out;
+}
+@keyframes fade { from { opacity: 0; } }
+.drawer {
+  width: min(480px, 100%); height: 100%;
+  display: flex; flex-direction: column;
+  background: var(--bg); border-left: 1px solid var(--border);
+  box-shadow: var(--shadow2);
+  animation: slidein var(--dur) ease-out;
+}
+.drawer.wide { width: min(720px, 100%); }
+@keyframes slidein { from { transform: translateX(24px); opacity: .6; } }
+.drawer-head {
+  display: flex; align-items: center; justify-content: space-between; gap: var(--s3);
+  padding: var(--s4) var(--s5);
+  /* rescan / ✕ must not sit under the fixed STOP ALL */
+  padding-right: 150px;
+  padding-top: calc(var(--s4) + env(safe-area-inset-top));
+  border-bottom: 1px solid var(--border);
+}
+.drawer-head h2 { font-size: var(--fs-lg); font-weight: 600; }
+.drawer-head > div { display: flex; gap: var(--s2); }
+.tabs { display: flex; gap: var(--s1); padding: var(--s3) var(--s4) 0; overflow-x: auto; border-bottom: 1px solid var(--border); }
+.tab {
+  background: none; border: none; border-bottom: 2px solid transparent;
+  color: var(--quiet); font-size: var(--fs-small); padding: var(--s2) var(--s3) var(--s3);
+  cursor: pointer; white-space: nowrap;
+}
+.tab:hover { color: var(--text); }
+.tab.on { color: var(--text); border-bottom-color: var(--accent); }
+.drawer-body { flex: 1; overflow-y: auto; padding: var(--s5); padding-bottom: var(--s7); }
+.drawer-body section { margin-bottom: var(--s6); }
+.drawer-body h3 {
+  font-size: var(--fs-small); font-weight: 600; text-transform: uppercase; letter-spacing: .08em;
+  color: var(--dim); margin-bottom: var(--s3);
+  display: flex; align-items: center; justify-content: space-between; gap: var(--s3);
+}
+.drawer-body h3 em { font-style: normal; font-family: var(--mono); text-transform: none; letter-spacing: 0; }
+.drawer-body .result { margin-bottom: var(--s4); }
+.drawer-foot {
+  border-top: 1px solid var(--border); padding: var(--s3) var(--s5);
+  padding-bottom: calc(var(--s3) + env(safe-area-inset-bottom));
+  font-size: 11.5px; color: var(--dim); font-family: var(--mono); line-height: 1.5;
+  max-height: 28dvh; overflow-y: auto;
+}
+.sheet-actions { display: flex; gap: var(--s3); flex-wrap: wrap; margin: var(--s3) 0 var(--s4); }
+.envlist { display: flex; flex-direction: column; }
+
+/* ── activity ──────────────────────────────────────── */
+.activity { list-style: none; display: flex; flex-direction: column; gap: 2px; }
+.activity li {
+  display: grid; grid-template-columns: 42px 20px 1fr auto;
+  gap: var(--s2); align-items: baseline;
+  padding: var(--s2) var(--s3); border-radius: var(--r2);
+  font-size: 11.5px; border-left: 2px solid transparent;
+}
+.activity li:nth-child(odd) { background: var(--panel); }
+.activity li.ok { border-left-color: color-mix(in srgb, var(--ok) 55%, transparent); }
+.activity li.bad { border-left-color: var(--danger); background: color-mix(in srgb, var(--danger) 8%, transparent); }
+.activity .when { color: var(--dim); font-family: var(--mono); font-size: var(--fs-micro); }
+.activity .what { min-width: 0; word-break: break-word; }
+.activity .what code { font-size: var(--fs-micro); }
+.activity .what em { font-style: normal; color: var(--dim); font-family: var(--mono); }
+.activity .verdict { font-family: var(--mono); color: var(--dim); }
+.activity li.bad .verdict { color: var(--danger); }
+.activity details { grid-column: 1 / -1; }
+.activity summary { cursor: pointer; color: var(--dim); font-size: var(--fs-micro); }
+.activity pre {
+  white-space: pre-wrap; word-break: break-word; font-size: var(--fs-micro);
+  color: var(--dim); background: var(--panel2); border-radius: var(--r1);
+  padding: var(--s2); margin-top: var(--s1); max-height: 200px; overflow: auto;
+}
+
+/* ── devices ───────────────────────────────────────── */
+.devlist { list-style: none; display: flex; flex-direction: column; gap: var(--s2); margin-bottom: var(--s4); }
+.devlist li {
+  display: flex; align-items: center; gap: var(--s3); flex-wrap: wrap;
+  background: var(--panel); border: 1px solid var(--border); border-radius: var(--r2);
+  padding: var(--s3); font-size: var(--fs-small);
+}
+.devlist li.dead { border-color: color-mix(in srgb, var(--danger) 40%, var(--border)); }
+.devlist li b { font-family: var(--mono); font-size: var(--fs-small); }
+.devlist .meta { color: var(--dim); font-size: 11px; }
+.devlist .devactions { margin-left: auto; display: flex; gap: var(--s2); }
+.logtail {
+  flex-basis: 100%; font-family: var(--mono); font-size: var(--fs-micro); color: var(--dim);
+  background: #000; border-radius: var(--r1); padding: var(--s2);
+  white-space: pre-wrap; word-break: break-word; max-height: 140px; overflow: auto;
+}
+.logtail.tall { max-height: 40dvh; }
+
+/* calibration (read-only view of lerobot's files) */
+.calibgroup {
+  display: flex; align-items: baseline; gap: var(--s2);
+  margin: var(--s3) 0 var(--s2); font-size: var(--fs-small); font-weight: 600;
+}
+.calibgroup .meta { color: var(--dim); font-size: 11px; text-transform: uppercase; letter-spacing: .04em; }
+/* A full-width row under the li's flex children, so the table is not squeezed
+   into the leftover space beside the id. */
+.calibdetail { flex-basis: 100%; margin-top: var(--s2); }
+.calibdetail .jointtable { margin-bottom: var(--s2); }
+
+/* ── sheets (e-stop) ───────────────────────────────── */
+.sheet-backdrop {
+  position: fixed; inset: 0; z-index: 90;
+  background: #000c; backdrop-filter: blur(4px);
+  display: flex; align-items: center; justify-content: center; padding: var(--s5);
+  animation: fade var(--dur) ease-out;
+}
+.sheet {
+  width: min(460px, 100%); max-height: 86dvh; overflow-y: auto;
+  background: var(--panel); border: 1px solid var(--border); border-radius: var(--r4);
+  padding: var(--s6); box-shadow: var(--shadow2);
+  display: flex; flex-direction: column; gap: var(--s4);
+}
+.sheet h2 { font-size: var(--fs-lg); font-weight: 700; }
+.sheet p { font-size: var(--fs-body); color: var(--dim); line-height: 1.55; }
+.sheet.estop-sheet { border-color: color-mix(in srgb, var(--danger) 40%, var(--border)); }
+/* Help sheet (JOURNEYS #7). Scrollable because it is read, not scanned, and the
+   phone is where a tooltip could never have helped. */
+.sheet.help-sheet { max-width: 620px; max-height: 82vh; overflow-y: auto; }
+.help-head { display: flex; align-items: center; justify-content: space-between; gap: var(--s3); }
+.help-topic { margin-top: var(--s4); }
+.help-topic h3 { font-size: var(--fs-body); font-weight: 700; margin-bottom: var(--s2); }
+.help-topic p { font-size: var(--fs-body); color: var(--dim); line-height: 1.55; margin-bottom: var(--s2); }
+.help-links, .help-paths { list-style: none; display: grid; gap: var(--s2); font-size: var(--fs-body); }
+.help-paths { color: var(--dim); }
+.help-links a { color: var(--accent, #7cc7ff); text-decoration: underline; }
+.sheet.help-sheet kbd {
+  font-family: var(--mono, ui-monospace, Menlo, monospace); font-size: 11px;
+  border: 1px solid var(--border); border-radius: 4px; padding: 0 4px; opacity: .85;
+}
+.sheet.estop-sheet.danger { border-color: var(--danger); box-shadow: 0 0 0 1px var(--danger), var(--shadow2); }
+.estop-list { list-style: none; display: flex; flex-direction: column; gap: var(--s1); }
+.estop-list li {
+  display: flex; justify-content: space-between; gap: var(--s3);
+  font-size: var(--fs-small); font-family: var(--mono);
+  padding: var(--s2) var(--s3); border-radius: var(--r2); background: var(--panel2);
+}
+.estop-list li.stopped { color: var(--ok); }
+.estop-list li.no_answer { color: var(--warn); background: color-mix(in srgb, var(--warn) 10%, transparent); }
+.estop-list li.not_stopped { color: var(--danger); background: color-mix(in srgb, var(--danger) 12%, transparent); }
+
+/* ── robot detail ──────────────────────────────────── */
+.detail-backdrop {
+  position: fixed; inset: 0; z-index: 70;
+  background: #000c; backdrop-filter: blur(4px);
+  display: flex; align-items: stretch; justify-content: center;
+  padding: var(--s4); animation: fade var(--dur) ease-out;
+}
+.detail {
+  width: min(1180px, 100%); display: flex; flex-direction: column;
+  background: var(--bg); border: 1px solid var(--border-hi); border-radius: var(--r4);
+  box-shadow: var(--shadow2); overflow: hidden;
+}
+.detail.stale { border-color: color-mix(in srgb, var(--warn) 40%, var(--border)); }
+.detail-head {
+  display: flex; align-items: center; gap: var(--s3);
+  padding: var(--s4) var(--s5); border-bottom: 1px solid var(--border);
+}
+.detail-head h2 { font-size: var(--fs-body); font-family: var(--mono); font-weight: 600; }
+/* R8 corollary: hiding the hostname on phone-sized CARDS is only honest if the
+   detail view really shows it in full. It did not — measured 28px of
+   `cagatays-Mac-mini.local` at 390px. The head wraps instead of shaving the one
+   place the hostname is supposed to be readable. */
+.detail-head { flex-wrap: wrap; }
+.detail-head .host { max-width: none; margin-left: 0; order: 9; flex-basis: 100%; }
+@media (min-width: 640px) { .detail-head .host { flex-basis: auto; order: 0; margin-left: auto; } }
+.detail-head .btn.ghost { margin-left: auto; }
+/* The E-STOP layer (z-index 200, fixed top-right) is deliberately painted over everything —
+   that is the iteration-1 safety fix. The corollary is that every header with a control in the
+   top-right corner has to RESERVE that corner, exactly as .fleetbar and .drawer-head do.
+   .detail-head did not: measured on a phone, the detail screen's `cameras` button sat at
+   x293-361/y25-69 and document.elementFromPoint returned button.estop, so it could not be
+   tapped at all. STOP ALL must keep winning; the other control has to move. */
+.detail-head { padding-right: 150px; }
+.detail > .stale-note { padding: var(--s2) var(--s5); }
+.detail-body {
+  flex: 1; overflow-y: auto; display: grid; gap: var(--s5);
+  grid-template-columns: 1fr; padding: var(--s5);
+  padding-bottom: calc(var(--dock-h) + env(safe-area-inset-bottom));
+}
+@media (min-width: 900px) { .detail-body { grid-template-columns: 1.5fr 1fr; } }
+.detail-stage { display: flex; flex-direction: column; gap: var(--s4); min-width: 0; }
+.side { display: flex; flex-direction: column; min-width: 0; }
+.side h3 {
+  font-size: var(--fs-small); font-weight: 600; text-transform: uppercase; letter-spacing: .08em;
+  color: var(--dim); margin: 0 0 var(--s3);
+  display: flex; align-items: baseline; gap: var(--s3);
+}
+.side h3 em { font-style: normal; font-family: var(--mono); text-transform: none; letter-spacing: 0; }
+.side .joints { margin-bottom: var(--s4); }
+.steps { list-style: none; display: flex; flex-direction: column; gap: 2px; max-height: 320px; overflow-y: auto; }
+.steps li { display: flex; gap: var(--s3); font-size: var(--fs-micro); padding: 2px var(--s2); border-radius: var(--r1); }
+.steps li:nth-child(odd) { background: var(--panel); }
+.steps .stepno { color: var(--warn); font-family: var(--mono); flex-shrink: 0; }
+.steps .mono { color: var(--dim); word-break: break-all; }
+
+/* ── agent dock ────────────────────────────────────── */
+.dock-bar {
+  position: fixed; bottom: 0; left: 0; right: 0; z-index: 60;
+  display: flex; gap: var(--s3); align-items: center;
+  padding: 10px 12px calc(10px + env(safe-area-inset-bottom));
+  background: var(--glass-2);
+  backdrop-filter: blur(var(--glass-blur-lg)) saturate(var(--glass-sat));
+  -webkit-backdrop-filter: blur(var(--glass-blur-lg)) saturate(var(--glass-sat));
+  border-top: 1px solid var(--glass-border);
+}
+.dock-bar input {
+  flex: 1; min-width: 0;
+  background: var(--glass-1); color: var(--text);
+  border: 1px solid var(--glass-border); border-radius: var(--rpill);
+  padding: 11px 18px; font-size: 14px;
+  backdrop-filter: blur(var(--glass-blur));
+  -webkit-backdrop-filter: blur(var(--glass-blur));
+  transition: background var(--dur) var(--ease-out), border-color var(--dur) var(--ease-out);
+}
+.dock-bar input::placeholder { color: var(--dim); opacity: .55; }
+.dock-bar input:hover { border-color: var(--glass-border-hi); }
+.dock-bar input:focus { outline: none; background: var(--glass-3); border-color: color-mix(in srgb, var(--accent) 60%, transparent); }
+.mic {
+  width: 44px; height: 44px; border-radius: 50%; border: 1px solid var(--glass-border);
+  background: var(--glass-1); font-size: 18px; cursor: pointer; flex-shrink: 0;
+  backdrop-filter: blur(var(--glass-blur));
+  -webkit-backdrop-filter: blur(var(--glass-blur));
+  transition: box-shadow var(--dur), border-color var(--dur);
+}
+.mic.live { border-color: var(--danger); box-shadow: 0 0 14px color-mix(in srgb, var(--danger) 55%, transparent); animation: pulse .8s infinite alternate; }
+.mic.connecting { opacity: .6; }
+.dock-send {
+  width: 44px; height: 44px; border-radius: 50%; border: none;
+  background: var(--accent-fill); color: #fff; font-size: 18px; font-weight: 700; cursor: pointer; flex-shrink: 0;
+}
+.dock-send:disabled { background: var(--glass-1); color: var(--dim); backdrop-filter: blur(var(--glass-blur)); }
+.dock-min {
+  background: none; border: none; color: var(--quiet); font-size: 14px; cursor: pointer; padding: var(--s2);
+  /* R7: measured 23x28 — one pixel short of the floor, on the button that closes
+     the agent dock. min-width, not padding, so the icon stays centred. */
+  min-width: 24px; min-height: 24px;
+}
+/* R7: the help sheet's external links measured 144x16 and 79x16 — the last
+   sub-24px targets in the app. A link is a tap target like any other. */
+.help-sheet a { display: inline-flex; align-items: center; min-height: 24px; }
+
+.dock-panel {
+  position: fixed; bottom: 64px; left: 0; right: 0; z-index: 55;
+  max-height: 52dvh; display: flex; flex-direction: column;
+  background: var(--glass-3);
+  backdrop-filter: blur(var(--glass-blur-lg)) saturate(var(--glass-sat));
+  -webkit-backdrop-filter: blur(var(--glass-blur-lg)) saturate(var(--glass-sat));
+  border-top: 1px solid var(--glass-border);
+}
+.dock-head {
+  display: flex; align-items: center; gap: var(--s2); flex-wrap: wrap;
+  padding: var(--s2) var(--s4); border-bottom: 1px solid var(--border);
+}
+.dock-scroll { overflow-y: auto; padding: var(--s5) var(--s5) var(--s3); display: flex; flex-direction: column; gap: var(--s3); }
+.dock-hint { color: var(--dim); font-size: 13px; text-align: center; padding: var(--s5) 0; line-height: 1.9; }
+.dock-hint em { color: var(--accent); font-style: normal; }
+/* A hint that reports something LOST (an unreadable job ledger) has to be
+   readable as trouble at a glance, not as ordinary placeholder text. */
+.dock-hint.warn { color: var(--warn); text-align: left; }
+.dock-hint .hint { margin-top: var(--s4); }
+.dock-notice {
+  align-self: center; font-size: 11.5px; color: var(--dim);
+  background: var(--panel); border: 1px solid var(--border); border-radius: var(--rpill);
+  padding: 3px 12px;
+}
+.dock-notice.bad { color: var(--danger); border-color: color-mix(in srgb, var(--danger) 45%, transparent); align-self: stretch; text-align: center; border-radius: var(--r2); }
+/* A message that never left the browser must not look like a delivered one. */
+.bubble.user.undelivered {
+  border: 1px dashed color-mix(in srgb, var(--warn) 55%, transparent);
+  background: color-mix(in srgb, var(--warn) 8%, transparent);
+}
+.bubble-foot { display: flex; align-items: center; gap: var(--s2); margin-top: var(--s2); }
+.bubble { max-width: 86%; border-radius: var(--r4); padding: 9px 13px; font-size: var(--fs-body); line-height: 1.45; white-space: pre-wrap; word-break: break-word; }
+.bubble.user {
+  align-self: flex-end; color: #fff;
+  background: linear-gradient(160deg, var(--accent-fill), color-mix(in srgb, var(--accent-fill) 82%, #000));
+  box-shadow: 0 6px 20px color-mix(in srgb, var(--accent-fill) 30%, transparent);
+}
+.bubble.agent {
+  align-self: flex-start;
+  background: linear-gradient(180deg, rgb(255 255 255 / .05), rgb(255 255 255 / 0) 60%), var(--glass-2);
+  border: 1px solid var(--glass-border);
+  backdrop-filter: blur(var(--glass-blur));
+  -webkit-backdrop-filter: blur(var(--glass-blur));
+}
+.bubble .reasoning { margin-bottom: var(--s2); }
+.bubble .reasoning summary { cursor: pointer; color: var(--dim); font-size: var(--fs-tiny); }
+.bubble .reasoning pre { white-space: pre-wrap; font-size: var(--fs-tiny); color: var(--dim); margin-top: var(--s1); }
+.toolchip {
+  display: inline-block; margin: 0 var(--s2) var(--s2) 0;
+  font-size: 10px; font-family: var(--mono);
+  padding: 2px 8px; border-radius: var(--r5);
+  background: color-mix(in srgb, var(--warn) 14%, transparent); color: var(--warn);
+}
+.toolchip.success { background: color-mix(in srgb, var(--ok) 14%, transparent); color: var(--ok); }
+.toolchip.error { background: color-mix(in srgb, var(--danger) 14%, transparent); color: var(--danger); }
+.voice-transcript { padding: var(--s3) var(--s5); font-size: var(--fs-small); color: var(--warn); border-top: 1px solid var(--border); font-family: var(--mono); }
+
+/* ── checkpoint type-ahead ─────────────────────────── */
+.ckpt { position: relative; flex: 1; min-width: 0; }
+.ckpt input { width: 100%; }
+.ckpt-spin { position: absolute; right: 10px; top: 50%; transform: translateY(-50%); color: var(--dim); }
+.ckpt-menu {
+  position: absolute; z-index: 80; left: 0; right: 0; top: calc(100% + 4px);
+  max-height: 260px; overflow-y: auto;
+  background: var(--panel2); border: 1px solid var(--border); border-radius: 10px;
+  box-shadow: 0 12px 32px #000a;
+}
+.ckpt-row {
+  display: flex; justify-content: space-between; align-items: center; gap: 8px;
+  width: 100%; padding: 8px 10px; background: none; border: none;
+  color: var(--text); font-size: 12px; cursor: pointer; text-align: left;
+}
+.ckpt-row:hover { background: color-mix(in srgb, var(--blue) 12%, transparent); }
+.ckpt-id { font-family: ui-monospace, monospace; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ckpt-meta { display: flex; gap: 8px; align-items: center; flex-shrink: 0; color: var(--dim); font-size: 10.5px; }
+.ckpt-local { color: var(--green); font-weight: 700; }
+.ckpt-meta em { color: var(--amber); font-style: normal; }
+
+/* ── training tab ──────────────────────────────────── */
+.train-sheet {
+  position: fixed; inset: 0; z-index: 70; overflow-y: auto;
+  background: color-mix(in srgb, var(--bg) 96%, transparent);
+  backdrop-filter: blur(20px);
+  padding: 16px; display: flex; flex-direction: column; gap: 16px;
+  max-width: 720px; margin: 0 auto;
+}
+.train-head { display: flex; justify-content: space-between; align-items: center; }
+/* Q133: keep this head's ✕ OUT FROM UNDER THE E-STOP. .estop-layer is fixed at the top right with
+   z-index 200 and MUST stay supreme — an emergency stop that a panel can cover is not an emergency
+   stop. But .train-sheet (z-index 70) is max-width 720 centred inside inset:0, so its right edge
+   tracks the viewport: the ✕ lands under the e-stop's footprint for every width below ~944px
+   (measured: at 390 the ✕ spans 350-374 and the e-stop 283-376; at 844, 742-766 vs 710-830; at
+   1024 they no longer touch). The consequence was not cosmetic — on every phone, portrait AND
+   landscape, elementFromPoint at the ✕'s centre returned button.estop, so the gesture for "close
+   this panel" pressed the fleet's stop instead, and the panel could not be closed at all.
+   The head reserves the corner instead; the e-stop keeps its z-index. */
+@media (max-width: 960px) {
+  .train-sheet .train-head { padding-right: 136px; }
+}
+.train-head h2 { font-size: 18px; }
+.train-form {
+  display: flex; flex-direction: column; gap: 10px;
+  background: var(--panel); border: 1px solid var(--border); border-radius: 14px; padding: 14px;
+}
+.train-row { display: flex; gap: 10px; }
+.train-row .field { flex: 1; }
+.train-actions { display: flex; gap: 8px; justify-content: flex-end; }
+.btn.wide { width: auto; padding: 0 18px; height: 38px; font-size: 13px; }
+.train-msg { font-size: 12px; font-family: ui-monospace, monospace; color: var(--dim); white-space: pre-wrap; }
+/* A missing camera is not dim chrome: it decides whether the dataset being
+   collected is usable at all, so it is readable at a glance and boxed. */
+.train-msg.warn { color: var(--warn); }
+.rec-camera-notice {
+  border: 1px solid color-mix(in srgb, var(--warn) 45%, transparent);
+  background: color-mix(in srgb, var(--warn) 10%, transparent);
+  border-radius: 10px; padding: 8px 10px; margin: 0 0 8px; line-height: 1.45;
+}
+/* Same treatment as the camera notice, and for the same reason: a rate that
+   disagrees with the declared fps decides whether the dataset is trainable. */
+.rec-fps-notice {
+  border: 1px solid color-mix(in srgb, var(--warn) 45%, transparent);
+  background: color-mix(in srgb, var(--warn) 10%, transparent);
+  border-radius: 10px; padding: 8px 10px; margin: 0 0 8px; line-height: 1.45;
+}
+/* Same box again, third of the three "this dataset may be worthless" notices
+   (missing camera, wrong rate, an arm that never moved). Same shape on purpose:
+   the operator learns one visual language for "the artifact is at risk", and a
+   new colour per finding would only make them re-learn it. */
+.rec-motion-notice {
+  border: 1px solid color-mix(in srgb, var(--warn) 45%, transparent);
+  background: color-mix(in srgb, var(--warn) 10%, transparent);
+  border-radius: 10px; padding: 8px 10px; margin: 0 0 8px; line-height: 1.45;
+}
+/* declared vs captured, in the counter row. Dim while they agree - a healthy
+   rate is not news; it only earns colour when it is wrong. */
+.rec-rate { color: var(--dim); font-size: var(--fs-tiny); margin-left: auto; }
+.rec-rate-ok { color: var(--ok, var(--dim)); }
+.rec-rate-bad { color: var(--warn); font-weight: 700; }
+.train-jobs { display: flex; flex-direction: column; gap: 10px; padding-bottom: 90px; }
+.train-jobs h3 { font-size: 14px; color: var(--dim); }
+.train-job { background: var(--panel); border: 1px solid var(--border); border-radius: 12px; padding: 12px; display: flex; flex-direction: column; gap: 6px; }
+.train-job-head { display: flex; justify-content: space-between; align-items: center; }
+.jstate { font-size: var(--fs-tiny); font-weight: 700; padding: 2px 8px; border-radius: 10px; background: var(--panel2); color: var(--dim); }
+.jstate.running { color: var(--amber); }
+.jstate.completed, .jstate.succeeded { color: var(--green); }
+.jstate.error, .jstate.failed { color: var(--red); }
+.train-job-meta { font-size: 11.5px; color: var(--dim); font-family: ui-monospace, monospace; }
+.train-job-metrics { font-size: 10.5px; color: var(--amber); font-family: ui-monospace, monospace; }
+.train-job-actions { display: flex; justify-content: flex-end; }
+
+/* ── resume flow in the estop sheet ────────────────── */
+.resume-box { display: flex; flex-direction: column; gap: 8px; margin-top: 10px; }
+.resume-row { display: flex; gap: 8px; }
+.resume-row input {
+  flex: 1; min-width: 0;
+  background: var(--panel2); color: var(--text);
+  border: 1px solid color-mix(in srgb, var(--red) 40%, var(--border));
+  border-radius: 9px; padding: 9px 12px; font-size: 13px;
+  font-family: ui-monospace, monospace;
+}
+.resume-row input:focus { outline: none; border-color: var(--red); }
+
+/* =====================================================================
+ * ZERO-UI GLASS LAYER (U12) -- design tokens + base primitives
+ *
+ * The concept: the interface is not the subject. Camera frames and
+ * telemetry are the surface; every control sits on a pane of frosted
+ * glass that lets the content behind it show through, and recedes
+ * (lower opacity, no border) until it is hovered, focused or active.
+ *
+ * Rules for anything built on this layer:
+ *  - a glass pane is background + blur + a 1px hairline + a top
+ *    highlight; it never gets a hard drop shadow on a dark field.
+ *  - transparency is layered, not stacked: at most two panes deep, or
+ *    the blur turns to mud and text loses contrast (WCAG AA is the
+ *    floor, so --glass-solid exists for panes that carry small text).
+ *  - reduced motion and no-backdrop-filter browsers both get a solid
+ *    fallback -- glass is decoration, never the only signal.
+ * ===================================================================== */
+:root {
+  /* glass surfaces: rgb triples so alpha can be tuned per use */
+  --glass-rgb: 22 29 41;
+  --glass-tint: 74 158 255;      /* accent used as a cold tint */
+  --glass-1: rgb(var(--glass-rgb) / .34);   /* recedes: chrome at rest */
+  --glass-2: rgb(var(--glass-rgb) / .55);   /* default pane */
+  --glass-3: rgb(var(--glass-rgb) / .74);   /* pane carrying small text */
+  --glass-solid: #131a25;                   /* no-blur fallback */
+  --glass-border: rgb(255 255 255 / .07);
+  --glass-border-hi: rgb(255 255 255 / .16);
+  --glass-sheen: linear-gradient(180deg, rgb(255 255 255 / .07), rgb(255 255 255 / 0) 46%);
+  --glass-blur: 18px;
+  --glass-blur-lg: 30px;
+  --glass-sat: 140%;
+
+  /* ambient field behind the glass (what the blur has to chew on) */
+  --amb-1: rgb(74 158 255 / .13);
+  --amb-2: rgb(0 229 160 / .10);
+  --amb-3: rgb(120 90 255 / .09);
+
+  /* motion: one easing for entrances, one for anything reversible */
+  --ease: cubic-bezier(.32, .72, 0, 1);
+  --ease-out: cubic-bezier(.16, 1, .3, 1);
+
+  /* focus ring, shared by every interactive primitive */
+  --ring: 0 0 0 2px var(--bg), 0 0 0 4px color-mix(in srgb, var(--accent) 70%, transparent);
+}
+
+/* Q165: what "more contrast" was answering with, before this — one rule, for the logo.
+ *
+ * The palette was already ratio-audited for TEXT and clears AA everywhere (--dim measures 6.18:1 on
+ * --panel, --quiet 8.88, --text 15.34), so the honest gap is not the words. It is the LINES: --border
+ * measures 1.23:1 against --panel and --border-hi 1.58:1, against a 3:1 minimum for non-text. That is
+ * deliberate — a glass UI draws its edges by implication — and it is exactly the deliberate choice a
+ * person asking the OS for more contrast is asking to have overridden. Every ratio below is measured,
+ * not estimated.
+ *
+ * Remapping TOKENS rather than rules means every component inherits this at once, including ones
+ * written later, and nothing needs to remember to opt in. */
+@media (prefers-contrast: more) {
+  :root {
+    --dim: #b9c6d6;            /* 10.46:1 on --panel, was 6.18 — still visibly quieter than --text */
+    --quiet: #d5dfea;          /* 13.44:1, was 8.88 */
+    --border: #6b7c94;         /* 4.26:1 on --panel, was 1.23 — an edge you can actually see */
+    --border-hi: #8b9cb4;      /* 6.29:1, was 1.58 */
+    /* Glass keeps its blur (that is Q162's preference, not this one) but stops hiding its edges,
+     * and the panes go opaque so text sits on a known background instead of on whatever is behind. */
+    --glass-border: #6b7c94;
+    --glass-border-hi: #8b9cb4;
+    --glass-1: var(--glass-solid);
+    --glass-2: var(--glass-solid);
+    --glass-3: var(--glass-solid);
+    --glass-sheen: none;
+  }
+  .mark .mark-back { fill: var(--text); }
+}
+
+/* Ambient depth. Fixed, inert, behind everything -- gives the blur
+ * something to smear so the panes read as glass and not as grey boxes. */
+body::before {
+  content: '';
+  position: fixed; inset: -20vmax; z-index: -1; pointer-events: none;
+  background:
+    radial-gradient(38vmax 38vmax at 12% -4%, var(--amb-1), transparent 62%),
+    radial-gradient(34vmax 34vmax at 96% 12%, var(--amb-3), transparent 60%),
+    radial-gradient(44vmax 44vmax at 62% 104%, var(--amb-2), transparent 64%);
+}
+
+/* --- the pane primitive ------------------------------------------- */
+.glass {
+  position: relative;
+  background: var(--glass-2);
+  border: 1px solid var(--glass-border);
+  border-radius: var(--r4);
+  backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-sat));
+  -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-sat));
+  transition: background var(--dur) var(--ease-out), border-color var(--dur) var(--ease-out);
+}
+/* the top highlight: a pane catches light on its upper edge */
+.glass::before {
+  content: '';
+  position: absolute; inset: 0; border-radius: inherit;
+  background: var(--glass-sheen);
+  pointer-events: none;
+}
+.glass > * { position: relative; }
+.glass.quiet { background: var(--glass-1); border-color: transparent; }
+.glass.quiet:hover, .glass.quiet:focus-within { background: var(--glass-2); border-color: var(--glass-border); }
+.glass.dense { background: var(--glass-3); }
+.glass.lifted { backdrop-filter: blur(var(--glass-blur-lg)) saturate(var(--glass-sat)); box-shadow: 0 24px 60px rgb(0 0 0 / .38); }
+.glass.flush { border-radius: 0; }
+
+/* --- glass controls ----------------------------------------------- */
+.gbtn {
+  display: inline-flex; align-items: center; gap: var(--s2);
+  min-height: 34px; padding: 0 var(--s4);
+  background: var(--glass-1); color: var(--quiet);
+  border: 1px solid var(--glass-border); border-radius: var(--rpill);
+  font: inherit; font-size: var(--fs-small); cursor: pointer;
+  backdrop-filter: blur(var(--glass-blur));
+  -webkit-backdrop-filter: blur(var(--glass-blur));
+  transition: color var(--dur-fast) var(--ease-out), background var(--dur-fast) var(--ease-out), border-color var(--dur-fast) var(--ease-out);
+}
+.gbtn:hover { color: var(--text); background: var(--glass-2); border-color: var(--glass-border-hi); }
+.gbtn.on { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 50%, transparent); background: color-mix(in srgb, var(--accent) 12%, var(--glass-1)); }
+.gbtn:disabled { opacity: .5; cursor: default; }
+
+.ginput {
+  width: 100%; min-width: 0; min-height: 38px;
+  padding: var(--s3) var(--s4);
+  background: var(--glass-1); color: var(--text);
+  border: 1px solid var(--glass-border); border-radius: var(--r3);
+  font: inherit; font-size: var(--fs-body);
+  backdrop-filter: blur(var(--glass-blur));
+  -webkit-backdrop-filter: blur(var(--glass-blur));
+  transition: border-color var(--dur-fast) var(--ease-out), background var(--dur-fast) var(--ease-out);
+}
+.ginput::placeholder { color: var(--dim); opacity: .55; }
+.ginput:hover { border-color: var(--glass-border-hi); }
+.ginput:focus { outline: none; background: var(--glass-2); border-color: color-mix(in srgb, var(--accent) 60%, transparent); }
+
+/* one focus ring for everything reachable by keyboard (WCAG 2.4.7) */
+:where(a, button, [role='button'], input, select, textarea, summary, [tabindex]):focus-visible {
+  outline: none;
+  box-shadow: var(--ring);
+  border-radius: var(--r2);
+}
+
+/* --- honest fallbacks --------------------------------------------- */
+@supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
+  .glass, .gbtn, .ginput { background: var(--glass-solid); }
+  .card, .bubble.agent { background: var(--glass-solid); border-color: var(--border); }
+  .fleetbar, .dock-bar, .dock-panel { background: var(--panel); }
+  .dock-bar input, .mic { background: var(--panel2); border-color: var(--border); }
+  .glass.quiet { background: var(--panel); }
+  body::before { opacity: .5; }
+}
+
+
+/* ── joint history strips (U6) ─────────────────────── */
+/* The bar says where the joint is; the trace to its right says where it has
+ * been for the last minute, oldest at the left edge. Colours come through CSS
+ * variables so the canvas cannot drift from the rest of the palette. */
+.joint { position: relative; }
+.jhist {
+  flex: 1 1 84px; min-width: 56px; height: 22px; display: flex; align-items: center;
+  --spark-line: var(--accent);
+  --spark-fill: color-mix(in srgb, var(--accent) 26%, transparent);
+  --spark-axis: rgb(255 255 255 / .07);
+}
+.jspark { display: block; width: 100%; height: 22px; }
+/* the live bar keeps priority over the history on narrow cards */
+.joint .jbar { flex: 1 1 60px; }
+@media (max-width: 420px) {
+  /* THUMB ZONE (brief: "estop always thumb-reachable"): on a phone the top-right
+   * corner is the hardest reach there is, and the old rule SHRANK the button
+   * there — the control a scared human aims at got smaller exactly where aiming
+   * is hardest. It now sits bottom-right above the agent dock, full size
+   * (44px min-height from the base rule, untouched). z-index 200 supremacy is
+   * unchanged — the corner was incidental, the always-on-top law is not.
+   * The dock bar is ~64px tall; 76px + safe-area clears it. */
+  .estop-layer {
+    top: auto; right: 14px;
+    bottom: calc(76px + env(safe-area-inset-bottom));
+  }
+  /* the top-right clearances existed only to dodge the estop up there;
+   * with it gone the heads get their width back on the smallest screens */
+  .jhist { flex-basis: 60px; min-width: 40px; }
+  /* full-bleed sheets scroll their actions clear of the relocated estop, so a
+   * wide ▶ button's right edge can never sit under the brake at tap time */
+  .train-sheet { padding-bottom: calc(140px + env(safe-area-inset-bottom)); }
+  .detail-body { padding-bottom: calc(140px + env(safe-area-inset-bottom)); }
+}
+
+/* ── camera truth states (U13) ──────────────────────── */
+/* A stale frame must never look like a live one. When the stream stalls the
+ * pixels stay (they are still the best evidence available) but they are dimmed,
+ * desaturated and covered by a scrim carrying the age of the frame. */
+.camtile.frozen img { filter: grayscale(.85) brightness(.42); }
+.camtile.frozen .camstate {
+  background: radial-gradient(120% 90% at 50% 50%, rgb(10 14 20 / .35), rgb(10 14 20 / .82));
+}
+.camstale { color: var(--warn); }
+/* the overlay sits on glass so the tile keeps the language of the rest */
+.camtile:not(.cam-live) .camstate { backdrop-filter: blur(2px); -webkit-backdrop-filter: blur(2px); }
+/* colour carries the same meaning it does everywhere: amber = degraded, red =
+ * something is actually wrong, dim = nothing has happened yet */
+.cam-stalled .camstate b { color: var(--warn); }
+.cam-busy .camstate b, .cam-error .camstate b, .cam-unauthorized .camstate b { color: var(--danger); }
+.cam-retrying .camstate b, .cam-closed .camstate b { color: var(--warn); }
+.cam-live .camstate { display: none; }
+/* a tile with no pixels at all should not pretend to be a screen that is off */
+.camtile:not(.cam-live):not(.frozen) {
+  background:
+    linear-gradient(180deg, rgb(255 255 255 / .03), rgb(255 255 255 / 0) 60%),
+    repeating-linear-gradient(135deg, rgb(255 255 255 / .022) 0 8px, transparent 8px 16px),
+    #05080d;
+}
+
+/* ── keyboard + touch (a11y pass) ───────────────────── */
+/*
+ * Every focusable thing gets a visible ring. This carries !important on
+ * purpose: a dozen component rules say `outline: none` next to a border-colour
+ * change, and a 1px border shift at ~1.5:1 is not a focus indicator - it is a
+ * hint that a mouse user does not need and a keyboard user cannot rely on.
+ * A focus ring that any later rule can delete is not a guarantee, so this one
+ * is not deletable. :focus-visible (not :focus) keeps mouse clicks quiet.
+ */
+a:focus-visible, button:focus-visible, input:focus-visible, select:focus-visible,
+textarea:focus-visible, summary:focus-visible, [tabindex]:focus-visible,
+[role='button']:focus-visible {
+  outline: 2px solid var(--focus) !important;
+  outline-offset: 2px !important;
+}
+/* On a dark tile the ring needs its own separation from the pixels behind it. */
+.camtile :focus-visible, .card :focus-visible { box-shadow: 0 0 0 4px rgb(10 14 20 / .75); }
+
+/* Touch: the predicate is the POINTER, not the screen width - an iPad in
+ * landscape is wide and still has fingers. 40px is the floor for anything that
+ * commands a robot; the dock's mic/send are already 44px. */
+/* Touch targets. Measured on a 390x844 phone against the live dashboard: the nav chips and
+   card controls were already 40px, but `.peername` — THE way into a robot's detail screen —
+   was 25px, and the "MESH UNENCRYPTED" security chip was 24px. A security explanation nobody
+   can reliably hit is not an explanation. 44px is the platform minimum on both iOS and
+   Android; verify_touch_targets.mjs measures it in a real browser so a later layout change
+   cannot quietly walk it back. */
+@media (pointer: coarse) {
+  .btn, .gbtn, .chip, .tab, .dock-min, .camswitch .chip, .twinbtn, .drawer-body button,
+  .controls select, .controls input, .field input, .field select,
+  .peername, .badge.warnchip {
+    min-height: 44px;
+  }
+  /* A glyph-only control needs the width too: ▶ (run) and ⚙ (configure) measured 42px wide,
+     and a mis-tap between "run this arm" and "open settings" is not a cosmetic problem. */
+  .btn.go, .btn.ghost, .dock-min { min-width: 44px; }
+  /* Growing the name button must not re-centre the robot's name. */
+  .peername { display: inline-flex; align-items: center; text-align: left; }
+  .chip, .tab, .camswitch .chip { padding-left: var(--s4); padding-right: var(--s4); }
+  /* iOS zooms the whole page when a focused input is under 16px */
+  input, select, textarea { font-size: max(16px, var(--fs-body)); }
+  /* Any text field, not only the ones inside .controls/.field: the chat dock's input sat at
+     40px because it belonged to neither. Checkboxes and radios keep their own size — a 44px
+     tick box is a different bug. */
+  input:not([type=checkbox]):not([type=radio]), select, textarea { min-height: 44px; }
+  /* A link is a tap target too: the help screen's two external links measured 24px tall.
+     inline-flex so the minimum actually applies to an inline element. */
+  .help-links a[href], .panel a[href], .helpcard a[href], .drawer-body a[href] {
+    min-height: 44px; display: inline-flex; align-items: center;
+  }
+}
+
+/* A screen reader needs the words a sighted user gets from colour and motion. */
+.sr-only {
+  position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+  overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0;
+}
+
+/* record screen (U8) */
+.rec-counter { display: flex; align-items: baseline; gap: 6px; flex-wrap: wrap; }
+.rec-counter b { font-size: 28px; font-variant-numeric: tabular-nums; }
+.rec-counter span { color: var(--dim); font-size: 13px; }
+.rec-counter .rec-task { flex-basis: 100%; font-size: 12px; }
+.rec-live { background: var(--danger-fill); animation: recpulse 1.6s ease-in-out infinite; }
+@keyframes recpulse { 50% { filter: brightness(1.25); } }
+@media (prefers-reduced-motion: reduce) { .rec-live { animation: none; } }
+.rec-live-view.armed { border-color: var(--danger); }
+.rec-live-head { display: flex; justify-content: space-between; align-items: center; font-size: 12px; color: var(--dim); }
+.rec-dot { width: 10px; height: 10px; border-radius: 50%; background: var(--danger); animation: recpulse 1.6s ease-in-out infinite; }
+@media (prefers-reduced-motion: reduce) { .rec-dot { animation: none; } }
+.rec-strip { display: flex; gap: 8px; overflow-x: auto; padding-bottom: 4px; }
+.rec-ep {
+  flex: 0 0 150px; display: flex; flex-direction: column; gap: 6px;
+  background: var(--panel); border: 1px solid var(--border); border-radius: 12px; padding: 10px;
+}
+.rec-ep.dead { opacity: .45; }
+.rec-ep-head { display: flex; justify-content: space-between; font-size: 12px; }
+.rec-ep-head span { color: var(--dim); font-variant-numeric: tabular-nums; }
+.rec-thumbs { display: flex; gap: 4px; }
+.rec-thumbs img { width: 100%; min-width: 0; border-radius: 6px; aspect-ratio: 4/3; object-fit: cover; }
+.rec-ep-gone { font-size: 11px; color: var(--dim); text-align: center; }
+
+/* --- AuthGate: the passkey door (full-viewport, glass card) ------------- */
+.authgate {
+  position: fixed; inset: 0; z-index: 100;
+  display: grid; place-items: center; padding: var(--s6);
+  background: var(--bg);
+}
+.authcard {
+  display: flex; flex-direction: column; gap: var(--s5); align-items: flex-start;
+  width: min(380px, 100%);
+  background: var(--glass-2); border: 1px solid var(--border);
+  border-radius: var(--r5); padding: var(--s7);
+  backdrop-filter: blur(18px); -webkit-backdrop-filter: blur(18px);
+}
+.authcard h1 { font-size: var(--fs-lg); font-weight: 600; }
+.authhost { font-size: 11px; font-family: var(--mono); color: var(--dim); letter-spacing: .04em; margin: 2px 0 0; }
+.authcard form { display: flex; flex-direction: column; gap: var(--s4); width: 100%; align-items: stretch; }
+.authcard .btn.go { padding: 10px 14px; font-size: var(--fs-body); }
+.authcard .dim { line-height: 1.5; }
+.authwarn {
+  font-size: var(--fs-small); line-height: 1.5; border-radius: var(--r2); padding: var(--s3) var(--s4);
+  color: #e8c268; background: color-mix(in srgb, #e8c268 12%, transparent);
+}
+.autherror {
+  font-size: var(--fs-small); line-height: 1.4; border-radius: var(--r2); padding: var(--s3) var(--s4);
+  color: var(--danger); background: color-mix(in srgb, var(--danger) 12%, transparent);
+}
+
+/* record screen: keyboard legend + role hint (product loop iter 9) */
+.rec-keys { opacity: 0.75; }
+.rec-keys kbd {
+  display: inline-block;
+  padding: 1px 7px;
+  border: 1px solid var(--line, rgba(255, 255, 255, 0.18));
+  border-bottom-width: 2px;
+  border-radius: 5px;
+  background: rgba(255, 255, 255, 0.06);
+  font: 600 11px/1.6 ui-monospace, SFMono-Regular, Menlo, monospace;
+  color: var(--text, #e8eef6);
+}
+.rec-hint { opacity: 0.8; max-width: 60ch; }
+
+/* ---- camera identity gallery (devices drawer) ---- */
+.camgrid {
+  display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+  gap: 10px; margin-bottom: 10px;
+}
+.camcard {
+  border: 1px solid var(--border, #263042); border-radius: var(--r2, 10px);
+  background: var(--panel2, #161d29); overflow: hidden;
+}
+.camcard.claimed { opacity: 0.75; }
+.camcard-head {
+  display: flex; justify-content: space-between; align-items: baseline;
+  padding: 6px 9px; font-size: 12px;
+}
+.camcard-head .meta { font-size: 11px; color: var(--dim, #8b98a9); }
+.camcard-body { padding: 0 9px 9px; }
+.camcard-body img {
+  width: 100%; border-radius: var(--r1, 6px); display: block; cursor: pointer;
+  aspect-ratio: 4 / 3; object-fit: cover; background: #000;
+}
+.campreview-btn { width: 100%; aspect-ratio: 4 / 3; }
+.claimed-note { font-size: 11.5px; color: var(--dim, #8b98a9); padding-bottom: 9px; }
+.camerr { font-size: 11px; color: var(--danger, #ff4d5e); margin-top: 6px; overflow-wrap: anywhere; }
+.camnames { display: flex; flex-wrap: wrap; gap: 6px; margin: 4px 0; }
+
+/* ---- training: story sentence, progress, loss curve ---- */
+.train-story {
+  font-size: 12.5px; line-height: 1.5; color: var(--text, #e8eef6);
+  background: var(--panel2, #161d29); border: 1px solid var(--border, #263042);
+  border-left: 3px solid var(--accent, #4a9eff);
+  border-radius: var(--r1, 6px); padding: 8px 10px; margin: 0 0 10px;
+}
+.train-story.empty { color: var(--dim, #8b98a9); border-left-color: var(--border, #263042); }
+.train-progress {
+  position: relative; height: 16px; border-radius: 8px; overflow: hidden;
+  background: var(--panel3, #1c2432); margin: 6px 0 2px;
+}
+.train-progress-fill {
+  position: absolute; inset: 0 auto 0 0;
+  background: var(--accent-fill, #2a6fd0); transition: width 0.6s ease;
+}
+.train-progress-label {
+  position: relative; display: block; text-align: center;
+  font: 600 10px/16px ui-monospace, SFMono-Regular, Menlo, monospace;
+  color: #fff;
+}
+.loss-spark { margin: 4px 0 2px; }
+.loss-spark.empty { font-size: 11px; color: var(--dim, #8b98a9); padding: 4px 0; }
+.loss-spark canvas { display: block; width: 100%; }
+.loss-spark-label {
+  display: flex; justify-content: space-between; font-size: 10.5px;
+  color: var(--text, #e8eef6); margin-top: 2px;
+}
+.loss-spark-label .dim { color: var(--dim, #8b98a9); }
+
+/* ---- checkpoint search: hub health + HF auth state ---- */
+.ckpt-note {
+  font-size: 11px; padding: 6px 10px; color: var(--dim, #8b98a9);
+  border-bottom: 1px solid var(--border, #263042);
+}
+.ckpt-note.ok { color: #7dd8a0; }
+.ckpt-note.warn { color: #ffcc66; }
+.ckpt-note.bad { color: #ff8d99; }
+
+/* ---- deploy intent banner: a prefill that explains itself ---- */
+.deploy-banner {
+  display: flex; align-items: center; justify-content: space-between; gap: 8px;
+  font-size: 11.5px; line-height: 1.4; color: var(--text, #e8eef6);
+  background: rgba(74, 158, 255, 0.08);
+  border: 1px solid var(--accent, #4a9eff); border-radius: var(--r1, 6px);
+  padding: 6px 10px; margin-bottom: 8px;
+}
+.deploy-banner .btn { flex-shrink: 0; }
+
+/* ---- status ribbon: the 5-second answer, one sentence per robot ---- */
+.status-ribbon {
+  display: flex; align-items: baseline; gap: 8px;
+  font-size: 11.5px; line-height: 1.35;
+  padding: 5px 10px; margin: 2px 0 6px;
+  border-radius: var(--r1, 6px);
+  border: 1px solid var(--border, #263042);
+  /* was --dim, which is this app's DISABLED colour (UX_REVIEW #2): the calm state
+     is the one an operator reads most often and it was the faintest text here. */
+  color: var(--text-2, #c3cedb);
+}
+.status-ribbon .status-word {
+  text-transform: uppercase; font-size: 10px; letter-spacing: 0.06em;
+  flex-shrink: 0;
+}
+.status-ribbon.ok { border-color: rgba(125, 216, 160, 0.35); }
+.status-ribbon.ok .status-word { color: #7dd8a0; }
+.status-ribbon.active { border-color: rgba(74, 158, 255, 0.5); color: var(--text, #e8eef6); }
+.status-ribbon.active .status-word { color: #7cc0ff; }
+.status-ribbon.warn { border-color: rgba(255, 204, 102, 0.55); color: var(--text, #e8eef6); }
+.status-ribbon.warn .status-word { color: #ffcc66; }
+.status-ribbon.danger { border-color: var(--danger, #ff4d5e); color: var(--text, #e8eef6); }
+.status-ribbon.danger .status-word { color: #ff8d99; }
+
+/* A contained crash (components/ErrorBoundary.tsx) — readable, not a white page. */
+.crashcard {
+  position: fixed; z-index: 150; left: 50%; top: 50%; transform: translate(-50%, -50%);
+  max-width: min(560px, calc(100vw - 32px)); padding: 20px 22px;
+  background: var(--surface-2, #16181d); color: var(--text, #e8ecf1);
+  border: 1px solid var(--danger, #ff4d5e); border-radius: 14px;
+  box-shadow: 0 24px 60px rgba(0, 0, 0, .55);
+}
+.crashcard h3 { margin: 0 0 8px; font-size: 15px; }
+.crashcard p { margin: 6px 0; font-size: 13px; line-height: 1.45; }
+.crashcard pre {
+  margin: 10px 0; padding: 9px 11px; overflow: auto; max-height: 30vh;
+  font-size: 12px; white-space: pre-wrap; word-break: break-word;
+  background: rgba(0, 0, 0, .35); border-radius: 8px;
+}
+.crashcard-actions { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 12px; }
+
+/* Confirm before a policy moves a real arm (components/RunConfirm.tsx). */
+.run-confirm { max-width: min(520px, calc(100vw - 32px)); }
+.run-confirm h2 { margin: 0 0 6px; font-size: 16px; }
+.rc-lede { margin: 0 0 14px; font-size: 13px; line-height: 1.5; }
+.rc-facts { margin: 0 0 14px; display: grid; gap: 7px; }
+.rc-facts > div { display: grid; grid-template-columns: 78px 1fr; gap: 10px; align-items: baseline; }
+.rc-facts dt { font-size: 11px; letter-spacing: .04em; text-transform: uppercase; color: var(--text-3, #8b98a9); }
+.rc-facts dd { margin: 0; font-size: 13px; word-break: break-word; }
+.rc-mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; }
+.run-confirm kbd {
+  padding: 1px 5px; border-radius: 4px; font-size: 11px;
+  background: rgba(255, 255, 255, .1); border: 1px solid rgba(255, 255, 255, .18);
+}
+
+/* A safety refusal you can answer (components/ConsentSheet.tsx, U18).
+   The sheet reads like a permission prompt, not an error toast: risk first,
+   then exactly what "yes" allows. Buttons use the *-fill tokens because the
+   text tokens tuned for dark backgrounds fail AA as a fill (measured earlier:
+   white on --accent = 2.75:1, on --accent-fill = 4.90:1). */
+.consent-sheet { max-width: min(560px, calc(100vw - 32px)); }
+.consent-sheet h2 { margin: 0 0 8px; font-size: 16px; line-height: 1.35; }
+.cs-risk { margin: 0 0 14px; font-size: 13px; line-height: 1.55; color: var(--text-2, #c8d2de); }
+.cs-label {
+  font-size: 11px; letter-spacing: .05em; text-transform: uppercase;
+  color: var(--text-3, #8b98a9); margin-bottom: 5px;
+}
+.cs-grants { margin: 0 0 14px; padding-left: 18px; font-size: 13px; line-height: 1.6; }
+.cs-grants li { margin: 0; }
+.cs-note, .cs-error, .cs-blocked {
+  margin: 0 0 12px; padding: 9px 11px; border-radius: 8px;
+  font-size: 12.5px; line-height: 1.5;
+}
+.cs-note { background: color-mix(in srgb, var(--ok, #38d39f) 14%, transparent); border: 1px solid color-mix(in srgb, var(--ok, #38d39f) 34%, transparent); }
+.cs-error, .cs-blocked { background: color-mix(in srgb, var(--danger, #ff4d5e) 13%, transparent); border: 1px solid color-mix(in srgb, var(--danger, #ff4d5e) 34%, transparent); }
+.cs-raw { margin: 0 0 12px; font-size: 12px; }
+.cs-raw summary { cursor: pointer; color: var(--text-3, #8b98a9); }
+.cs-raw pre {
+  margin: 8px 0 0; padding: 9px 11px; max-height: 180px; overflow: auto;
+  font-size: 11.5px; line-height: 1.45; white-space: pre-wrap; word-break: break-word;
+  background: rgba(0, 0, 0, .35); border-radius: 8px;
+}
+/* Shared additions: an affirmative primary fill and a compact button. */
+.btn.primary { background: var(--accent-fill); color: #fff; font-weight: 700; border: 1px solid transparent; }
+.btn.primary:disabled { background: var(--panel2); color: var(--dim); cursor: default; transform: none; }
+.btn.danger:disabled { opacity: .5; cursor: default; transform: none; }
+.btn.small { font-size: 11.5px; padding: 3px 8px; }
+
+/* Granted permissions, with the way back (components/ConsentSettings.tsx). */
+.consent-settings { margin-top: 20px; border-top: 1px solid var(--border); padding-top: 14px; }
+.consent-settings h3 { margin: 0 0 10px; }
+.cg-row {
+  display: flex; gap: 12px; align-items: flex-start; justify-content: space-between;
+  padding: 9px 0; border-bottom: 1px solid color-mix(in srgb, var(--border) 60%, transparent);
+}
+.cg-row > div { min-width: 0; }
+.cg-row b { font-size: 13px; word-break: break-word; }
+.cg-row .hint { margin-top: 2px; }
+
+/* Camera states (U14): a camera that cannot be opened stays on screen and says
+   why, because "unplugged", "held by a robot" and "blocked by macOS privacy"
+   need three different actions from the operator. */
+.campill {
+  font-size: 10.5px; letter-spacing: .03em; text-transform: uppercase;
+  padding: 2px 7px; border-radius: 999px; white-space: nowrap;
+  border: 1px solid transparent;
+}
+.campill-in_use { background: color-mix(in srgb, var(--accent-fill) 26%, transparent); color: #dce9ff; border-color: color-mix(in srgb, var(--accent-fill) 55%, transparent); }
+.campill-blocked { background: var(--danger-fill); color: #fff; }
+.campill-unreadable, .campill-unknown { background: color-mix(in srgb, #d9a020 30%, transparent); color: #ffe6b0; border-color: color-mix(in srgb, #d9a020 55%, transparent); }
+.campill-absent { background: rgba(255, 255, 255, .07); color: var(--text-3, #8b98a9); }
+/* `vanished` is a real event, not an empty slot: warn-toned like `unreadable`, and dashed because
+   what is on screen is a MEMORY of a camera rather than a camera. A new state with no rule here
+   would inherit the bare pill and read as calm. */
+.campill-vanished {
+  background: color-mix(in srgb, #d9a020 22%, transparent); color: #ffe6b0;
+  border-style: dashed; border-color: color-mix(in srgb, #d9a020 55%, transparent);
+}
+.camname-hint { font-size: 11.5px; color: var(--text-3, #8b98a9); margin: 2px 0 6px; }
+.cam-why { display: grid; gap: 6px; font-size: 12.5px; line-height: 1.45; }
+.camcard.cam-blocked { border-color: color-mix(in srgb, var(--danger) 45%, transparent); }
+.camproblem { margin-bottom: 12px; display: grid; gap: 4px; }
+.campill-assigned { background: color-mix(in srgb, #d9a020 34%, transparent); color: #ffe6b0; border-color: color-mix(in srgb, #d9a020 60%, transparent); }
+
+/* Servo-board roster: a measured role and the ABSENCE of one must not look the
+   same (U2). Uses this sheet's real tokens - my first pass invented
+   --surface-2/-3, --hairline, --radius-sm and --text-2 (only --text-2 exists
+   now, defined by UX_REVIEW #2), so
+   the badge rendered on a transparent background. A token name is only a token
+   if the sheet defines it. */
+.boardlist { list-style: none; margin: 0; padding: 0; display: grid; gap: var(--s3); }
+.boardlist > li {
+  padding: var(--s3) var(--s4); border-radius: var(--r2);
+  background: var(--panel2); border: 1px solid var(--border);
+  display: grid; gap: var(--s2);
+}
+.row.between { display: flex; align-items: center; justify-content: space-between; gap: var(--s3); }
+.rolebadge {
+  font-size: var(--fs-micro); letter-spacing: .05em; text-transform: uppercase;
+  padding: 2px var(--s3); border-radius: var(--rpill);
+  border: 1px solid var(--border-hi); color: var(--dim);
+  background: var(--panel3); white-space: nowrap;
+}
+/* Both fills are the AA-safe twins, not --accent/--red: white on those measured
+   2.75:1 and 3.24:1 in the earlier a11y pass. */
+.rolebadge.follower { color: #fff; background: var(--accent-fill); border-color: transparent; }
+.rolebadge.leader   { color: #08120c; background: var(--green); border-color: transparent; }
+.rolebadge.unpowered, .rolebadge.mixed {
+  color: #1a1206; background: var(--amber); border-color: transparent;
+}
+/* Never measured reads as an invitation, not as a fault. */
+.rolebadge.unmeasured { font-style: italic; color: var(--dim); background: transparent; }
+/* U15 origin marker. Deliberately the quietest pill on the card: "you started
+   this one yourself" is a fact about a process, not a fault and not a warning,
+   so it must not compete with hw-off or the status ribbon for attention. */
+.originbadge {
+  font-size: var(--fs-micro); letter-spacing: .05em; text-transform: uppercase;
+  padding: 2px var(--s3); border-radius: var(--rpill);
+  border: 1px dashed var(--border-hi); color: var(--dim);
+  background: transparent; white-space: nowrap; cursor: help;
+}
+.boardlist .small { font-size: var(--fs-tiny); }
+.boardlist .warn, p.warn { color: var(--amber); }
+
+/* The deliberate-continue row under a contradicted arm pair. The box is big
+   enough to hit on a phone next to the arms (44px target), because that is where
+   this decision is actually made. */
+.ackrow {
+  display: flex; align-items: flex-start; gap: var(--s3);
+  padding: var(--s3) var(--s4); border-radius: var(--r2);
+  background: var(--panel2); border: 1px solid var(--border-hi);
+  font-size: var(--fs-tiny); color: var(--text); cursor: pointer;
+}
+.ackrow input { width: 18px; height: 18px; margin: 2px 0 0; flex: none; accent-color: var(--amber); }
+.ackrow span { line-height: 1.45; }
+
+/* U19: camera reconfigure sheet — one row per camera, inputs sized to their
+ * content (a fps field the width of a sentence invites a sentence). */
+.cam-config-row { display: flex; gap: 6px; margin: 6px 0; align-items: center; }
+.cam-config-row input { min-width: 0; }
+.cam-config-row input:nth-child(1) { flex: 2; }
+.cam-config-row input:nth-child(2) { flex: 2; }
+.cam-config-row input:nth-child(3),
+.cam-config-row input:nth-child(4),
+.cam-config-row input:nth-child(5) { flex: 1; max-width: 64px; }
+.cam-config-add { display: flex; gap: 6px; flex-wrap: wrap; margin: 8px 0; }
+.cam-config-modes { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; margin: 0 0 8px 4px; font-size: 12px; }
+.cam-config-modes .btn { padding: 2px 8px; font-size: 11px; }
+
+/* R5: the prefilled lerobot-calibrate command, inside a servo-board row.
+   Tokens, not raw values, so it stays inside the U12 glass language. The
+   command line must be readable and SELECTABLE even when navigator.clipboard
+   is unavailable (a non-secure LAN origin), so it wraps on the flag
+   boundaries instead of scrolling out of sight. */
+.calibcmd { margin-top: var(--s3); padding: var(--s3) var(--s4);
+  border-radius: var(--s3); background: var(--glass-1); border: 1px solid var(--glass-border); }
+.calibcmd .row { align-items: center; gap: var(--s3); margin-top: var(--s2); }
+.calibcmd .hint { margin-top: var(--s2); }
+/* The calibration wizard: one step at a time, the live range table while recording. */
+.calibwizard { margin-top: var(--s3); padding: var(--s3) var(--s4);
+  border-radius: var(--s3); background: var(--glass-2, var(--glass-1));
+  border: 1px solid var(--glass-border-hi); }
+.calibwizard h4 { margin: 0 0 var(--s2); }
+.calibwizard h4.warn { color: var(--warn, #e6a23c); }
+.calibwizard .row { align-items: center; gap: var(--s3); margin-top: var(--s3); flex-wrap: wrap; }
+.calibwizard .jointtable { margin-top: var(--s2); }
+.calibwizard details { margin-top: var(--s2); }
+.cmdline { display: block; margin-top: var(--s2); padding: var(--s2) var(--s3);
+  border-radius: var(--s2); background: rgb(0 0 0 / .34); border: 1px solid var(--glass-border-hi);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: var(--fs-small);
+  line-height: 1.55; user-select: all; overflow-wrap: anywhere; }
+
+/* An activity row whose outcome is UNPROVEN (an e-stop nobody acknowledged, a
+   command the robot never answered) is neither the green of success nor the red
+   of a failed call: the call worked, the effect is unknown. */
+.activity li.warn { border-left: 3px solid var(--warn); background: color-mix(in srgb, var(--warn) 6%, transparent); }
+.activity li.warn .verdict { color: var(--warn); }
+.activity li.pending .verdict { color: var(--muted); }
+.actnote { color: var(--muted); font-size: .82em; }
+.activity li.warn .actnote { color: color-mix(in srgb, var(--warn) 80%, var(--fg)); }
+
+/* A training job whose status feed stopped: the numbers stay readable (they were
+   true once) but visibly lose their authority, and the age is stated. */
+.train-job.stalefeed .train-progress-fill { opacity: .45; }
+.train-job.stalefeed .jstate { opacity: .6; }
+.jstale { font-size: .74rem; color: var(--warn); border: 1px dashed color-mix(in srgb, var(--warn) 45%, transparent); border-radius: 999px; padding: 0 .4em; }
+.train-msg.warn { color: color-mix(in srgb, var(--warn) 85%, var(--fg)); }
+
+/* A verdict that no longer describes the form: readable (it was true for the
+   input it was taken on) but stripped of its authority - never green. */
+.validation.stale { color: var(--muted); background: transparent; border: 1px dashed color-mix(in srgb, var(--warn) 45%, transparent); }
+
+/* A preflight that had nothing to inspect: an honest neutral, never the green of
+   a checked policy. */
+.validation.thin { color: var(--muted); background: transparent; border: 1px solid color-mix(in srgb, var(--muted) 30%, transparent); }
+
+/* A calibration id that was CHECKED against the files on this machine reads as a
+   quiet confirmation - green enough to be evidence, never louder than a warning. */
+.hint.ok { color: color-mix(in srgb, var(--ok, #4ade80) 80%, var(--muted)); }
+.btn.tiny { padding: 1px 7px; font-size: 11px; line-height: 1.6; }
+
+/* E-stop lockout badge (Q43). Loud for a real lockout — this is the state that had a
+   locked arm rendering as a healthy green card for ten hours — and deliberately quiet
+   (dashed, dim) for honest doubt, so the two are never confused at a glance. */
+.lockbadge {
+  font-size: var(--fs-micro); letter-spacing: .05em; text-transform: uppercase;
+  padding: 2px var(--s3); border-radius: var(--rpill); flex-shrink: 0;
+  font-family: var(--mono); white-space: nowrap;
+}
+.lockbadge.locked {
+  /* Opaque fill, like the e-stop itself: it is read on top of cards and drawers. */
+  background: var(--danger); color: var(--bg); border: 1px solid var(--danger);
+  font-weight: 600;
+}
+.lockbadge.doubt { border: 1px dashed var(--warn); color: var(--warn); background: none; }
+.card-head .lockbadge { flex-shrink: 0; }
+/* The fleet-wide line. Sits with the other page banners, above the grid. */
+.lockout-banner {
+  display: flex; gap: var(--s3); align-items: flex-start;
+  padding: var(--s3) var(--s4); border-radius: var(--r2);
+  font-size: var(--fs-small); line-height: 1.4;
+}
+.lockout-banner.bad {
+  background: color-mix(in srgb, var(--danger) 14%, transparent);
+  border: 1px solid var(--danger); color: var(--fg);
+}
+.lockout-banner.warn {
+  background: color-mix(in srgb, var(--warn) 12%, transparent);
+  border: 1px dashed var(--warn); color: var(--fg);
+}
+
+/* ---- Q52 local-address hint: quiet, dismissible, never alarming ---- */
+.lan-hint {
+  display: flex; align-items: center; gap: 10px;
+  padding: 9px 14px; margin-bottom: 6px;
+  border-radius: 12px;
+  border: 1px solid color-mix(in srgb, var(--accent, #6ea8fe) 34%, transparent);
+  background: color-mix(in srgb, var(--accent, #6ea8fe) 9%, transparent);
+  font-size: 13px; line-height: 1.4;
+}
+.lan-hint-text { flex: 1; min-width: 0; opacity: .92; }
+.lan-hint-go { white-space: nowrap; font-weight: 600; }
+.lan-hint-dismiss {
+  background: none; border: 0; cursor: pointer; font-size: 17px;
+  line-height: 1; padding: 2px 4px; opacity: .6;
+}
+.lan-hint-dismiss:hover { opacity: 1; }
+@media (max-width: 640px) {
+  .lan-hint { flex-wrap: wrap; }
+  .lan-hint-text { flex-basis: 100%; }
+}
+
+/* ---- Q45: a dead camera named on the card, not only in the dimmed tile ---- */
+.cam-dead-note {
+  margin: 4px 0 2px; padding: 5px 9px;
+  border-radius: 9px; font-size: 12px; line-height: 1.35;
+  border: 1px solid color-mix(in srgb, var(--warn, #e8b339) 38%, transparent);
+  background: color-mix(in srgb, var(--warn, #e8b339) 11%, transparent);
+}
+
+/* Q53: the server is pacing this tile. Deliberately quiet - it is not an error, it is
+   an explanation for why the picture is slower than usual. */
+.camtile .campaced {
+  position: absolute; left: 8px; right: 8px; bottom: 26px;
+  font-size: 10px; line-height: 1.3; letter-spacing: 0.01em;
+  color: rgba(255, 255, 255, 0.72);
+  background: rgba(12, 14, 20, 0.55); backdrop-filter: blur(6px);
+  border-radius: 6px; padding: 3px 6px;
+}
+
+/* Q36: an artifact the server could not confirm, held back from staging. Boxed like the
+   record screen's dataset-at-risk notices - same visual language for "this may not work",
+   and the two buttons make it a decision rather than a scolding. */
+.artifact-hold {
+  border: 1px solid color-mix(in srgb, var(--warn) 45%, transparent);
+  background: color-mix(in srgb, var(--warn) 10%, transparent);
+  border-radius: 10px; padding: 10px; line-height: 1.45;
+  display: flex; flex-direction: column; gap: 8px;
+}
+.artifact-hold-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+
+/* Q40: the two next actions after an interrupted recording, as a list of words rather than
+   buttons — a screen that offers "delete this dataset" one tap from a form is a screen that will
+   eventually delete an hour of hand-guiding by accident. */
+.hold-next { margin: 6px 0 0; padding-left: 18px; display: grid; gap: 3px; }
+.hold-next li { font-size: 12px; opacity: .8; line-height: 1.45; }
+
+/* Q41: the spawn memory line on a serial-port row. Quiet — it is a fact about the past, sitting
+   next to a button that starts a real robot. */
+.remembered { margin-top: 4px; gap: 8px; align-items: center; }
+
+/* Q54: the remedy attached to the wrong-rate notice. Stacked, not inline, because the reason
+   sentence is long and a button beside a warning must not look like "dismiss". */
+.rec-fps-fix { display: flex; flex-direction: column; gap: 4px; margin-top: 8px; align-items: flex-start; }
+.rec-fps-fix .btn { padding: 4px 10px; font-size: 0.85rem; }
+.rec-fps-fix .fieldsay { max-width: 46ch; }
+
+/* Q58: consenting to a delete must not look like any other checkbox on the form. */
+.field.check.consent-clear {
+  border: 1px solid var(--bad, #ff6b6b);
+  border-radius: var(--r2, 8px);
+  padding: var(--s2, 8px) var(--s3, 12px);
+  background: color-mix(in srgb, var(--bad, #ff6b6b) 8%, transparent);
+}
+.field.check.consent-clear span { color: var(--bad, #ff6b6b); font-weight: 600; }
+
+/* Episode box beside "replay in sim": narrow, because it holds an index and not a name. Sized in ch so
+   it never becomes a tap target too small to hit on the phone (the touch-target audit owns that rule). */
+.ep-box {
+  width: 5.5ch;
+  min-height: 44px;
+  padding: 0 0.4rem;
+  text-align: center;
+  border-radius: 10px;
+  border: 1px solid var(--glass-border, rgba(255, 255, 255, 0.14));
+  background: var(--glass-bg, rgba(255, 255, 255, 0.06));
+  color: inherit;
+  font-variant-numeric: tabular-nums;
+}
+.ep-box:disabled { opacity: 0.45; }
+
+/* Q88 — the pre-lapse session warning, above everything the app draws.
+ * Sticky rather than fixed so it pushes the fleet bar down instead of covering it: this is
+ * information, and the STOP ALL corner must never be under anything. Amber, not red — the
+ * session still works for another few minutes, and the operator's decision is "sign in before
+ * you start recording", not "stop". */
+.sessionwarn {
+  position: sticky; top: 0; z-index: 60;
+  padding: 8px 14px; padding-right: 136px;
+  font-size: 13px; line-height: 1.35;
+  color: var(--warn);
+  background: color-mix(in srgb, var(--warn) 14%, var(--bg));
+  border-bottom: 1px solid color-mix(in srgb, var(--warn) 35%, transparent);
+  backdrop-filter: blur(8px);
+}
+@media (max-width: 720px) {
+  .sessionwarn { padding-right: 104px; }
+}
+
+/* Q136: the first-run start snippet. `white-space: pre` measured 453px of content inside a 340px
+   column at 390px viewport, hiding the `mode="real", port=…` half of the example behind a horizontal
+   scroll nobody finds — on the one snippet a brand-new user meets first. pre-wrap keeps the line
+   breaks that make it valid python to read; anywhere lets a long /dev/cu.usbmodem5AB01584281 path
+   (this Mac's real ports, which Q46 substitutes into the example) break instead of pushing the box. */
+pre.startsnip {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  max-width: 100%;
+}
+
+/* Q137: these ten lines lived in src/index.css from the day each feature landed — a file main.tsx does
+   NOT import, so #2486's episode-labels disclosure and U22's death note have BOTH been rendering
+   class names no stylesheet defines. Moved here, where they actually apply. */
+/* #2486 episode-labels disclosure on a dataset row. Muted = nothing judged yet, which must look
+   different from a judged row without shouting: absence is information, not an error. */
+.ds-labels { display: flex; flex-direction: column; gap: 4px; margin: 6px 0 2px; }
+.ds-label-row { display: flex; align-items: baseline; gap: 8px; font-size: 0.86rem; }
+.ds-label-row.muted { opacity: 0.62; }
+.ds-label-badge { width: 1.2em; text-align: center; }
+
+/* U22: a dead managed child names its cause. `unexplained` is not an alarm colour —
+   it is a quieter amber, because "who killed it" is a question, not a fault. */
+.deathnote { font-size: 0.78rem; opacity: 0.85; margin: 0.2rem 0 0 1.2rem; line-height: 1.35; }
+.deathnote.unexplained { color: #e8b44a; }
+
+/* Q139: the deploy-.py disclosure (DevicePanel). Both class names were in the JSX from the day Q123
+   landed and NEITHER had a rule — found by Q138's guard, then measured: at 390px the <pre> was 1476px
+   wide, and with no rule to contain it the pre EXPANDED .dev-snippet to 1476 too, so the drawer clipped
+   it at 389px with NO scrollbar. Three quarters of the generated file was invisible AND unreachable —
+   on the one screen whose job is to hand you code you are about to run on another machine. Copy and
+   download worked the whole time, which is precisely why nobody noticed: the file was fine, only
+   unreadable. Same wrapping law as Q136's pre.startsnip; block styling matches .calibcmd above so the
+   two disclosures in this drawer read as siblings. min-width:0 is the part that actually stops the
+   expansion — a flex/grid child's automatic minimum is its CONTENT, so max-width alone loses. */
+.dev-snippet { margin-top: var(--s3); padding: var(--s3) var(--s4); min-width: 0; max-width: 100%;
+  border-radius: var(--s3); background: var(--glass-1); border: 1px solid var(--glass-border); }
+.dev-snippet pre.snippet { white-space: pre-wrap; overflow-wrap: anywhere; min-width: 0; max-width: 100%;
+  margin: var(--s2) 0 0; font-size: 0.78rem; line-height: 1.45; }
+
+/* Q140: the thumbnail that has not arrived yet (AuthedImg). The class was in the JSX since Q127 and had
+   NO rule, so an empty <span> is 0x0: three placeholders in a 0-height row, then the pictures pop in and
+   shove the layout. Q127 exists because a broken thumbnail reads as "the recording captured nothing" —
+   the LOADING state was telling the operator the same lie, and for longer, because these bytes come
+   through an authed fetch over the tunnel. Geometry MIRRORS `.rec-thumbs img` exactly (width, min-width,
+   aspect-ratio, radius) so the swap from placeholder to picture shifts nothing. */
+.thumb-loading { display: block; width: 100%; min-width: 0; aspect-ratio: 4/3; border-radius: 6px;
+  background: var(--glass-1); border: 1px solid var(--glass-border);
+  animation: thumb-pulse 1.4s ease-in-out infinite; }
+@keyframes thumb-pulse { 0%, 100% { opacity: 0.45; } 50% { opacity: 0.85; } }
+/* A pulsing box says "coming", a still box says "empty" — but only for people who want motion. */
+@media (prefers-reduced-motion: reduce) { .thumb-loading { animation: none; opacity: 0.6; } }
+
+/* Q142: the escape hatch on the login screen reads as a LINK, not a second primary action.
+   `.btn linklike` has been in AuthGate since the token fallback landed and .linklike had no rule, so
+   "passkey not working? sign in with an access token" inherited the full .btn look: measured 276x50,
+   solid panel background, 15px, full text colour — the same visual weight as "sign in" right above it.
+   Two equally loud buttons make the RECOMMENDED path ambiguous on the one screen a locked-out remote
+   operator has to reason about. Quieter, underlined, accent-coloured: offered, not urged. It keeps the
+   global :focus-visible ring (a button that stops looking like a button must still be findable by
+   keyboard), and enough padding to stay a >=24px tap target — a link-looking control on a phone is still
+   something a thumb has to hit. */
+.btn.linklike { min-width: 0; padding: 8px 2px; background: none; border: none; color: var(--accent);
+  font-size: var(--fs-small); text-decoration: underline; text-underline-offset: 2px; }
+.btn.linklike:hover { color: color-mix(in srgb, var(--accent) 78%, var(--text)); }
+
+/* Q166: the preference blocks live at the END on purpose. A media query adds no specificity, so a
+ * plain rule LATER in the file outranks it: this exact block sat at line 1173 while .authcard is
+ * declared at 1336, and the sign-in card kept its blur for every person who had asked the OS for
+ * less transparency. Two of its siblings worked, which is what made it invisible — the block was
+ * 80% effective and looked entirely correct. Proven in a browser now, not just asserted here. */
+@media (prefers-reduced-transparency: reduce) {
+  .glass, .gbtn, .ginput { background: var(--glass-solid); backdrop-filter: none; -webkit-backdrop-filter: none; }
+  .card, .bubble.agent { background: var(--glass-solid); border-color: var(--border); backdrop-filter: none; -webkit-backdrop-filter: none; }
+  .fleetbar, .dock-bar, .dock-panel { background: var(--panel); backdrop-filter: none; -webkit-backdrop-filter: none; }
+  .dock-bar input, .mic { background: var(--panel2); border-color: var(--border); backdrop-filter: none; }
+  /* the recede trick hides outlines; without transparency, keep them visible */
+  .card .twinbtn, .card .controls select, .card .controls input, .card .camswitch .chip { border-color: var(--border); }
+  .glass::before { background: none; }
+  body::before { display: none; }
+  /* Q162: the surfaces that were MISSING from this list, each found by asking the stylesheet
+   * which selectors apply a backdrop-filter and comparing. Eight components hand-roll the
+   * glass look instead of wearing the .glass kit, so this list is maintained by hand — and it
+   * had drifted exactly where it hurts most: the sign-in card (the FIRST thing a person with
+   * this preference set ever sees), the training sheet, the session warning, and every modal
+   * backdrop. A preference the OS forwards and the app ignores is worse than one it never had. */
+  .authcard, .train-sheet, .sessionwarn { background: var(--glass-solid); border-color: var(--border); backdrop-filter: none; -webkit-backdrop-filter: none; }
+  /* The backdrops keep DIMMING (that is how a modal says "the page behind is not yours right
+   * now") and lose only the blur — removing the dim would leave the sheet floating on live
+   * content, which is a comprehension problem, not a transparency one. */
+  .detail-backdrop, .drawer-backdrop, .sheet-backdrop { backdrop-filter: none; -webkit-backdrop-filter: none; }
+  .camtile:not(.cam-live) .camstate { background: var(--panel2); backdrop-filter: none; -webkit-backdrop-filter: none; }
+  .dock-send:disabled { backdrop-filter: none; -webkit-backdrop-filter: none; }
+  /* Found by the guard, not by reading: the Q53 pacing notice. It is the one surface a person
+   * with this preference is MOST likely to be staring at, because it appears when the picture
+   * has gone slow and they are looking for the reason. */
+  .camtile .campaced { background: var(--panel2); backdrop-filter: none; -webkit-backdrop-filter: none; }
+}
+
+/* -- sim tab ------------------------------------------ */
+.sim-sheet { max-width: 960px; }
+.sim-new .train-row { align-items: flex-end; }
+.sim-actions { align-self: flex-end; margin-bottom: var(--s4); }
+.sim-lockout {
+  display: flex; align-items: center; gap: 10px; justify-content: space-between;
+  font-size: var(--fs-small); font-family: var(--mono); color: var(--dim);
+  border-left: 3px solid var(--border); padding: 4px 10px;
+}
+.sim-lockout.clear { border-color: var(--ok); color: var(--text-2); }
+.sim-lockout.locked { border-color: var(--danger); color: var(--danger); }
+.sim-lockout.unknown { border-color: var(--warn); }
+.sim-sessions { display: flex; flex-direction: column; gap: 14px; padding-bottom: 90px; }
+.sim-session {
+  background: var(--panel); border: 1px solid var(--border); border-radius: 14px; padding: 12px;
+  display: flex; flex-direction: column; gap: 10px;
+}
+.sim-session.frozen { border-color: color-mix(in srgb, var(--danger) 55%, transparent); }
+.sim-session.error, .sim-session.stale, .sim-session.refused { border-color: color-mix(in srgb, var(--warn) 55%, transparent); }
+.sim-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.sim-head .viewsel { display: flex; gap: 4px; }
+.sim-view {
+  position: relative; aspect-ratio: 4 / 3; max-height: 420px; width: 100%;
+  background: #0b0e11; border-radius: 10px; overflow: hidden;
+}
+.sim-view canvas.twin, .sim-view img.cam { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; display: block; }
+.sim-view canvas.twin[hidden] { display: none; }
+.sim-overlay { position: absolute; left: 10px; bottom: 8px; }
+.sim-joints { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 6px 16px; }
+.sim-joint { display: grid; grid-template-columns: 110px 1fr 60px; align-items: center; gap: 8px; font-size: var(--fs-small); }
+.sim-joint .label { color: var(--dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sim-joint input[type="range"] { width: 100%; accent-color: var(--accent); }
+.sim-joint .val { text-align: right; color: var(--text-2); }
+.sim-foot { display: flex; align-items: center; gap: 10px; font-size: var(--fs-small); color: var(--dim); flex-wrap: wrap; }
+.sim-foot .hint { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 40ch; }

@@ -473,6 +473,10 @@ _REPLAY_EPISODE_SURFACES = {
     # not a different contract, so these are graded like the bare parameter.
     ("strands_robots/episode_labels.py", "record_deterministic_verdicts"),
     ("strands_robots/episode_labels.py", "measure_agreement"),
+    # The dashboard's replay surfaces: validate_replay applies the shared rule and
+    # DeviceManager.replay forwards ``episode=episode`` to it verbatim before spawning.
+    ("strands_robots/dashboard/device_manager.py", "validate_replay"),
+    ("strands_robots/dashboard/device_manager.py", "replay"),
     # The transform surfaces (``derive_variant_seed``, each backend's
     # ``transform_frames``) apply the same shared guard but are deliberately
     # NOT pinned here: they only receive an already-resolved index as a

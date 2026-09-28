@@ -64,7 +64,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     print(f"strands-robots dashboard on {url}", file=sys.stderr)
     if args.open:
         webbrowser.open(url)
-    uvicorn.run(create_app(), host=args.host, port=args.port, log_level=args.log_level)
+    app = create_app()
+    # /api/network/hint names the LAN URL an operator's phone can open; it needs the real port.
+    app.state.port = args.port
+    app.state.host = args.host
+    uvicorn.run(app, host=args.host, port=args.port, log_level=args.log_level)
     return 0
 
 

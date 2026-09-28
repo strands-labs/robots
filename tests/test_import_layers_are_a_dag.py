@@ -571,7 +571,7 @@ class TestTheContract:
                 "strands_robots.dataset_source",
                 "core",
                 frozenset(),
-                frozenset({"core", "sim|policies", "tools"}),
+                frozenset({"core", "sim|policies", "tools", "dashboard"}),
             ),
             (
                 "strands_robots.streaming_dataset",
@@ -589,7 +589,7 @@ class TestTheContract:
                 "strands_robots.dataset_recorder",
                 "core",
                 frozenset(),
-                frozenset({"sim|policies"}),
+                frozenset({"sim|policies", "dashboard"}),
             ),
             (
                 "strands_robots.teleop_mixin",
@@ -601,7 +601,7 @@ class TestTheContract:
                 "strands_robots.teleoperator",
                 "drivers|mesh",
                 frozenset(),
-                frozenset({"drivers|mesh", "app"}),
+                frozenset({"drivers|mesh", "app", "dashboard"}),
             ),
             (
                 "strands_robots.rtps.participant",

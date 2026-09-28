@@ -13,9 +13,17 @@ import { OrbitControls } from "./vendor/OrbitControls.js";
 const HIDDEN_GROUPS = new Set([3]); // MuJoCo convention: 3 = collision geoms
 
 export class Twin {
-  constructor(canvas, sessionId) {
+  /**
+   * @param canvas the <canvas> to draw into; its parent decides the size
+   * @param sessionId the sim session whose scene and poses this twin follows
+   * @param opts {base, headers}: where /api lives (default: this origin) and what every
+   *        fetch carries (default: nothing - the session cookie is enough on the same origin)
+   */
+  constructor(canvas, sessionId, opts = {}) {
     this.canvas = canvas;
     this.sessionId = sessionId;
+    this.base = opts.base || "";
+    this.headers = opts.headers || {};
     this.renderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: true });
     this.renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
     this.scene = new THREE.Scene();
@@ -46,7 +54,7 @@ export class Twin {
   }
 
   async load() {
-    const desc = await fetch(`/api/sim/${this.sessionId}/scene`).then((r) => r.json());
+    const desc = await this._get(`/api/sim/${this.sessionId}/scene`).then((r) => r.json());
     // The frame's row width is the server's to state: scene.POSE_ROW_FLOATS is
     // published here so this file never carries a second copy of it.
     if (!Number.isInteger(desc.pose_row_floats) || desc.pose_row_floats <= 0) {
@@ -56,7 +64,7 @@ export class Twin {
     const meshes = new Map();
     await Promise.all(
       desc.meshes.map(async (m) => {
-        const buf = await fetch(`/api/sim/${this.sessionId}/${m.url}`).then((r) => r.arrayBuffer());
+        const buf = await this._get(`/api/sim/${this.sessionId}/${m.url}`).then((r) => r.arrayBuffer());
         meshes.set(m.id, decodeSRM1(buf));
       }),
     );
@@ -81,6 +89,12 @@ export class Twin {
     }
     this.ngeom = desc.ngeom;
     return desc;
+  }
+
+  async _get(path) {
+    const r = await fetch(`${this.base}${path}`, { headers: this.headers });
+    if (!r.ok) throw new Error(`${path}: HTTP ${r.status}`);
+    return r;
   }
 
   /** One binary telemetry frame: ngeom rows of `pose_row_floats`, as the scene published it. */

@@ -6,6 +6,12 @@ three.js r170 (https://github.com/mrdoob/three.js)
          OrbitControls.js (examples/jsm/controls/OrbitControls.js, with the
          bare `three` import rewritten to ./three.module.min.js).
 
+react.js: the operator SPA's third-party runtime, emitted by the Vite build
+(frontend/vite.config.ts, manualChunks) from node_modules - react, react-dom and
+scheduler (MIT License, Copyright (c) Meta Platforms, Inc. and affiliates),
+versions as pinned in frontend/package-lock.json. Kept apart from app.js so the
+code this repository wrote can be read on its own.
+
 Vendored rather than fetched from a CDN so the dashboard renders on a robot LAN
 with no internet. No other third-party browser code is included; the twin's
 geometry comes from the compiled MuJoCo model this process already holds.

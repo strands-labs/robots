@@ -24,11 +24,66 @@ let mujocoPromise = null;
 let threePromise = null;
 let manifestPromise = null;
 
-function loadMujoco() {
+/** The engine URL the page's import map names, handed to the worker (workers cannot read import maps). */
+function mujocoUrl() {
   if (!mujocoPromise) {
-    mujocoPromise = import("@mujoco/mujoco").then((m) => (m.default || m)());
+    const map = document.querySelector('script[type="importmap"]');
+    const imports = map ? JSON.parse(map.textContent).imports || {} : {};
+    mujocoPromise = Promise.resolve(imports["@mujoco/mujoco"] || "https://cdn.jsdelivr.net/npm/@mujoco/mujoco@3.14.0/mujoco.js");
   }
   return mujocoPromise;
+}
+
+/**
+ * MuJoCo in a Worker (mujoco-worker.js), so compiling a model never blocks the page.
+ * One engine per viewer; `dispose()` terminates it.
+ */
+class Engine {
+  constructor(onPose) {
+    this._worker = new Worker(new URL("mujoco-worker.js", import.meta.url), { type: "module" });
+    this._pending = new Map();
+    this._onPose = onPose;
+    this._ready = new Promise((resolve, reject) => {
+      this._pending.set("init", { resolve, reject });
+    });
+    this._worker.onmessage = (e) => {
+      const msg = e.data;
+      if (msg.type === "ready") { this._pending.get("init")?.resolve(); this._pending.delete("init"); return; }
+      if (msg.type === "pose") { this._onPose(msg); return; }
+      if (msg.type === "compiled") { this._pending.get(msg.id)?.resolve(msg); this._pending.delete(msg.id); return; }
+      if (msg.type === "error") {
+        const p = msg.id !== undefined ? this._pending.get(msg.id) : this._pending.get("init");
+        (p || this._pending.get("init"))?.reject(new Error(msg.message));
+        this._pending.delete(msg.id ?? "init");
+      }
+    };
+    this._worker.onerror = (e) => { for (const p of this._pending.values()) p.reject(new Error(e.message || "worker failed")); this._pending.clear(); };
+    mujocoUrl().then((url) => this._worker.postMessage({ type: "init", url }));
+  }
+
+  ready() { return this._ready; }
+
+  /** Compile in the worker. Buffers are transferred, so `files` is unusable afterwards. */
+  compile(sceneXml, fetched) {
+    const id = "c" + Math.random().toString(36).slice(2);
+    const files = [];
+    const transfer = new Set();
+    for (const [path, buf] of fetched) {
+      // The 1x1 PNG stand-in is one buffer shared by every texture key; a transferable must be unique.
+      const own = transfer.has(buf.buffer) ? buf.slice() : buf;
+      files.push([path, own]);
+      transfer.add(own.buffer);
+    }
+    return new Promise((resolve, reject) => {
+      this._pending.set(id, { resolve, reject });
+      this._worker.postMessage({ type: "compile", id, sceneXml, files }, [...transfer]);
+    });
+  }
+
+  setQpos(qadr, value, act) { this._worker.postMessage({ type: "setQpos", qadr, value, act }); }
+  reset() { this._worker.postMessage({ type: "reset" }); }
+  physics(on) { this._worker.postMessage({ type: "physics", on }); }
+  dispose() { try { this._worker.postMessage({ type: "dispose" }); } catch { /* already gone */ } this._worker.terminate(); }
 }
 function loadThree() {
   if (!threePromise) {
@@ -164,7 +219,6 @@ class RobotViewer extends HTMLElement {
     this._state = "idle";
     this._physics = false;
     this._showCollision = false;
-    this._handles = [];
     this._three = null;
     this._raf = null;
     this._joints = [];
@@ -182,6 +236,8 @@ class RobotViewer extends HTMLElement {
         if (this.hasAttribute("autoload") && !this._preferPoster()) this._whenVisible(() => this.load());
       })
       .catch((e) => this._fail(`Could not read the robot manifest (${e.message}).`));
+    if (this._wired) return; // a name change re-enters here; the listeners below are per element, not per robot
+    this._wired = true;
     this.shadowRoot.addEventListener("click", (e) => {
       const b = e.target.closest("button[data-act]");
       if (b) this._action(b.dataset.act, b);
@@ -245,7 +301,7 @@ class RobotViewer extends HTMLElement {
   _syncSheet() { this.toggleAttribute("sheet", !this.$(".joints").hidden || !this.$(".code").hidden); }
 
   attributeChangedCallback(n, oldV, newV) {
-    if (n === "name" && oldV && oldV !== newV) { this.unload(); this.connectedCallback(); }
+    if (n === "name" && oldV && oldV !== newV) { this.unload(); this._clearStatus(); this.connectedCallback(); }
   }
 
   _whenVisible(fn) {
@@ -292,7 +348,7 @@ class RobotViewer extends HTMLElement {
       case "reset": this.resetPose(); return;
       case "physics":
         this._physics = !this._physics; btn.setAttribute("aria-pressed", String(this._physics));
-        if (this._physics) for (const jt of this._joints) if (jt.act >= 0) this._data.ctrl[jt.act] = this._data.qpos[jt.qadr];
+        this._engine?.physics(this._physics);
         return;
       case "collision":
         this._showCollision = !this._showCollision; btn.setAttribute("aria-pressed", String(this._showCollision)); this._applyVisibility(); return;
@@ -332,16 +388,17 @@ class RobotViewer extends HTMLElement {
       const e = this._entry;
       this.$(".poster").hidden = true;
       this._status("Loading MuJoCo", "The WebAssembly engine is 10 MB and cached after the first robot.");
-      const [mujoco, three] = await Promise.all([loadMujoco(), loadThree()]);
+      this._engine?.dispose();
+      this._engine = new Engine((pose) => this._onPose(pose));
+      const [three] = await Promise.all([loadThree(), this._engine.ready()]);
       if (stale()) return;
-      this._mujoco = mujoco;
       const files = await this._fetchAssets(e);
       if (stale()) return;
-      this._status("Compiling model", `${files.count} files, ${fmtMB(files.bytes)}`);
-      await new Promise((r) => setTimeout(r, 0));
+      this._status("Compiling model", `${files.count} files, ${fmtMB(files.bytes)}. The page stays yours meanwhile.`);
+      await this._compile(files);
       if (stale()) return;
-      this._compile(files);
-      this._buildScene(three);
+      await this._buildScene(three);
+      if (stale()) return;
       this._buildJoints();
       this._clearStatus();
       this.$(".poster").hidden = true;
@@ -450,48 +507,31 @@ class RobotViewer extends HTMLElement {
     return { sceneXml, fetched, bytes, count: fetched.size };
   }
 
-  _compile({ sceneXml, fetched }) {
-    const mj = this._mujoco;
-    const vfs = new mj.MjVFS();
-    this._handles.push(vfs);
-    for (const [path, buf] of fetched) vfs.addBuffer(path, buf);
-    let model;
-    try {
-      model = mj.MjModel.from_xml_string(sceneXml, vfs);
-    } catch (err) {
-      if (!/plugin/i.test(String(err?.message || err))) throw err;
-      // The browser build ships no engine plugins (mujoco.pid, elasticity...). Drop the
-      // <extension> block and plugin-driven actuators; the kinematics still render.
-      const stripped = this._stripPlugins(sceneXml, fetched, vfs);
-      model = mj.MjModel.from_xml_string(stripped, vfs);
-      this._pluginsStripped = true;
-    }
-    if (!model) throw new Error("MuJoCo returned no model");
-    const data = new mj.MjData(model);
-    this._handles.push(model, data);
-    mj.mj_forward(model, data);
+  /** Compile in the worker; the page keeps its event loop while MuJoCo builds convex hulls. */
+  async _compile({ sceneXml, fetched }) {
+    const { model, pluginsStripped } = await this._engine.compile(sceneXml, fetched);
     this._model = model;
-    this._data = data;
-    this._qpos0 = Float64Array.from(data.qpos);
+    this._pluginsStripped = pluginsStripped;
+    if (!this._pose) await new Promise((r) => { this._poseWaiter = r; });
+    this._qpos0 = Float64Array.from(this._pose.qpos);
   }
 
-  _stripPlugins(sceneXml, fetched, vfs) {
-    const clean = (xml) => xml
-      .replace(/<extension>[\s\S]*?<\/extension>/g, "")
-      .replace(/<plugin\b[^>]*\/>/g, "")
-      .replace(/<plugin\b[^>]*>[\s\S]*?<\/plugin>/g, "")
-      .replace(/<(general|actuator|motor|position|velocity|intvelocity|damper|cylinder|muscle|adhesion)\b[^>]*\bplugin="[^"]*"[^>]*\/>/g, "")
-      .replace(/<(general|actuator|motor|position|velocity|intvelocity|damper|cylinder|muscle|adhesion)\b[^>]*\bplugin="[^"]*"[^>]*>[\s\S]*?<\/\1>/g, "");
-    const enc = new TextEncoder(), dec = new TextDecoder();
-    for (const [path, buf] of fetched) {
-      if (!path.endsWith(".xml")) continue;
-      vfs.deleteFile(path);
-      vfs.addBuffer(path, enc.encode(clean(dec.decode(buf))));
+  /** A pose from the worker: the latest geom frames, and qpos for the sliders and the code card. */
+  _onPose(pose) {
+    this._pose = pose;
+    if (this._poseWaiter) { const w = this._poseWaiter; this._poseWaiter = null; w(); }
+    if (this._state !== "ready") return;
+    if (this._physics || this._poseDirty) {
+      for (const jt of this._joints) {
+        const o = this.shadowRoot.getElementById(`o${jt.j}`);
+        if (o) o.textContent = pose.qpos[jt.qadr].toFixed(2);
+        if (this._poseDirty) { const inp = this.shadowRoot.getElementById(`j${jt.j}`); if (inp) inp.value = pose.qpos[jt.qadr]; }
+      }
+      if (this._poseDirty) { this._poseDirty = false; this._renderCode(); }
     }
-    return clean(sceneXml);
   }
 
-  _buildScene({ THREE, OrbitControls, RoomEnvironment }) {
+  async _buildScene({ THREE, OrbitControls, RoomEnvironment }) {
     const canvas = this.$("canvas");
     const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: true, powerPreference: "high-performance" });
     renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
@@ -502,9 +542,13 @@ class RobotViewer extends HTMLElement {
     renderer.setClearColor(0x000000, 0); // the stage colour is CSS (--sr-viewer-bg), so it follows the theme
     const scene = new THREE.Scene();
     // A neutral studio environment: specular sheen is what keeps a black robot readable on a dark stage.
-    const pmrem = new THREE.PMREMGenerator(renderer);
-    scene.environment = pmrem.fromScene(new RoomEnvironment(), 0.04).texture;
-    pmrem.dispose();
+    // Rendering the room into a cubemap is the one GPU-bound cost here, so it runs after
+    // the first frame has been drawn: the robot appears at once and gains its sheen a frame later.
+    this._pendingEnvironment = () => {
+      const pmrem = new THREE.PMREMGenerator(renderer);
+      scene.environment = pmrem.fromScene(new RoomEnvironment(), 0.04).texture;
+      pmrem.dispose();
+    };
     const camera = new THREE.PerspectiveCamera(38, 4 / 3, 0.01, 200);
     camera.up.set(0, 0, 1);
     const controls = new OrbitControls(camera, canvas);
@@ -531,32 +575,35 @@ class RobotViewer extends HTMLElement {
     scene.add(rim);
     this._lights = { hemi, key, fill, rim };
 
-    const mj = this._mujoco, m = this._model;
-    const G = mj.mjtGeom;
+    const m = this._model;
+    const G = m.enums.geom;
     const geomMeshes = [];
     const meshCache = new Map();
     const theme = this._theme();
     renderer.toneMappingExposure = theme.exposure;
+    let sinceYield = performance.now();
     for (let g = 0; g < m.ngeom; g++) {
+      // Building geometry is main-thread work; give the page a frame every ~12 ms of it.
+      if (performance.now() - sinceYield > 12) { await new Promise((r) => setTimeout(r, 0)); sinceYield = performance.now(); }
       const type = m.geom_type[g];
       const size = [m.geom_size[3 * g], m.geom_size[3 * g + 1], m.geom_size[3 * g + 2]];
       const group = m.geom_group[g];
       let geometry;
-      if (type === G.mjGEOM_MESH.value) {
+      if (type === G.MESH) {
         const id = m.geom_dataid[g];
         geometry = meshCache.get(id) ?? this._meshGeometry(THREE, id);
         meshCache.set(id, geometry);
-      } else if (type === G.mjGEOM_PLANE.value) {
+      } else if (type === G.PLANE) {
         geometry = new THREE.PlaneGeometry(size[0] ? 2 * size[0] : 40, size[1] ? 2 * size[1] : 40);
-      } else if (type === G.mjGEOM_SPHERE.value) {
+      } else if (type === G.SPHERE) {
         geometry = new THREE.SphereGeometry(size[0], 24, 16);
-      } else if (type === G.mjGEOM_CAPSULE.value) {
+      } else if (type === G.CAPSULE) {
         geometry = new THREE.CapsuleGeometry(size[0], 2 * size[1], 8, 20); geometry.rotateX(Math.PI / 2);
-      } else if (type === G.mjGEOM_CYLINDER.value) {
+      } else if (type === G.CYLINDER) {
         geometry = new THREE.CylinderGeometry(size[0], size[0], 2 * size[1], 32); geometry.rotateX(Math.PI / 2);
-      } else if (type === G.mjGEOM_BOX.value) {
+      } else if (type === G.BOX) {
         geometry = new THREE.BoxGeometry(2 * size[0], 2 * size[1], 2 * size[2]);
-      } else if (type === G.mjGEOM_ELLIPSOID.value) {
+      } else if (type === G.ELLIPSOID) {
         geometry = new THREE.SphereGeometry(1, 24, 16); geometry.scale(size[0], size[1], size[2]);
       } else {
         continue; // hfield, sdf: not drawn in v1
@@ -564,7 +611,7 @@ class RobotViewer extends HTMLElement {
       let rgba = [m.geom_rgba[4 * g], m.geom_rgba[4 * g + 1], m.geom_rgba[4 * g + 2], m.geom_rgba[4 * g + 3]];
       const matid = m.geom_matid[g];
       if (matid >= 0) rgba = [m.mat_rgba[4 * matid], m.mat_rgba[4 * matid + 1], m.mat_rgba[4 * matid + 2], m.mat_rgba[4 * matid + 3]];
-      const isPlane = type === G.mjGEOM_PLANE.value;
+      const isPlane = type === G.PLANE;
       // The floor only catches the shadow; the stage colour behind it is the page's CSS.
       const material = isPlane
         ? new THREE.ShadowMaterial({ color: 0x000000, opacity: theme.shadow, transparent: true, side: THREE.DoubleSide })
@@ -695,7 +742,8 @@ class RobotViewer extends HTMLElement {
   }
 
   _syncPoses() {
-    const xpos = this._data.geom_xpos, xmat = this._data.geom_xmat;
+    if (!this._pose) return;
+    const xpos = this._pose.xpos, xmat = this._pose.xmat;
     for (const mesh of this._three.geomMeshes) {
       const g = mesh.userData.geom, p = 3 * g, r = 9 * g;
       mesh.matrix.set(
@@ -708,25 +756,25 @@ class RobotViewer extends HTMLElement {
   }
 
   _buildJoints() {
-    const mj = this._mujoco, m = this._model, d = this._data;
+    const m = this._model, q = this._pose.qpos;
     const el = this.$(".joints");
     const rows = [];
     this._joints = [];
-    const HINGE = mj.mjtJoint.mjJNT_HINGE.value, SLIDE = mj.mjtJoint.mjJNT_SLIDE.value;
+    const { HINGE, SLIDE, TRN_JOINT } = m.enums;
     for (let j = 0; j < m.njnt; j++) {
       const type = m.jnt_type[j];
       if (type !== HINGE && type !== SLIDE) continue;
-      const name = mj.mj_id2name(m, mj.mjtObj.mjOBJ_JOINT.value, j) || `joint_${j}`;
+      const name = m.jnt_names[j];
       let lo = m.jnt_range[2 * j], hi = m.jnt_range[2 * j + 1];
       // mjtByte arrays (jnt_limited) are not readable in the 3.14 bindings; an unlimited joint has range 0 0.
       if (lo === hi) { lo = -Math.PI; hi = Math.PI; }
       const qadr = m.jnt_qposadr[j];
       let act = -1;
       for (let u = 0; u < m.nu; u++) {
-        if (m.actuator_trntype[u] === mj.mjtTrn.mjTRN_JOINT.value && m.actuator_trnid[2 * u] === j) { act = u; break; }
+        if (m.actuator_trntype[u] === TRN_JOINT && m.actuator_trnid[2 * u] === j) { act = u; break; }
       }
       this._joints.push({ j, name, lo, hi, qadr, act });
-      const v = d.qpos[qadr];
+      const v = q[qadr];
       rows.push(`<div class="joint"><label for="j${j}"><span>${name}</span><output id="o${j}">${v.toFixed(2)}</output></label><input id="j${j}" type="range" min="${lo}" max="${hi}" step="${(hi - lo) / 400}" value="${v}" data-j="${j}" aria-label="${name}"></div>`);
     }
     el.innerHTML = `<div class="sheet-head"><h5>${this._joints.length} joints</h5><button class="pill" data-act="close" aria-label="Close joints">Close</button></div><h5>${this._joints.length} joints</h5>${rows.join("")}`;
@@ -735,35 +783,27 @@ class RobotViewer extends HTMLElement {
       if (!inp) return;
       const jt = this._joints.find((x) => x.j === Number(inp.dataset.j));
       const v = Number(inp.value);
-      d.qpos[jt.qadr] = v;
-      if (jt.act >= 0) d.ctrl[jt.act] = v;
+      this._pose.qpos[jt.qadr] = v; // optimistic, so the code card follows the finger before the worker answers
+      this._engine.setQpos(jt.qadr, v, jt.act);
       this.shadowRoot.getElementById(`o${jt.j}`).textContent = v.toFixed(2);
-      if (!this._physics) { d.qvel.fill(0); mj.mj_forward(m, d); }
       this._renderCode();
     };
     this._renderCode();
   }
 
   _renderCode() {
-    const d = this._data;
-    const moved = this._joints.filter((jt) => Math.abs(d.qpos[jt.qadr] - this._qpos0[jt.qadr]) > 1e-3);
+    const q = this._pose.qpos;
+    const moved = this._joints.filter((jt) => Math.abs(q[jt.qadr] - this._qpos0[jt.qadr]) > 1e-3);
     const body = moved.length
-      ? moved.map((jt) => `    <b>"${jt.name}"</b>: ${d.qpos[jt.qadr].toFixed(3)},`).join("\n")
+      ? moved.map((jt) => `    <b>"${jt.name}"</b>: ${q[jt.qadr].toFixed(3)},`).join("\n")
       : `    <span style="opacity:.55"># move a slider</span>`;
     this.$(".code").innerHTML = `<div class="sheet-head"><h5>robot.act</h5><button class="pill" data-act="close" aria-label="Close code">Close</button></div>from strands_robots import Robot\n\nrobot = Robot(<b>"${this._entry.name}"</b>)\nrobot.act({\n${body}\n})`;
   }
 
   resetPose() {
-    if (!this._data) return;
-    const mj = this._mujoco, m = this._model, d = this._data;
-    mj.mj_resetData(m, d);
-    mj.mj_forward(m, d);
-    for (const jt of this._joints) {
-      const inp = this.shadowRoot.getElementById(`j${jt.j}`);
-      if (inp) { inp.value = d.qpos[jt.qadr]; this.shadowRoot.getElementById(`o${jt.j}`).textContent = d.qpos[jt.qadr].toFixed(2); }
-      if (jt.act >= 0) d.ctrl[jt.act] = d.qpos[jt.qadr];
-    }
-    this._renderCode();
+    if (!this._engine || !this._pose) return;
+    this._poseDirty = true; // sliders and the code card follow the worker's reply
+    this._engine.reset();
   }
 
   _resize() {
@@ -777,23 +817,14 @@ class RobotViewer extends HTMLElement {
   }
 
   _loop() {
-    const mj = this._mujoco, m = this._model, d = this._data;
-    let last = performance.now();
-    const tick = (now) => {
+    // Physics steps in the worker and arrives as poses; this loop only draws the latest one.
+    this._framesDrawn = 0;
+    const tick = () => {
       if (this._state !== "ready") return;
-      const dt = Math.min(0.05, (now - last) / 1000); last = now;
-      if (this._physics) {
-        const target = d.time + dt;
-        let n = 0;
-        while (d.time < target && n++ < 200) mj.mj_step(m, d);
-        for (const jt of this._joints) {
-          const o = this.shadowRoot.getElementById(`o${jt.j}`);
-          if (o) o.textContent = d.qpos[jt.qadr].toFixed(2);
-        }
-      }
       this._three.controls.update();
       this._syncPoses();
       this._three.renderer.render(this._three.scene, this._three.camera);
+      if (this._pendingEnvironment && this._framesDrawn++ >= 1) { const build = this._pendingEnvironment; this._pendingEnvironment = null; build(); }
       this._raf = requestAnimationFrame(tick);
     };
     this._raf = requestAnimationFrame(tick);
@@ -811,9 +842,13 @@ class RobotViewer extends HTMLElement {
       this._three.renderer.dispose();
       this._three = null;
     }
-    for (const h of this._handles.reverse()) { try { h.delete(); } catch { /* already freed */ } }
-    this._handles = [];
-    this._model = this._data = null;
+    this._pendingEnvironment = null;
+    this._engine?.dispose();
+    this._engine = null;
+    this._model = null;
+    this._pose = null;
+    this._poseWaiter = null;
+    this._physics = false;
     this._joints = [];
     this.$(".chrome").hidden = true;
     this.$(".joints").hidden = true;
@@ -822,6 +857,33 @@ class RobotViewer extends HTMLElement {
 }
 
 if (!customElements.get("robot-viewer")) customElements.define("robot-viewer", RobotViewer);
+
+// Robot picker (index.md): a <select data-robot-pick> next to a viewer lists every streamable
+// robot by family; choosing one swaps the viewer's model and loads it (a user gesture, so the
+// phone rule that waits for Load 3D is satisfied).
+for (const pick of document.querySelectorAll("select[data-robot-pick]")) {
+  const viewer = pick.closest(".sr-hero__stage, .sr-hero, body")?.querySelector("robot-viewer");
+  if (!viewer) continue;
+  loadManifest().then((m) => {
+    const families = new Map();
+    for (const r of Object.values(m.robots)) {
+      if (!r.viewer) continue;
+      const fam = r.category || "other";
+      if (!families.has(fam)) families.set(fam, []);
+      families.get(fam).push(r);
+    }
+    const current = viewer.getAttribute("name");
+    pick.innerHTML = [...families.keys()].sort().map((fam) => {
+      const opts = families.get(fam).sort((a, b) => a.name.localeCompare(b.name))
+        .map((r) => `<option value="${r.name}"${r.name === current ? " selected" : ""}>${r.name}</option>`).join("");
+      return `<optgroup label="${fam}">${opts}</optgroup>`;
+    }).join("");
+  });
+  pick.addEventListener("change", () => {
+    viewer.setAttribute("name", pick.value);
+    viewer.load();
+  });
+}
 
 // Catalog filter chips (robots/index.md): .sr-filter button[data-family] toggles .sr-robot[data-family].
 document.addEventListener("click", (e) => {
