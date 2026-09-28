@@ -12,7 +12,7 @@ template_class: sr-home
 <div class="sr-hero__actions">
 <a class="sr-btn sr-btn--primary" href="start/">Start</a>
 <a class="sr-btn" href="robots/">Pick a robot</a>
-<span class="sr-install">pip install "strands-robots[sim-mujoco]"</span>
+<span class="sr-install">pip install "strands-robots[sim-mujoco]"<button class="sr-copy" data-clipboard-text='pip install "strands-robots[sim-mujoco]"'>copy</button></span>
 </div>
 </div>
 <div markdown>

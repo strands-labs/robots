@@ -1,0 +1,35 @@
+{% import "partials/nav-item.html" as item with context %}
+{% set class = "md-nav md-nav--primary" %}
+{% if "navigation.tabs" in features %}
+  {% set class = class ~ " md-nav--lifted" %}
+{% endif %}
+{% if "toc.integrate" in features %}
+  {% set class = class ~ " md-nav--integrated" %}
+{% endif %}
+<nav class="{{ class }}" aria-label="{{ lang.t('nav') }}" data-md-level="0">
+  <label class="md-nav__title" for="__drawer">
+    <a href="{{ config.extra.homepage | d(nav.homepage.url, true) | url }}" title="{{ config.site_name | e }}" class="md-nav__button md-logo" aria-label="{{ config.site_name }}" data-md-component="logo">
+      {% include "partials/logo.html" %}
+    </a>
+    {{ config.site_name }}
+  </label>
+  {#- The section label and search box that head the harness docs sidebar; desktop only, the drawer has its own title. -#}
+  <div class="sr-sidehead">
+    {% for nav_item in nav.items if nav_item.active and not nav_item.is_homepage %}
+      {% set first = nav_item.children | first if nav_item.children else nav_item %}
+      <a class="sr-sidehead__label" href="{{ (first.children | first if first.children else first).url | url }}">/{{ nav_item.title | lower }}</a>
+    {% endfor %}
+    <label class="sr-sidehead__search" for="__search">{% include ".icons/material/magnify.svg" %}<span>Search...</span></label>
+  </div>
+  {% if config.repo_url %}
+    <div class="md-nav__source">
+      {% include "partials/source.html" %}
+    </div>
+  {% endif %}
+  <ul class="md-nav__list" data-md-scrollfix>
+    {% for nav_item in nav.items %}
+      {% set path = "__nav_" ~ loop.index %}
+      {{ item.render(nav_item, path, 1) }}
+    {% endfor %}
+  </ul>
+</nav>

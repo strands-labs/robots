@@ -1,6 +1,12 @@
+---
+description: Five pages, in order, from an empty environment to an agent that moves a robot.
+cta: true
+copy_prompt: true
+---
+
 # Start
 
-Five pages, in order, from an empty environment to an agent that moves a robot. At the end of them you have a simulated SO-101 you can command from Python, the two lines that move the physical one, an agent that calls the robot as a tool, and a way to check the machine when any of that fails.
+You leave with a simulated SO-101 you can command from Python, the two lines that move the physical one, an agent that calls the robot as a tool, and a way to check the machine when any of that fails.
 
 | page | you leave with |
 |---|---|

@@ -1,0 +1,20 @@
+{#- The end of a docs page on strandsagents.com: an edit link, then outlined previous/next cards inside the content column. -#}
+{% if page.edit_url %}
+  <a href="{{ page.edit_url }}" class="sr-edit" rel="edit">{% include ".icons/material/pencil-outline.svg" %}Edit page</a>
+{% endif %}
+{% if page.previous_page or page.next_page %}
+  <nav class="sr-pager" aria-label="{{ lang.t('footer') }}">
+    {% if page.previous_page %}
+      <a href="{{ page.previous_page.url | url }}" class="sr-pager__link sr-pager__link--prev" rel="prev">
+        <span class="sr-pager__dir">{% include ".icons/material/arrow-left.svg" %}{{ lang.t("footer.previous") }}</span>
+        <span class="sr-pager__title">{{ page.previous_page.title }}</span>
+      </a>
+    {% endif %}
+    {% if page.next_page %}
+      <a href="{{ page.next_page.url | url }}" class="sr-pager__link sr-pager__link--next" rel="next">
+        <span class="sr-pager__dir">{{ lang.t("footer.next") }}{% include ".icons/material/arrow-right.svg" %}</span>
+        <span class="sr-pager__title">{{ page.next_page.title }}</span>
+      </a>
+    {% endif %}
+  </nav>
+{% endif %}

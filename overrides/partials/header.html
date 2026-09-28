@@ -1,0 +1,43 @@
+{#- One row, as on strandsagents.com: the wordmark links out to the Strands site, /robots links home, the top-level sections sit inline where Material's tab strip was. -#}
+{% macro first_page(item) -%}
+  {%- if item.children -%}{{ first_page(item.children | first) }}{%- else -%}{{ item.url | url }}{%- endif -%}
+{%- endmacro %}
+<header class="md-header sr-header" data-md-component="header">
+  <nav class="md-header__inner md-grid" aria-label="{{ lang.t('header') }}">
+    <a href="https://strandsagents.com/" class="sr-brand" title="Strands Agents" aria-label="Strands Agents">
+      <span class="sr-wordmark">{% include "partials/wordmark.svg" %}</span>
+    </a>
+    <a href="{{ nav.homepage.url | url }}" class="sr-brand-project" title="{{ config.site_name | e }}">/robots</a>
+    <ul class="sr-nav">
+      {% for nav_item in nav.items if not nav_item.is_homepage %}
+        <li><a href="{{ first_page(nav_item) }}" class="sr-nav__link{% if nav_item.active %} sr-nav__link--active{% endif %}">{{ nav_item.title }}</a></li>
+      {% endfor %}
+    </ul>
+    {% if "material/search" in config.plugins %}
+      {% set search = config.plugins["material/search"] | attr("config") %}
+      {% if search.enabled %}
+        <label class="md-header__button md-icon" for="__search">
+          {% include ".icons/material/magnify.svg" %}
+        </label>
+        {% include "partials/search.html" %}
+      {% endif %}
+    {% endif %}
+    <div class="md-header__source">
+      {% include "partials/source.html" %}
+    </div>
+    <a href="https://discord.gg/strands" class="md-header__button md-icon sr-discord" title="Strands on Discord" aria-label="Strands on Discord">
+      {% include ".icons/fontawesome/brands/discord.svg" %}
+    </a>
+    {% if config.theme.palette %}
+      {% if not config.theme.palette is mapping %}
+        {% include "partials/palette.html" %}
+      {% endif %}
+    {% endif %}
+    {% if not config.theme.palette is mapping %}
+      {% include "partials/javascripts/palette.html" %}
+    {% endif %}
+    <label class="md-header__button md-icon sr-menu" for="__drawer">
+      {% include ".icons/material/menu.svg" %}
+    </label>
+  </nav>
+</header>

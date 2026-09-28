@@ -1,0 +1,30 @@
+{% include "partials/tags.html" %}
+{% include "partials/actions.html" %}
+{% set meta = page.meta or {} %}
+{% set content = page.content %}
+{% if "<h1" not in content %}
+  {% set content = "<h1>" ~ (page.title | d(config.site_name, true) | e) ~ "</h1>" ~ content %}
+{% endif %}
+{% if page.is_homepage %}
+  {{ content }}
+{% else %}
+  {#- The strandsagents.com page head: the title, the page's description as a lede, an optional call to action, then a rule across the column. A description that only repeats the title (the generated robot pages) is not shown twice. -#}
+  {% set parts = content.split("</h1>", 1) %}
+  {% set lede = meta.description if meta.description and meta.description not in parts[0] else "" %}
+  {{ parts[0] }}</h1>
+  <div class="sr-pagehead">
+    {% if lede %}<p class="sr-lede">{{ lede }}</p>{% endif %}
+    {% if meta.cta and page.next_page %}<a class="sr-btn sr-btn--primary" href="{{ page.next_page.url | url }}">{{ page.next_page.title }}</a>{% endif %}
+  </div>
+  {% if meta.copy_prompt %}
+    <div class="sr-prompt">
+      <p><strong>Using a coding agent?</strong> Copy this prompt into Claude Code, Codex, Kiro, or any coding assistant and it will walk you through these pages.</p>
+      <button class="sr-copy" type="button" data-clipboard-text="{{ config.extra.agent_prompt | e }}">Copy prompt</button>
+    </div>
+  {% endif %}
+  {{ parts[1] if parts | length > 1 else "" }}
+  {% include "partials/pager.html" %}
+{% endif %}
+{% include "partials/source-file.html" %}
+{% include "partials/feedback.html" %}
+{% include "partials/comments.html" %}

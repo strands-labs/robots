@@ -1,0 +1,4 @@
+{#- Docs pages end in the content column (partials/pager.html); only the landing page carries the green strandsagents.com footer. -#}
+{% if page and page.is_homepage %}
+  {% include "partials/home-footer.html" %}
+{% endif %}

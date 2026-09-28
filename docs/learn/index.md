@@ -1,6 +1,8 @@
-# Learn
+---
+description: Each page answers one workflow question and ends with something that runs.
+---
 
-Each page here answers one question about a workflow and ends with something that runs. Pick the one you are in the middle of.
+# Learn
 
 ## Agents
 

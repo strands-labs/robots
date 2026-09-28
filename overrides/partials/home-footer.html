@@ -1,0 +1,43 @@
+{% set install = 'pip install "strands-robots[sim-mujoco]"' %}
+{% set columns = [
+  ("Get started", [("Install", "start/install/"), ("First robot", "start/first-robot/"), ("First real arm", "start/first-real-arm/"), ("First agent", "start/first-agent/"), ("Doctor", "start/doctor/")]),
+  ("Build", [("Robots", "robots/"), ("Policies", "learn/policies/"), ("Simulation", "learn/simulation/"), ("Hardware", "learn/hardware/drivers/"), ("Mesh", "learn/mesh/")]),
+  ("Operate", [("Data", "learn/data/record/"), ("Training", "learn/training/"), ("Dashboard", "learn/dashboard/"), ("ROS 2", "learn/ros2/"), ("Security", "learn/security/")]),
+  ("Resources", [("Reference", "reference/"), ("API", "reference/api/"), ("Tools", "reference/tools/"), ("Changelog", "reference/changelog/"), ("Contributing", "project/contributing/")]),
+  ("Community", [("GitHub", config.repo_url), ("PyPI", "https://pypi.org/project/strands-robots/"), ("Discord", "https://discord.gg/strands"), ("Strands Agents", "https://strandsagents.com/"), ("Strands Labs", "https://github.com/strands-labs")]),
+] %}
+<div class="sr-cta"><div class="sr-cta__panel">
+  <p class="sr-cta__title">Push the boundaries of what robots can do.</p>
+  <p class="sr-cta__links">
+    <a href="{{ 'start/' | url }}">Quick start &rarr;</a>
+    <a href="{{ 'robots/' | url }}">Pick a robot &rarr;</a>
+    <a href="{{ config.repo_url }}/tree/main/examples">Examples &rarr;</a>
+  </p>
+</div></div>
+<footer class="md-footer sr-footer">
+  <div class="sr-footer__inner md-grid">
+    <p class="sr-footer__kicker">Start building in seconds</p>
+    <p class="sr-install sr-install--footer">{{ install }}<button class="sr-copy" type="button" data-clipboard-text="{{ install | e }}">copy</button></p>
+    <div class="sr-footer__columns">
+      {% for title, links in columns %}
+        <div>
+          <p class="sr-footer__heading">{{ title }}</p>
+          <ul>
+            {% for label, href in links %}
+              <li><a href="{{ href if href.startswith('http') else href | url }}">{{ label }}</a></li>
+            {% endfor %}
+          </ul>
+        </div>
+      {% endfor %}
+    </div>
+  </div>
+  <div class="sr-footmark" aria-hidden="true">{% include "partials/wordmark.svg" %}</div>
+  <div class="sr-footer__legal md-grid">
+    <span class="sr-aws" aria-label="AWS">{% include "partials/aws.svg" %}</span>
+    <a href="https://aws.amazon.com/privacy/">Privacy</a>
+    <a href="https://aws.amazon.com/terms/">Site terms</a>
+    <a href="{{ config.repo_url }}/blob/main/LICENSE">License</a>
+    <a href="https://aws.amazon.com/legal/cookies/">Cookies</a>
+  </div>
+  <p class="sr-footer__copyright md-grid">&copy; {{ build_date_utc.year }}, Amazon Web Services, Inc. or its affiliates. All rights reserved.</p>
+</footer>

@@ -14,7 +14,7 @@ theme:
   custom_dir: overrides
   language: en
   font:
-    text: Inter
+    text: Space Grotesk
     code: JetBrains Mono
   logo: assets/img/mark.svg
   favicon: assets/img/mark.svg
@@ -58,6 +58,13 @@ extra_javascript:
 
 extra:
   generator: false
+  # The prompt a page with `copy_prompt: true` offers to a coding agent.
+  agent_prompt: >-
+    Walk me through https://strands-labs.github.io/robots/start/ one page at a time. Install
+    strands-robots with the sim-mujoco extra in a Python 3.12 virtual environment, move the
+    simulated SO-101 from the First robot page, then hand it to a Strands Agent from the First
+    agent page. Ask whether I have a physical SO-101 on USB before the First real arm page, and
+    run strands-robots doctor if any step fails.
   social:
     - icon: fontawesome/brands/github
       link: https://github.com/strands-labs/robots
@@ -309,10 +316,12 @@ markdown_extensions:
   - tables
   - footnotes
   - toc:
+      title: On this page
       permalink: true
       toc_depth: 3
   - pymdownx.highlight:
       anchor_linenums: true
+      pygments_lang_class: true
   - pymdownx.inlinehilite
   - pymdownx.superfences
   - pymdownx.tabbed:

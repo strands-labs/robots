@@ -32,10 +32,11 @@ DOCS_DIR = REPO_ROOT / "docs"
 STYLESHEET = DOCS_DIR / "stylesheets" / "extra.css"
 ROBOT_PAGES_HOOK = REPO_ROOT / "docs" / "hooks" / "robot_pages.py"
 
-# The stylesheet carries the palette, the landing hero, the 3D viewer chrome,
-# the robot cards and the filter chips in 290 lines; the budget leaves room to
-# grow without room to drift back into a per-rule override sheet.
-LINE_BUDGET = 300
+# The stylesheet carries the palette with GitHub code colours, the one-row
+# header, the page head and pager, the landing hero and footer, the 3D viewer
+# chrome, the robot cards and the filter chips in 335 lines; the budget leaves
+# room to grow without room to drift back into a per-rule override sheet.
+LINE_BUDGET = 360
 
 # Material names the light scheme in mkdocs.yml; the dark one is its ``slate``.
 LIGHT_SCHEME = "paper"
