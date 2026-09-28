@@ -108,6 +108,8 @@
 .md-header__inner { height: 3.4rem; gap: 0.3rem; padding: 0 1.2rem; }
 /* Full width, as on strandsagents.com: the grid spans the window, the reading column keeps its measure. */
 .md-grid { max-width: none; }
+.md-main__inner { margin-top: 0; }
+.md-content__inner { padding-top: 1.6rem; }
 @media (min-width: 76.25em) {
   .md-sidebar { top: 3.4rem; width: 14rem; }
   .md-sidebar--primary { margin-left: 0.6rem; }
