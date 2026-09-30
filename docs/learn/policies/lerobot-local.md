@@ -4,7 +4,7 @@ description: lerobot_local runs any LeRobot checkpoint in process. Install extra
 
 # lerobot_local
 
-By the end of this page you can run a HuggingFace LeRobot checkpoint (ACT, diffusion, pi0, SmolVLA, GR00T N1.7, MolmoAct2) on a simulated or real arm in this process, and know the two naming rules deciding whether the model sees your cameras and joints.
+This page runs a HuggingFace LeRobot checkpoint (ACT, diffusion, pi0, SmolVLA, GR00T N1.7, MolmoAct2) on a simulated or real arm and teaches the two naming rules deciding whether the model sees your cameras and joints.
 
 ```bash
 pip install 'strands-robots[lerobot]'          # lerobot[feetech,dataset] + psutil
