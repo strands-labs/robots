@@ -4,7 +4,7 @@ description: GPU-parallel RL through the isaaclab trainer, with Isaac Lab in its
 
 # Isaac Lab training
 
-The `isaaclab` trainer runs `python -m isaaclab train` in a separate Isaac Lab venv and reads its log; strands-robots never imports it (its pins conflict, and Kit exits the closing process).
+The `isaaclab` trainer runs `python -m isaaclab train` in a separate Isaac Lab venv and reads its log; strands-robots never imports it (pins conflict; Kit exits the closing process).
 
 ```bash
 uv venv --python 3.12 ~/il && uv pip install --python ~/il/bin/python --prerelease=allow \
