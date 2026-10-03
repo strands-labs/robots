@@ -637,6 +637,37 @@ def geom_label(model: Any, geom_id: int, mj: Any) -> str:
     return f"{body}/geom_{geom_id}" if body else f"geom_{geom_id}"
 
 
+def geom_body_path(model: Any, geom_id: int, mj: Any) -> list[str]:
+    """Names of the body geom ``geom_id`` hangs off, then each ancestor up to the world.
+
+    A gripper is a subtree, not one body: the SO-101's moving jaw is a child of
+    ``so101/gripper`` and the Panda's fingers are children of ``panda/hand``.
+    Reporting the path lets a caller select the whole gripper by the one body
+    at its root (``grasped``'s ``gripper_prefix``).
+
+    Args:
+        model: The ``mujoco.MjModel`` the geom lives in.
+        geom_id: The geom whose owners to list.
+        mj: The ``mujoco`` module.
+
+    Returns:
+        Body names, nearest first; the world body is left out. A lookup that
+        raises ends the walk, like :func:`geom_label`'s fallback.
+    """
+    path: list[str] = []
+    try:
+        body = int(model.geom_bodyid[geom_id])
+        while body > 0:
+            name = mj.mj_id2name(model, mj.mjtObj.mjOBJ_BODY, body)
+            if name:
+                path.append(str(name))
+            body = int(model.body_parentid[body])
+    except (IndexError, AttributeError):
+        # A lookup that raises ends the walk; the names collected so far stand.
+        return path
+    return path
+
+
 def actuator_target_body_ids(model: Any, act_id: int, mj: Any) -> frozenset[int]:
     """Return the bodies actuator ``act_id``'s transmission acts on.
 

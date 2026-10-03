@@ -296,7 +296,7 @@ def run_policy(
             ``n_steps`` budget - a per-episode success gate for collection
             loops. Same predicate DSL as a benchmark spec's ``success``
             clause: a single call ``{"predicate": "grasped", "body": "cube",
-            "gripper_prefix": "so100"}`` or an ``{"all": [...]}`` /
+            "gripper_prefix": "so101/gripper"}`` or an ``{"all": [...]}`` /
             ``{"any": [...]}`` group. Validated against the closed predicate
             registry up front (before any recording is started), so an
             unknown predicate name is rejected with the valid list while

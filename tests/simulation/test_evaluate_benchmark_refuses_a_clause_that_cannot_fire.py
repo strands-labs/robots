@@ -201,7 +201,7 @@ class TestTheGuardDoesNotRefuseWhatItCannotDecide:
         # The body genuinely is absent right now - that is what makes this a
         # real over-refusal risk rather than a vacuous pass.
         assert "from_scene" not in sim_with_robot_and_cube.list_bodies()["content"][1]["json"]["bodies"]
-        assert bench.referenced_entities() == ([], [], [])
+        assert bench.referenced_entities() == ([], [], [], [])
         register_benchmark(bench.name, bench)
         assert _evaluate(sim_with_robot_and_cube, bench.name)["status"] == "success"
 
@@ -217,7 +217,7 @@ class TestTheGuardDoesNotRefuseWhatItCannotDecide:
             failure_fn=lambda _sim: False,
             reward_terms=[],
         )
-        assert bench.referenced_entities() == ([], [], [])
+        assert bench.referenced_entities() == ([], [], [], [])
         register_benchmark(bench.name, bench)
         result = _evaluate(sim_with_robot_and_cube, bench.name)
         assert result["status"] == "success", result
@@ -255,8 +255,8 @@ class TestReferencedEntitiesIsReadOnly:
                 "dense_reward": [{"predicate": "base_height", "robot": "alice", "target": 0.3}],
             }
         )
-        bodies, joints, bases = bench.referenced_entities()
+        bodies, joints, bases, _ = bench.referenced_entities()
         assert (bodies, joints, bases) == (["cube"], [], ["alice"])
         bodies.append("injected")
         bases.append("injected")
-        assert bench.referenced_entities() == (["cube"], [], ["alice"])
+        assert bench.referenced_entities() == (["cube"], [], ["alice"], [])

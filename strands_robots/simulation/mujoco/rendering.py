@@ -27,6 +27,7 @@ from strands_robots.simulation.mujoco.scene_ops import (
     actuator_joint_id,
     actuator_target_body_ids,
     effective_ctrl_range,
+    geom_body_path,
     geom_label,
     mj_contact_is_active,
     robot_owned_actuator_ids,
@@ -2260,7 +2261,9 @@ class RenderingMixin:
         Proximity reports are still listed: they are what a clearance query
         wants, and suppressing them would hide the detection set from
         callers who need it. Use :meth:`get_contact_forces` for the magnitude
-        of the load a touching pair carries.
+        of the load a touching pair carries. ``bodies1`` / ``bodies2`` name
+        each geom's body and its ancestors, nearest first, so a caller can
+        tell which subtree (a gripper, a finger) a geom belongs to.
 
         We run ``mj_forward`` first so the contact list reflects the
         current qpos/qvel even immediately after ``reset`` or ``add_robot``
@@ -2295,9 +2298,17 @@ class RenderingMixin:
 
         contacts = []
         for c in contact_snapshot:
-            g1 = geom_label(model, c["geom1"], mj)
-            g2 = geom_label(model, c["geom2"], mj)
-            contacts.append({"geom1": g1, "geom2": g2, "dist": c["dist"], "pos": c["pos"], "active": c["active"]})
+            contacts.append(
+                {
+                    "geom1": geom_label(model, c["geom1"], mj),
+                    "geom2": geom_label(model, c["geom2"], mj),
+                    "bodies1": geom_body_path(model, c["geom1"], mj),
+                    "bodies2": geom_body_path(model, c["geom2"], mj),
+                    "dist": c["dist"],
+                    "pos": c["pos"],
+                    "active": c["active"],
+                }
+            )
 
         if contacts:
             n_active = sum(1 for c in contacts if c["active"])

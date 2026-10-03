@@ -1020,13 +1020,34 @@ def _body_upright(body: str, tol: float = 0.15) -> BoolPredicate:
     return check
 
 
-def _grasped(body: str, gripper_prefix: str) -> BoolPredicate:
-    """True when ``body`` is in contact with any geom whose name starts with ``gripper_prefix``.
+def _in_subtree(contact: dict[str, Any], side: str, prefix: str) -> bool:
+    """Whether one side of a contact record lies under a body named ``prefix...``.
 
-    Treats the gripper as a *set* of geoms (fingers, pads, tip sites) so
-    the caller only has to specify the common prefix - e.g. ``"robot0_gripper"``
-    for Panda covers both fingers. A body is "grasped" as long as any one
-    gripper geom is in contact with any geom belonging to ``body``.
+    Reads the ``bodies<side>`` path (the geom's body, then its ancestors) when
+    the backend reports a non-empty one, else falls back to the ``geom<side>`` label.
+    """
+    path = contact.get(f"bodies{side}")
+    if isinstance(path, list) and path:
+        return any(isinstance(b, str) and b.startswith(prefix) for b in path)
+    label = contact.get(f"geom{side}")
+    return isinstance(label, str) and label.startswith(prefix)
+
+
+def _grasped(body: str, gripper_prefix: str) -> BoolPredicate:
+    """True when ``body`` touches a geom of a body whose name starts with ``gripper_prefix``.
+
+    The gripper is a *subtree*: a geom belongs to it when the body it hangs
+    off, or any ancestor of that body, has a name starting with
+    ``gripper_prefix``. Naming the gripper's root body therefore selects every
+    jaw under it - ``"so101/gripper"`` covers the SO-101's static finger and
+    its moving jaw (a child body), ``"panda/hand"`` both Panda fingers. A body
+    is "grasped" as long as any one gripper geom is in active contact with any
+    geom belonging to ``body``. Naming the robot (``"so101"``) selects the
+    whole arm, so an elbow shove reads as a grasp; name the gripper body
+    (``list_bodies(robot_name=...)`` reports it as ``gripper_body``).
+
+    A backend whose contact records carry no ``bodies1`` / ``bodies2`` path is
+    matched on the geom label instead.
 
     Body-geom matching is delegated to :func:`_geom_belongs_to_body`, the
     shared owner of that mapping, so ``grasped`` fires on multi-geom objects
@@ -1064,7 +1085,7 @@ def _grasped(body: str, gripper_prefix: str) -> BoolPredicate:
             # fires on ``cube_1_g0`` and a scene with unnamed geoms fires on
             # the synthesized ``cube_1/geom_<id>`` name.
             body_match = _geom_belongs_to_body(g1, body) or _geom_belongs_to_body(g2, body)
-            gripper_match = any(isinstance(g, str) and g.startswith(gripper_prefix) for g in (g1, g2))
+            gripper_match = _in_subtree(c, "1", gripper_prefix) or _in_subtree(c, "2", gripper_prefix)
             if body_match and gripper_match:
                 return True
         return False
@@ -2476,6 +2497,34 @@ def can_resolve_body(sim: SimEngine, body: str) -> bool:
     return _body_position(sim, body) is not None
 
 
+def can_resolve_body_prefix(sim: SimEngine, prefix: str) -> bool:
+    """Whether some body in *sim* has a name starting with *prefix*.
+
+    The arm-time probe for ``grasped``'s ``gripper_prefix``, which selects the
+    gripper as the subtree under every such body. A prefix no body matches
+    selects nothing and pins the clause ``False`` for the whole rollout.
+    A backend without ``list_bodies`` cannot be probed and is not refused.
+
+    Args:
+        sim: The engine to probe.
+        prefix: The body-name prefix a predicate clause references.
+
+    Returns:
+        ``True`` when a body matches, or when the backend cannot list bodies.
+    """
+    list_bodies = getattr(sim, "list_bodies", None)
+    if list_bodies is None:
+        return True
+    try:
+        bodies = _extract_json(list_bodies()).get("bodies")
+    except Exception as e:  # noqa: BLE001 - a probe that cannot list must not refuse
+        logger.debug("list_bodies failed while probing %r: %s", prefix, e)
+        return True
+    if not isinstance(bodies, list):
+        return True
+    return any(isinstance(b, str) and b.startswith(prefix) for b in bodies)
+
+
 def can_resolve_joint(sim: SimEngine, joint: str) -> bool:
     """Whether *joint* resolves in *sim* right now, via the predicate DSL's own lookup.
 
@@ -2527,6 +2576,7 @@ __all__ = [
     "StatefulRewardTerm",
     "can_resolve_base",
     "can_resolve_body",
+    "can_resolve_body_prefix",
     "can_resolve_joint",
     "contact_is_active",
     "make_predicate",

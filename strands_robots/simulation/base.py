@@ -3497,7 +3497,7 @@ class SimEngine(ABC):
                 re-invoke. A predicate-DSL clause in the same schema as a
                 benchmark spec's ``success`` clause: a single call
                 ``{"predicate": "grasped", "body": "cube", "gripper_prefix":
-                "so100"}`` or an ``{"all": [...]}`` / ``{"any": [...]}`` group
+                "so101/gripper"}`` or an ``{"all": [...]}`` / ``{"any": [...]}`` group
                 of bool predicate calls. Compiled via
                 :func:`~strands_robots.simulation.benchmark_spec.compile_stop_when`
                 against the closed predicate registry (never ``eval`` /
@@ -4204,7 +4204,7 @@ class SimEngine(ABC):
 
     def _unresolvable_entity_error(
         self,
-        entities: tuple[list[str], list[str], list[str | None]],
+        entities: tuple[list[str], list[str], list[str | None], list[str]],
         *,
         subject: str,
         consequence: str,
@@ -4228,7 +4228,7 @@ class SimEngine(ABC):
         copy of it - only the clause named and the consequence differ.
 
         Args:
-            entities: ``(bodies, joints, robot_bases)`` as collected by
+            entities: ``(bodies, joints, robot_bases, body_prefixes)`` as collected by
                 :func:`~strands_robots.simulation.benchmark_spec.stop_when_referenced_entities`.
             subject: What references the entities, opening every message
                 (``"stop_when"``, ``"benchmark 'drawer-open' ..."``).
@@ -4247,11 +4247,12 @@ class SimEngine(ABC):
         from strands_robots.simulation.predicates import (
             can_resolve_base,
             can_resolve_body,
+            can_resolve_body_prefix,
             can_resolve_joint,
             supports_body_lookup,
         )
 
-        bodies, joints, robot_bases = entities
+        bodies, joints, robot_bases, prefixes = entities
 
         if bodies and not supports_body_lookup(self):
             return err(
@@ -4265,6 +4266,13 @@ class SimEngine(ABC):
                 f"{subject} references bodies not present in the scene: {missing_bodies}. "
                 f"{consequence} Check the names against the loaded scene (get_state lists "
                 "objects; describe() lists actions)."
+            )
+        unmatched = [p for p in prefixes if not can_resolve_body_prefix(self, p)]
+        if unmatched:
+            return err(
+                f"{subject} names gripper_prefix {unmatched}, but no body in the scene starts with it. "
+                f"{consequence} A gripper prefix selects the gripper by body name, with every body "
+                "under it: name the gripper body (list_bodies(robot_name=...) reports it as gripper_body)."
             )
         missing_joints = [j for j in joints if not can_resolve_joint(self, j)]
         if missing_joints:

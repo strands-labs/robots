@@ -125,7 +125,7 @@ class TestReferencedEntities:
     def test_single_call_body(self):
         from strands_robots.simulation.benchmark_spec import stop_when_referenced_entities
 
-        bodies, joints, _ = stop_when_referenced_entities({"predicate": "body_above_z", "body": "cube", "z": 0.2})
+        bodies, joints, _, _ = stop_when_referenced_entities({"predicate": "body_above_z", "body": "cube", "z": 0.2})
         assert bodies == ["cube"]
         assert joints == []
 
@@ -139,7 +139,7 @@ class TestReferencedEntities:
                 {"predicate": "joint_above", "joint": "so100/Jaw", "value": 0.5},
             ]
         }
-        bodies, joints, _ = stop_when_referenced_entities(clause)
+        bodies, joints, _, _ = stop_when_referenced_entities(clause)
         assert bodies == ["cube", "tray", "bin"]
         assert joints == ["so100/Jaw"]
 
@@ -147,7 +147,7 @@ class TestReferencedEntities:
         from strands_robots.simulation.benchmark_spec import stop_when_referenced_entities
 
         # gripper_prefix / z / geoms are not probeable entity names.
-        bodies, joints, _ = stop_when_referenced_entities(
+        bodies, joints, _, _ = stop_when_referenced_entities(
             {
                 "any": [
                     {"predicate": "grasped", "body": "cube", "gripper_prefix": "so100"},

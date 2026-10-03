@@ -99,7 +99,7 @@ _TOUCHING_Z = 0.0399
 _PREDICATES: list[tuple[str, str, dict[str, Any]]] = [
     ("contact_any", "contact_any", {}),
     ("contact_between", "contact_between", {"geom_a": "cube_g0", "geom_b": "plate_g0"}),
-    ("grasped", "grasped", {"body": "cube", "gripper_prefix": "plate_g"}),
+    ("grasped", "grasped", {"body": "cube", "gripper_prefix": "plate"}),
     (
         "body_on",
         "body_on",

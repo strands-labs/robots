@@ -4,7 +4,7 @@ description: The predicate DSL, stop_when and success_when, rollout observers, d
 
 # Predicates and rollouts
 
-By the end of this page you can stop a rollout on a scene condition, score an evaluation with the same vocabulary, watch every applied action through an observer, and register a benchmark from a JSON file an agent could have written.
+By the end of this page you can stop a rollout on a scene condition, score an evaluation with the same vocabulary, watch every applied action through an observer, and register a JSON benchmark.
 
 ```python
 import json
@@ -78,7 +78,7 @@ Episodes: 2 | Success: 2 | Failure: 0 (100.0% success)
 | float, rewards | `distance_neg`, `joint_progress`, `particles_inside_fraction`, `base_velocity`, `base_velocity_tracking`, `base_height`, `base_orientation`, `base_lin_vel_z`, `base_ang_vel_xy`, `constant` |
 | stateful | `staged_reward` (a phase machine of `{"reward": ..., "advance_when": ..., "bonus": ...}` stages) |
 
-Joint predicates resolve names scene-wide, so a task object loaded with `add_robot(urdf_path=...)` exposes `carton/cap_hinge` to them. `register_predicate(name, factory)` adds yours.
+Joint predicates resolve names scene-wide, so a task object loaded with `add_robot(urdf_path=...)` exposes `carton/cap_hinge` to them. `grasped`'s `gripper_prefix` names the gripper body (`so101/gripper`), jaws included; unmatched prefixes are refused. `register_predicate(name, factory)` adds yours.
 
 ## stop_when and success_when
 

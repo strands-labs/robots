@@ -232,7 +232,7 @@ class TestStopWhenCollection:
 
     @pytest.mark.parametrize("shape", [list, tuple], ids=["list", "tuple"])
     def test_particles_are_collected_for_probing(self, shape):
-        bodies, joints, _ = stop_when_referenced_entities(
+        bodies, joints, _, _ = stop_when_referenced_entities(
             {
                 "predicate": "particles_inside",
                 "particles": shape(["bead_a", "bead_b"]),
@@ -244,7 +244,7 @@ class TestStopWhenCollection:
 
     @pytest.mark.parametrize("shape", [list, tuple], ids=["list", "tuple"])
     def test_containers_are_collected(self, shape):
-        bodies, _, _ = stop_when_referenced_entities(
+        bodies, _, _, _ = stop_when_referenced_entities(
             {
                 "predicate": "particles_spilled",
                 "particles": shape(["bead_a"]),
@@ -264,7 +264,7 @@ class TestStopWhenCollection:
         """
         names = ["bead_a", "bead_b"]
         accepted = name_list_error(builder(names), "particles", "particles_inside") is None
-        bodies, _, _ = stop_when_referenced_entities(
+        bodies, _, _, _ = stop_when_referenced_entities(
             {
                 "predicate": "particles_inside",
                 "particles": builder(names),
