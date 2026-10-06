@@ -468,6 +468,7 @@ _REPLAY_EPISODE_SURFACES = {
     ("strands_robots/tools/episode_judge.py", "sample_frames"),
     ("strands_robots/tools/episode_judge.py", "read_predicate_verdict"),
     ("strands_robots/tools/episode_judge.py", "write_label"),
+    ("strands_robots/tools/decider_judge.py", "judge_episode"),
     # The same quantity arriving inside a collection: an entry of the recorded
     # ``episodes`` list, and a key of the human holdout mapping. A spelling is
     # not a different contract, so these are graded like the bare parameter.

@@ -58,6 +58,7 @@ from strands_robots.mesh.input import InputPublisher, InputReceiver
 from strands_robots.mesh.security import ValidationError
 from strands_robots.mesh.session import PeerInfo
 from strands_robots.policies.lerobot_local.processor import ProcessorBridge
+from strands_robots.tools.decider_judge import DeciderJudge
 from strands_robots.utils import partial_construction_repr
 
 #: The phrase the shared fallback reports. Pinned here so a rewording has to be
@@ -84,6 +85,7 @@ EXPECTED_REPR_CLASSES = frozenset(
         "policies/lerobot_local/processor::ProcessorBridge",
         "simulation/base::SimEngine",
         "simulation/isaac/simulation::IsaacSimulation",
+        "tools/decider_judge::DeciderJudge",
     }
 )
 
@@ -251,6 +253,7 @@ REFUSALS: list[tuple[type, type[Exception], Any, str]] = [
         "_running",
     ),
     (InputReceiver, ValidationError, lambda: InputReceiver(_fake_mesh(), object(), source_peer_id="**"), "_running"),
+    (DeciderJudge, ValueError, lambda: DeciderJudge("http://127.0.0.1:8000", min_confidence=1.0), "url"),
 ]
 
 #: ``(label, a call that succeeds, a field the repr must name)``.
@@ -270,6 +273,7 @@ BUILDABLE: list[tuple[str, Any, str]] = [
         "9090",
     ),
     ("RtpsRobot", lambda: RtpsRobot(node_name="/arm", cmd_vel_topic="/cmd_vel"), "/arm"),
+    ("DeciderJudge", lambda: DeciderJudge("http://127.0.0.1:8000"), "http://127.0.0.1:8000"),
     ("Mesh", lambda: Mesh(_Robot(), peer_id="arm", peer_type="robot"), "arm"),
     ("PeerInfo", lambda: PeerInfo(peer_id="arm", peer_type="robot", last_seen_mono=0.0), "arm"),
     ("DatasetRecorder", lambda: DatasetRecorder(dataset=_Dataset()), "user/dataset"),

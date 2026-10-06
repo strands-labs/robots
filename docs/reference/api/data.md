@@ -34,3 +34,7 @@ Datasets are LeRobot v3 datasets on disk or on the Hub. These functions stream t
         - sample_frames
         - read_predicate_verdict
         - write_label
+
+::: strands_robots.tools.decider_judge.DeciderJudge
+    options:
+      heading_level: 3

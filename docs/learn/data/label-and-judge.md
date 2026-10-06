@@ -4,9 +4,9 @@ description: Predicate verdicts on every episode, a judge agent's grade and fail
 
 # Label and judge
 
-At the end of this page every episode in a dataset carries a verdict the simulator's own predicates decided, a quality grade and failure-mode tag a judge agent added on top, and a filter that picks the episodes worth training on. The judge can annotate a verdict; it can never overturn one.
+Every episode gets a verdict from the simulator's predicates, a judge's quality grade and failure-mode tag on top, and a filter for the episodes worth training on. The judge can annotate a verdict, never overturn it.
 
-This runs without lerobot, against the three-episode toy dataset from [verify](verify.md):
+Runs without lerobot, on the toy dataset from [verify](verify.md):
 
 ```python
 import json, pathlib
@@ -40,9 +40,9 @@ print(labels_path(root))                                                        
 | stage | who | writes | can it change the other block |
 |---|---|---|---|
 | deterministic | the benchmark's predicates, from simulator state (`evaluate_benchmark`) | the `deterministic` block: `success`, `failure`, `steps`, `cumulative_reward`, `seed` | no |
-| judge | a VLM agent reading the recorded episode | the `judge` block: `quality`, `failure_mode`, `note`, `success_opinion`, `disputes_verdict`, `model`, `labeled_at` | no |
+| judge | a VLM agent or decider reading the recording | the `judge` block: `quality`, `failure_mode`, `note`, `success_opinion`, `disputes_verdict`, `model`, `labeled_at` | no |
 
-A recorded frame is the state before its action, so a `stop_when` episode ends one step short of the state that fired it. `annotate_episode` refuses an episode with no deterministic verdict yet. A `success_opinion` that contradicts the predicate is recorded as `disputes_verdict: true` for a human to review; the `deterministic` block stays byte-identical. That precedence is structural, not advice.
+A recorded frame is the state before its action, so a `stop_when` episode ends one step short of the state that fired it. `annotate_episode` refuses an episode with no deterministic verdict yet. A `success_opinion` that contradicts the predicate is recorded as `disputes_verdict: true` for a human to review; the `deterministic` block stays byte-identical.
 
 ## The sidecar
 
@@ -59,7 +59,7 @@ Vocabulary is fixed so filters match on identity:
 
 ## The judge agent
 
-Four `@tool`s in `strands_robots.tools.episode_judge` drive a judge; `create_judge_agent(model=None)` assembles them with a system prompt carrying the two-stage doctrine. Pass any strands model object (a Bedrock VLM, an OpenAI-compatible endpoint) or none for the default:
+Four `@tool`s in `strands_robots.tools.episode_judge` drive a judge; `create_judge_agent(model=None)` assembles them with a system prompt carrying the two-stage doctrine. Pass any strands model object, or none for the default:
 
 ```python title="sketch"
 from strands_robots.tools.episode_judge import create_judge_agent
@@ -71,15 +71,25 @@ judge(f"Label every episode of the dataset at {root}. Sample four frames each, w
 | tool | returns |
 |---|---|
 | `load_episode(root, episode)` | frame count, features, whether a verdict and a label exist yet |
-| `sample_frames(root, episode, n_frames=4, include_images=False)` | evenly spaced frames: `observation.state` and timestamps always, one decoded image per camera (all cameras, sorted key order) when asked, plus `rms_state_jerk` over the episode so a text-only judge can ground `jerky_motion` |
+| `sample_frames(root, episode, n_frames=4, include_images=False)` | evenly spaced frames: `observation.state` and timestamps, a decoded image per camera when asked, and `rms_state_jerk` to ground `jerky_motion` without images |
 | `read_predicate_verdict(root, episode)` | the authoritative deterministic verdict |
 | `write_label(root, episode, quality, failure_mode=None, note="", success_opinion=None, judge_model="")` | the judge block, through `annotate_episode` |
 
 Every tool returns the `{"status", "content"}` envelope and never raises. `sample_frames` with images needs the `[lerobot]` extra to decode video.
 
+## A decision-model judge
+
+`DeciderJudge` asks a running [Strands Decider](https://github.com/strands-labs/strands-decider) (`serve --vision`) for typed answers per episode and writes them through `write_label` only above `min_confidence`; the rest are reported `deferred`, for the agent judge or a person.
+
+```python title="sketch"
+from strands_robots.tools.decider_judge import DeciderJudge
+
+DeciderJudge("http://127.0.0.1:8000").judge_dataset(str(root), task="reach the target")
+```
+
 ## Filtering for training
 
-`filter_episodes(root, require_success=True, min_quality="medium", exclude_disputed=False)` returns the episode indices that clear the bar. Unlabeled episodes are excluded: an episode with no `judge` block has no quality to compare, and admitting it would make the answer depend on how far the judge got. Pass the list to lerobot's `--dataset.episodes` or to `StreamingDatasetReader.open(episodes=...)` ([stream and sync](stream-and-sync.md)).
+`filter_episodes(root, require_success=True, min_quality="medium", exclude_disputed=False)` returns the episode indices that clear the bar. Unlabeled and deferred episodes are excluded: with no `judge` block there is no quality to compare. Pass the list to lerobot's `--dataset.episodes` or to `StreamingDatasetReader.open(episodes=...)` ([stream and sync](stream-and-sync.md)).
 
 ## Checking the judge
 

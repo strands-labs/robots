@@ -68,6 +68,7 @@ if TYPE_CHECKING:
     )
     from strands_robots.streaming_dataset import StreamingDatasetReader, stream_dataset
     from strands_robots.teleoperator import Teleoperator
+    from strands_robots.tools.decider_judge import DeciderJudge
     from strands_robots.tools.download_assets import download_assets
     from strands_robots.tools.episode_judge import (
         create_judge_agent,
@@ -137,6 +138,7 @@ _LAZY_IMPORTS: dict[str, tuple[str, str]] = {
     # Episode-judge labeling tools (deterministic-verdict precedence lives in
     # strands_robots.episode_labels; these are the agent-facing surface).
     "create_judge_agent": ("strands_robots.tools.episode_judge", "create_judge_agent"),
+    "DeciderJudge": ("strands_robots.tools.decider_judge", "DeciderJudge"),
     "load_episode": ("strands_robots.tools.episode_judge", "load_episode"),
     "sample_frames": ("strands_robots.tools.episode_judge", "sample_frames"),
     "read_predicate_verdict": ("strands_robots.tools.episode_judge", "read_predicate_verdict"),
@@ -197,6 +199,7 @@ __all__ = [
     "download_assets",
     "harness_memory",
     "create_judge_agent",
+    "DeciderJudge",
     "load_episode",
     "sample_frames",
     "read_predicate_verdict",

@@ -38,6 +38,7 @@ def test_all_lists_every_lazy_import_name() -> None:
     # The advertised fleet of tools, so a silent drop is caught here.
     assert set(tools_pkg.__all__) == {
         "create_judge_agent",
+        "DeciderJudge",
         "download_assets",
         "harness_memory",
         "lerobot_camera",

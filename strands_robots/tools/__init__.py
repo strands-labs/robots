@@ -13,6 +13,7 @@ import importlib as _importlib
 
 _LAZY_IMPORTS: dict[str, tuple[str, str]] = {
     "create_judge_agent": (".episode_judge", "create_judge_agent"),
+    "DeciderJudge": (".decider_judge", "DeciderJudge"),
     "download_assets": (".download_assets", "download_assets"),
     "harness_memory": (".harness_memory", "harness_memory"),
     "load_episode": (".episode_judge", "load_episode"),
