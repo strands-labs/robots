@@ -111,78 +111,63 @@ def _reason(result: dict[str, Any]) -> str:
 
 # Cross-bridge parity ---------------------------------------------------------
 
+#: Each command knob, the values it cannot carry, the shared domain that words
+#: its refusal, and the rest of a usable command. ``bool`` is an ``int``
+#: subclass, so ``True`` in the velocity rows would command 1.0 m/s in silence.
+_COMMAND_DOMAINS: dict[str, tuple[list[Any], Callable[..., str | None], dict[str, Any]]] = {
+    "linear": (UNUSABLE_VELOCITIES, finite_number_error, {}),
+    "angular": (UNUSABLE_VELOCITIES, finite_number_error, {}),
+    "duration": (UNUSABLE_DURATIONS, positive_finite_number_error, {"linear": 0.5}),
+    "count": (UNUSABLE_COUNTS, positive_whole_number_error, {"linear": 0.5}),
+}
 
-@pytest.mark.parametrize("value", UNUSABLE_VELOCITIES, ids=repr)
-@pytest.mark.parametrize("param", ["linear", "angular"])
-def test_every_bridge_refuses_an_unusable_velocity_for_the_same_reason(
-    monkeypatch: pytest.MonkeyPatch, param: str, value: Any
+
+@pytest.mark.parametrize("param", list(_COMMAND_DOMAINS))
+def test_every_bridge_refuses_an_unusable_command_value_for_the_same_reason(
+    monkeypatch: pytest.MonkeyPatch, param: str
 ) -> None:
-    """A velocity no bridge can honor is refused identically by all three.
+    """A value no bridge can honor is refused identically by all of them.
 
     Asserting the shared helper's exact text (not merely ``status == "error"``)
     is what makes this a parity check: a bridge whose own inline test happens to
-    reject the same value for a different reason still fails here.
+    reject the same value for a different reason still fails here. A count
+    refusal names ``drive`` rather than the transport: the caller never invoked
+    the transport, and its own count check reports a raw loop error.
     """
-    expected = finite_number_error(value, param, "drive")
-    assert expected is not None, "probe value must be outside the domain"
-    for transport in _TRANSPORTS:
-        result, rec = _drive(monkeypatch, transport, **{param: value})
-        assert result["status"] == "error", f"{transport[0]} accepted {param}={value!r}"
-        assert _reason(result) == expected, f"{transport[0]} gave a different reason"
-        assert rec.calls == [], f"{transport[0]} reached the wire for {param}={value!r}"
+    values, domain, rest = _COMMAND_DOMAINS[param]
+    for value in values:
+        expected = domain(value, param, "drive")
+        assert expected is not None, f"probe {param}={value!r} must be outside the domain"
+        for transport in _TRANSPORTS:
+            result, rec = _drive(monkeypatch, transport, **rest, **{param: value})
+            assert result["status"] == "error", f"{transport[0]} accepted {param}={value!r}"
+            assert _reason(result) == expected, f"{transport[0]} gave a different reason for {param}={value!r}"
+            assert rec.calls == [], f"{transport[0]} reached the wire for {param}={value!r}"
 
 
-@pytest.mark.parametrize("value", UNUSABLE_DURATIONS, ids=repr)
-def test_every_bridge_refuses_an_unusable_duration_for_the_same_reason(
-    monkeypatch: pytest.MonkeyPatch, value: Any
-) -> None:
-    """A hold that no message count expresses is refused identically."""
-    expected = positive_finite_number_error(value, "duration", "drive")
-    assert expected is not None, "probe value must be outside the domain"
-    for transport in _TRANSPORTS:
-        result, rec = _drive(monkeypatch, transport, linear=0.5, duration=value)
-        assert result["status"] == "error", f"{transport[0]} accepted duration={value!r}"
-        assert _reason(result) == expected, f"{transport[0]} gave a different reason"
-        assert rec.calls == [], f"{transport[0]} reached the wire for duration={value!r}"
+_UNUSABLE_LIMITS: list[Any] = [True, "2", None, [2.0], 0, -1.0, float("nan"), float("inf")]
 
 
-@pytest.mark.parametrize("value", UNUSABLE_COUNTS, ids=repr)
-def test_every_bridge_refuses_an_unusable_count_for_the_same_reason(
-    monkeypatch: pytest.MonkeyPatch, value: Any
-) -> None:
-    """A count that publishes nothing, or cannot index a publish loop, is refused.
+@pytest.mark.parametrize("limit", ["max_linear", "max_angular", "max_duration", "publish_rate"])
+def test_an_unusable_velocity_or_horizon_limit_is_refused_at_construction(limit: str) -> None:
+    """Each limit bounds every later command, so an unusable one is fatal here.
 
-    The refusal has to name ``drive`` rather than the transport: the caller
-    never invoked the transport, and its own count check reports a raw loop
-    error for a fractional value.
+    ``max_linear=True`` would otherwise install a silent 1.0 m/s clamp on a
+    rover configured for 2.0, quietly halving every command that exceeds it.
+    ``publish_rate`` is the one limit every bridge shares - it converts a hold
+    into a message count - so it is read on every bridge, each built through
+    its tuple's own constructor rather than a dispatch on its label.
     """
-    expected = positive_whole_number_error(value, "count", "drive")
-    assert expected is not None, "probe value must be outside the domain"
-    for transport in _TRANSPORTS:
-        result, rec = _drive(monkeypatch, transport, linear=0.5, count=value)
-        assert result["status"] == "error", f"{transport[0]} accepted count={value!r}"
-        assert _reason(result) == expected, f"{transport[0]} gave a different reason"
-        assert rec.calls == [], f"{transport[0]} reached the wire for count={value!r}"
-
-
-@pytest.mark.parametrize("value", ["10", None, True, 0, -1.0, float("nan"), float("inf")], ids=repr)
-def test_every_bridge_refuses_an_unusable_publish_rate_at_construction(value: Any) -> None:
-    """A publish rate that cannot be honored is refused before a robot exists.
-
-    ``publish_rate`` is the one constructor limit every bridge shares; it
-    converts a hold into a message count, so an unusable value silently
-    reshapes every later timed command.
-
-    The bridge is constructed through the tuple's own constructor rather than a
-    dispatch on its label: a chain with a fallback branch quietly re-checks an
-    already-covered bridge when a new transport is added, which is exactly when
-    the check matters.
-    """
-    for label, _module, _symbol, ctor, _fields in _TRANSPORTS:
-        expected = positive_finite_number_error(value, "publish_rate", "")
-        assert expected is not None, "probe value must be outside the domain"
-        with pytest.raises(ValueError, match="publish_rate must be a positive finite number"):
-            ctor(publish_rate=value)
+    ctors = (
+        [t[3] for t in _TRANSPORTS]
+        if limit == "publish_rate"
+        else [next(t[3] for t in _TRANSPORTS if t[0] == "rosbridge")]
+    )
+    for value in _UNUSABLE_LIMITS:
+        assert positive_finite_number_error(value, limit, "") is not None, value
+        for ctor in ctors:
+            with pytest.raises(ValueError, match=f"{limit} must be a positive finite number"):
+                ctor(**{limit: value})
 
 
 def test_every_bridge_still_publishes_a_usable_command(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -196,7 +181,6 @@ def test_every_bridge_still_publishes_a_usable_command(monkeypatch: pytest.Monke
         assert rec.calls, f"{transport[0]} published nothing"
         assert rec.calls[0]["count"] == 3
         assert rec.calls[0]["fields"] == transport[4], f"{transport[0]} published other than its wire contract"
-
         held, rec_held = _drive(monkeypatch, transport, linear=0.5, duration=1.5)
         assert held["status"] == "success"
         assert rec_held.calls[0]["count"] == 15, "round(1.5 * 10.0) messages"
@@ -205,53 +189,25 @@ def test_every_bridge_still_publishes_a_usable_command(monkeypatch: pytest.Monke
 # rosbridge-specific consequences --------------------------------------------
 
 
-@pytest.mark.parametrize("param", ["linear", "angular", "duration"])
-@pytest.mark.parametrize("value", ["0.5", None, [0.5]], ids=repr)
-def test_a_non_numeric_command_value_does_not_escape_the_bound_agent_tool(
-    monkeypatch: pytest.MonkeyPatch, param: str, value: Any
-) -> None:
+def test_a_non_numeric_command_value_does_not_escape_the_bound_agent_tool(monkeypatch: pytest.MonkeyPatch) -> None:
     """A value the caller cannot coerce is reported, not raised past dispatch.
 
     ``drive`` is bound as an agent tool, so an exception leaving it escapes the
     structured tool-result contract entirely - the agent sees a traceback where
     a result dict was promised, and cannot read which parameter was at fault.
+    An omitted (``None``) duration means no hold, which is valid.
     """
-    if param == "duration" and value is None:
-        pytest.skip("an omitted duration means no hold, which is valid")
     rec = stands_in_for(monkeypatch, rosbridge_mod, "rosbridge_action")
     rover = rosbridge_mod.RosbridgeRobot("rover", "/cmd_vel", "/odom")
     drive_tool: Any = next(t for t in rover.tools if t.tool_name == "drive_rover")
-
-    result = drive_tool(**{param: value})
-
-    assert result["status"] == "error"
-    assert param in _reason(result)
-    assert rec.calls == [], "nothing may reach the wire for a refused command"
-
-
-@pytest.mark.parametrize("value", [True, False], ids=repr)
-def test_a_boolean_velocity_is_refused_rather_than_commanded(monkeypatch: pytest.MonkeyPatch, value: bool) -> None:
-    """``bool`` is an int subclass, so ``True`` would command 1.0 m/s in silence."""
-    rec = stands_in_for(monkeypatch, rosbridge_mod, "rosbridge_action")
-    rover = rosbridge_mod.RosbridgeRobot("rover", "/cmd_vel", "/odom")
-
-    result = rover.drive(linear=value)
-
-    assert result["status"] == "error"
-    assert _reason(result) == f"drive: linear must be a finite number, got {value!r}."
-    assert rec.calls == []
-
-
-@pytest.mark.parametrize("limit", ["max_linear", "max_angular", "max_duration", "publish_rate"])
-@pytest.mark.parametrize("value", [True, "2", None, [2.0], 0, -1.0, float("nan"), float("inf")], ids=repr)
-def test_an_unusable_velocity_or_horizon_limit_is_refused_at_construction(limit: str, value: Any) -> None:
-    """Each limit bounds every later command, so an unusable one is fatal here.
-
-    ``max_linear=True`` would otherwise install a silent 1.0 m/s clamp on a
-    rover configured for 2.0, quietly halving every command that exceeds it.
-    """
-    with pytest.raises(ValueError, match=f"{limit} must be a positive finite number"):
-        rosbridge_mod.RosbridgeRobot("rover", "/cmd_vel", "/odom", **{limit: value})
+    for param in ("linear", "angular", "duration"):
+        for value in ("0.5", None, [0.5]):
+            if param == "duration" and value is None:
+                continue
+            result = drive_tool(**{param: value})
+            assert result["status"] == "error", f"{param}={value!r}"
+            assert param in _reason(result)
+            assert rec.calls == [], "nothing may reach the wire for a refused command"
 
 
 def test_a_refused_command_leaves_the_trailing_stop_rule_intact(monkeypatch: pytest.MonkeyPatch) -> None:

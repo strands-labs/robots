@@ -48,7 +48,6 @@ import threading
 from typing import Any
 
 import numpy as np
-import pytest
 
 from strands_robots.simulation import base as sim_base
 from strands_robots.simulation.isaac.simulation import IsaacSimulation
@@ -57,7 +56,7 @@ from strands_robots.simulation.newton.simulation import NewtonSimEngine
 from tests._package_ast import parse_file, walk_tree
 from tests.simulation._isaac_engine import isaac_engine
 
-from .test_input_validators_refuse_a_boolean import _BOOLEAN_IDS, _BOOLEANS
+from .test_input_validators_refuse_a_boolean import _BOOLEANS
 
 # Values a caller legitimately passes as a gravity. ``np.float32`` and the NumPy
 # vector are the load-bearing entries: both were refused by a hand-rolled copy
@@ -71,9 +70,6 @@ _USABLE = [
     np.int64(-3),
     np.array([0.0, 0.0, -3.7]),
 ]
-_USABLE_IDS = ["float", "zero", "list", "np_float32", "np_float64", "np_int64", "np_array"]
-
-_GRAVITY_UP = 1.0  # what float(True) would have written
 
 
 def _text(result: dict[str, Any]) -> str:
@@ -115,102 +111,67 @@ def _newton_engine(rebuilds: list[bool] | None = None) -> Any:
     return engine
 
 
-class TestNewtonSetGravityRefusesABoolean:
-    """A boolean is not a magnitude, and it was applied as one."""
+def _with_component(value: Any, axis: int) -> list[Any]:
+    vector: list[Any] = [0.0, 0.0, -9.81]
+    vector[axis] = value
+    return vector
 
-    @pytest.mark.parametrize("value", _BOOLEANS, ids=_BOOLEAN_IDS)
-    def test_a_boolean_scalar_is_refused(self, value: Any) -> None:
-        engine = _newton_engine()
-        result = engine.set_gravity(value)
-        assert result["status"] == "error", f"{value!r} was applied as a gravity magnitude"
 
-    @pytest.mark.parametrize("value", _BOOLEANS, ids=_BOOLEAN_IDS)
-    def test_a_refused_boolean_leaves_the_world_gravity_alone(self, value: Any) -> None:
-        """The refusal must precede the write - a rebuilt world cannot be undone."""
-        rebuilt: list[bool] = []
-        engine = _newton_engine(rebuilds=rebuilt)
-        before = list(engine._world.gravity)
-        engine.set_gravity(value)
-        assert list(engine._world.gravity) == before, "a refused gravity was written to the world"
-        assert rebuilt == [], "a refused gravity rebuilt the model"
+# Every value the shared domain refuses, each with the fragment its refusal
+# must carry (``None``: refused, wording not pinned). A boolean is read as a
+# scalar and as each component, because the pre-fix copies coerced both with a
+# bare ``float()``: ``True`` wrote gravity +1 m/s^2 pointing up, ``False`` zero.
+_REFUSED: list[tuple[Any, str | None]] = [
+    *((value, "not a bool") for value in _BOOLEANS),
+    *((_with_component(value, axis), None) for value in _BOOLEANS for axis in range(3)),
+    (float("nan"), "finite"),
+    (float("inf"), "finite"),
+    (float("-inf"), "finite"),
+    ("heavy", None),
+    ([0.0, 0.0], "3-element"),
+]
 
-    @pytest.mark.parametrize("value", _BOOLEANS, ids=_BOOLEAN_IDS)
-    @pytest.mark.parametrize("axis", [0, 1, 2], ids=["x", "y", "z"])
-    def test_a_boolean_component_is_refused_on_every_axis(self, value: Any, axis: int) -> None:
-        vector: list[Any] = [0.0, 0.0, -9.81]
-        vector[axis] = value
-        engine = _newton_engine()
-        result = engine.set_gravity(vector)
-        assert result["status"] == "error", f"{value!r} was applied as gravity component {axis}"
 
-    def test_a_true_scalar_no_longer_reports_a_gravity_pointing_up(self) -> None:
-        """The measured pre-fix outcome: success, and gravity +1 m/s^2 upward."""
-        engine = _newton_engine()
-        result = engine.set_gravity(True)
-        assert result["status"] == "error"
-        assert engine._world.gravity[2] != _GRAVITY_UP, "gravity was configured pointing up"
-
-    def test_a_false_scalar_no_longer_reports_zero_gravity(self) -> None:
-        engine = _newton_engine()
-        result = engine.set_gravity(False)
-        assert result["status"] == "error"
-        assert engine._world.gravity != [0.0, 0.0, 0.0], "gravity was silently switched off"
-
-    @pytest.mark.parametrize("value", _BOOLEANS, ids=_BOOLEAN_IDS)
-    def test_the_refusal_names_the_method_the_parameter_and_the_reason(self, value: Any) -> None:
-        text = _text(_newton_engine().set_gravity(value))
-        assert "set_gravity" in text
-        assert "'gravity'" in text
-        assert "not a bool" in text, "a bool must be distinguished from a plain non-number"
+def _assert_refusal_text(text: str, fragment: str | None, method: str, value: Any) -> None:
+    """A refusal names the method and the parameter, and a bool one its reason."""
+    if fragment is None:
+        return
+    assert fragment in text.lower(), f"{value!r}: {text}"
+    if fragment == "not a bool":
+        assert method in text and "'gravity'" in text, text
         assert sim_base._BOOLEAN_WORLD_REASON in text, "the refusal must carry the reason, not just the rejection"
 
 
-class TestNewtonSetGravityAcceptsWhatTheSharedDomainAccepts:
-    """The local copy also refused values the shared domain honours."""
+class TestNewtonSetGravityAppliesExactlyTheSharedDomain:
+    """The local copy applied booleans and refused NumPy values; both drifts in one sweep."""
 
-    @pytest.mark.parametrize("value", _USABLE, ids=_USABLE_IDS)
-    def test_a_usable_gravity_is_applied(self, value: Any) -> None:
-        engine = _newton_engine()
-        result = engine.set_gravity(value)
-        assert result["status"] == "success", f"{value!r} is a usable gravity: {_text(result)}"
-        assert len(engine._world.gravity) == 3
-        assert all(isinstance(component, float) for component in engine._world.gravity), (
-            "the world must hold plain floats, not the caller's NumPy scalars"
-        )
+    def test_a_refused_value_is_reported_before_the_world_is_touched(self) -> None:
+        for value, fragment in _REFUSED:
+            assert sim_base.SimEngine._normalize_gravity(value, "set_gravity")[1] is not None, value
+            rebuilt: list[bool] = []
+            engine = _newton_engine(rebuilds=rebuilt)
+            result = engine.set_gravity(value)
+            assert result["status"] == "error", f"{value!r} was applied as a gravity"
+            assert engine._world.gravity == [0.0, 0.0, -9.81], f"{value!r} was written to the world"
+            assert rebuilt == [], f"{value!r} rebuilt the model"
+            _assert_refusal_text(_text(result), fragment, "set_gravity", value)
 
-    def test_a_numpy_float32_scalar_is_no_longer_a_length_complaint(self) -> None:
-        """It was refused as ``has no len()`` - a NumPy internal, not the parameter."""
+    def test_a_usable_value_is_written_as_the_normalized_floats(self) -> None:
+        """``1.0`` is in the table: the gate keys on the type, not on the value."""
+        for value in [*_USABLE, 1.0, np.array([0.0, 0.0, -1.62])]:
+            components, error = sim_base.SimEngine._normalize_gravity(value, "set_gravity")
+            assert error is None and components is not None, value
+            engine = _newton_engine()
+            result = engine.set_gravity(value)
+            assert result["status"] == "success", f"{value!r} is a usable gravity: {_text(result)}"
+            assert engine._world.gravity == list(components), value
+            assert all(type(component) is float for component in engine._world.gravity), (
+                "the world must hold plain floats, not the caller's NumPy scalars"
+            )
+            assert str(components[2]) in _text(result), "the result reports what the world received"
         engine = _newton_engine()
-        result = engine.set_gravity(np.float32(-3.7))
-        assert result["status"] == "success"
-        assert engine._world.gravity[2] == pytest.approx(-3.7, abs=1e-6)
-
-    def test_one_is_accepted_though_it_is_what_true_would_have_written(self) -> None:
-        """The gate keys on the type, not on the value - the over-reach control."""
-        engine = _newton_engine()
-        result = engine.set_gravity(1.0)
-        assert result["status"] == "success"
+        engine.set_gravity(1.0)
         assert engine._world.gravity == [0.0, 0.0, 1.0]
-
-    def test_the_result_reports_the_components_the_world_received(self) -> None:
-        engine = _newton_engine()
-        result = engine.set_gravity(np.array([0.0, 0.0, -1.62]))
-        assert result["status"] == "success"
-        assert "-1.62" in _text(result)
-        assert engine._world.gravity == [0.0, 0.0, -1.62]
-
-
-class TestNewtonSetGravityKeepsItsPreExistingDomain:
-    """The bool gate is additive: every prior refusal keeps its own message."""
-
-    @pytest.mark.parametrize("value", [float("nan"), float("inf"), float("-inf")], ids=["nan", "inf", "neg_inf"])
-    def test_a_non_finite_gravity_keeps_the_finite_message(self, value: Any) -> None:
-        text = _text(_newton_engine().set_gravity(value))
-        assert "finite" in text
-
-    def test_a_wrong_length_vector_keeps_the_length_message(self) -> None:
-        text = _text(_newton_engine().set_gravity([0.0, 0.0]))
-        assert "3-element" in text
 
     def test_a_missing_world_is_still_reported_before_the_domain(self) -> None:
         engine = NewtonSimEngine.__new__(NewtonSimEngine)
@@ -242,111 +203,21 @@ def _isaac_gravity_gate(value: Any) -> tuple[bool, str]:
     return "World already created" in text, text
 
 
-class TestIsaacCreateWorldRefusesABoolean:
-    @pytest.mark.parametrize("value", _BOOLEANS, ids=_BOOLEAN_IDS)
-    def test_a_boolean_scalar_is_refused(self, value: Any) -> None:
-        cleared, text = _isaac_gravity_gate(value)
-        assert not cleared, f"{value!r} cleared the gravity gate and would configure {float(value)} m/s^2"
-        assert "gravity" in text
+class TestIsaacCreateWorldAppliesTheSharedDomainThenItsZAlignment:
+    """The gate refuses what the shared domain refuses, then the backend's own constraint."""
 
-    @pytest.mark.parametrize("value", _BOOLEANS, ids=_BOOLEAN_IDS)
-    @pytest.mark.parametrize("axis", [0, 1, 2], ids=["x", "y", "z"])
-    def test_a_boolean_component_is_refused_on_every_axis(self, value: Any, axis: int) -> None:
-        vector: list[Any] = [0.0, 0.0, -9.81]
-        vector[axis] = value
-        cleared, _ = _isaac_gravity_gate(vector)
-        assert not cleared, f"{value!r} cleared the gravity gate as component {axis}"
+    def test_a_refused_value_does_not_clear_the_gate(self) -> None:
+        off_axis = [[0.0, -9.81, 0.0], [3.0, 0.0, -9.81], [0.0, 1e-9, -9.81], np.array([0.0, -9.81, 0.0])]
+        for value, fragment in [*_REFUSED, *((vector, "z-aligned") for vector in off_axis)]:
+            cleared, text = _isaac_gravity_gate(value)
+            assert not cleared, f"{value!r} cleared the gravity gate"
+            _assert_refusal_text(text, fragment, "create_world", value)
 
-    @pytest.mark.parametrize("value", _BOOLEANS, ids=_BOOLEAN_IDS)
-    def test_the_refusal_names_the_method_the_parameter_and_the_reason(self, value: Any) -> None:
-        _, text = _isaac_gravity_gate(value)
-        assert "create_world" in text
-        assert "'gravity'" in text
-        assert "not a bool" in text
-        assert sim_base._BOOLEAN_WORLD_REASON in text
-
-
-class TestIsaacCreateWorldAcceptsWhatTheSharedDomainAccepts:
-    @pytest.mark.parametrize("value", _USABLE, ids=_USABLE_IDS)
-    def test_a_usable_z_aligned_gravity_clears_the_gate(self, value: Any) -> None:
-        cleared, text = _isaac_gravity_gate(value)
-        assert cleared, f"{value!r} is a usable Z-aligned gravity but was refused: {text}"
-
-    def test_a_numpy_vector_is_no_longer_refused_as_not_a_vector(self) -> None:
-        """It was refused as "must be a scalar or [gx, gy, gz] vector" - both siblings accept it."""
-        cleared, text = _isaac_gravity_gate(np.array([0.0, 0.0, -1.62]))
-        assert cleared, text
-
-    def test_one_is_accepted_though_it_is_what_true_would_have_written(self) -> None:
-        cleared, text = _isaac_gravity_gate(1.0)
-        assert cleared, text
-
-
-class TestIsaacCreateWorldKeepsItsOwnZAlignmentConstraint:
-    """The backend-specific constraint is applied to the normalized components."""
-
-    @pytest.mark.parametrize(
-        "vector",
-        [[0.0, -9.81, 0.0], [3.0, 0.0, -9.81], [0.0, 1e-9, -9.81]],
-        ids=["y_only", "x_component", "tiny_y"],
-    )
-    def test_a_non_z_aligned_vector_is_still_refused(self, vector: list[float]) -> None:
-        cleared, text = _isaac_gravity_gate(vector)
-        assert not cleared
-        assert "z-aligned" in text.lower()
-
-    def test_a_non_z_aligned_numpy_vector_is_refused_for_being_off_axis(self) -> None:
-        """Previously refused for its *type* - now it reaches the real constraint."""
-        cleared, text = _isaac_gravity_gate(np.array([0.0, -9.81, 0.0]))
-        assert not cleared
-        assert "z-aligned" in text.lower()
-
-    @pytest.mark.parametrize("value", [float("nan"), float("inf")], ids=["nan", "inf"])
-    def test_a_non_finite_gravity_keeps_the_finite_message(self, value: Any) -> None:
-        _, text = _isaac_gravity_gate(value)
-        assert "finite" in text.lower()
-
-    def test_a_wrong_length_vector_is_still_refused(self) -> None:
-        cleared, text = _isaac_gravity_gate([0.0, -9.81])
-        assert not cleared
-        assert "3-element" in text
-
-
-# ---------------------------------------------------------------------------
-# Cross-backend parity
-# ---------------------------------------------------------------------------
-
-
-class TestTheGravityDomainAgreesAcrossBackends:
-    """A value one gravity surface refuses is refused by all of them."""
-
-    @pytest.mark.parametrize(
-        "value",
-        [*_BOOLEANS, float("nan"), float("inf"), "heavy", [0.0, 0.0]],
-        ids=[
-            *_BOOLEAN_IDS,
-            "nan",
-            "inf",
-            "string",
-            "short_vector",
-        ],
-    )
-    def test_a_refused_value_is_refused_on_every_backend(self, value: Any) -> None:
-        newton = _newton_engine().set_gravity(value)["status"] == "error"
-        isaac_cleared, _ = _isaac_gravity_gate(value)
-        shared_error = sim_base.SimEngine._normalize_gravity(value, "set_gravity")[1] is not None
-        assert shared_error, f"{value!r} must be refused by the shared domain"
-        assert newton, f"newton accepted {value!r} which the shared domain refuses"
-        assert not isaac_cleared, f"isaac accepted {value!r} which the shared domain refuses"
-
-    @pytest.mark.parametrize("value", _USABLE, ids=_USABLE_IDS)
-    def test_an_accepted_value_is_accepted_on_every_backend(self, value: Any) -> None:
-        newton = _newton_engine().set_gravity(value)["status"] == "success"
-        isaac_cleared, _ = _isaac_gravity_gate(value)
-        components, error = sim_base.SimEngine._normalize_gravity(value, "set_gravity")
-        assert error is None and components is not None, f"{value!r} must be accepted by the shared domain"
-        assert newton, f"newton refused {value!r} which the shared domain accepts"
-        assert isaac_cleared, f"isaac refused {value!r} which the shared domain accepts"
+    def test_a_usable_z_aligned_value_clears_the_gate(self) -> None:
+        """A NumPy vector was refused as "not a vector" - both siblings accept it."""
+        for value in [*_USABLE, 1.0, np.array([0.0, 0.0, -1.62])]:
+            cleared, text = _isaac_gravity_gate(value)
+            assert cleared, f"{value!r} is a usable Z-aligned gravity but was refused: {text}"
 
 
 # ---------------------------------------------------------------------------

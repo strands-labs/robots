@@ -29,14 +29,12 @@ What each class pins:
 
 * ``TestBothReadbackSurfacesRefuseAnUnusablePixelCount`` - the refusal text is
   the shared domain's verdict verbatim, so neither surface can drift into a
-  locally reworded copy.
-* ``TestTheRefusalPrecedesTheHandleRead`` - the guard runs before the RTX handle
-  is touched, so a refused size costs no render.
-* ``TestTheNativeResolutionCheckStillFires`` - the over-reach control: a
-  perfectly usable count that simply differs from the camera's native size
-  still gets the native-resolution message, not the domain message.
+  locally reworded copy, and the guard runs before the RTX handle is touched,
+  so a refused size costs no render.
 * ``TestUsableSizesAndTheOmissionStillWork`` - the accepted side, including
-  ``None`` (membership, not truthiness, decides "omitted").
+  ``None`` (membership, not truthiness, decides "omitted"), and the over-reach
+  control: a usable count that differs from the camera's native size still
+  gets the native-resolution message, not the domain message.
 * ``TestTheReadbackContract`` - the values these surfaces exist to return: the
   ``(rgb, depth)`` shapes and dtypes, and the fixed USD-prim-to-OpenGL basis
   correction ``get_camera_params`` documents.
@@ -80,7 +78,6 @@ NATIVE_W, NATIVE_H = 64, 48
 #: non-finite pair; ``"64"``, ``[64]`` and ``np.int64(64)`` are the spellings
 #: whose value is right but whose type the pixel consumers refuse.
 UNUSABLE: list[Any] = [0, -8, True, False, 2.7, 64.0, float("nan"), float("inf"), "64", [64], np.int64(64)]
-UNUSABLE_IDS = ["0", "-8", "True", "False", "2.7", "64.0", "nan", "inf", "str-64", "list-64", "np.int64-64"]
 
 
 class _FakeCameraHandle:
@@ -156,82 +153,30 @@ READBACKS = [("get_frame", "get_frame"), ("get_camera_params", "get_camera_param
 
 
 class TestBothReadbackSurfacesRefuseAnUnusablePixelCount:
-    """The refusal is the shared domain's verdict, verbatim.
+    """The refusal is the shared domain's verdict, verbatim, and costs no render.
 
     Asserting equality rather than a substring is what pins "one rule, one
     wording": a surface that grew its own message would still name the
-    parameter and still raise, and only this comparison would notice.
+    parameter and still raise, and only this comparison would notice. The
+    camera's handle fails on contact, so the guard is also shown to sit above
+    every ``cam.handle`` read.
     """
 
     @pytest.mark.parametrize("method,context", READBACKS)
-    @pytest.mark.parametrize("param", ["width", "height"])
-    @pytest.mark.parametrize("value", UNUSABLE, ids=UNUSABLE_IDS)
-    def test_the_message_is_the_shared_domains_verdict(self, method: str, context: str, param: str, value: Any) -> None:
-        expected = positive_count_error(value, param, context)
-        assert expected is not None, "probe value must be outside the shared domain"
-        with pytest.raises(ValueError) as excinfo:
-            _call(_engine(), method, camera_name="cam", **{param: value})
-        assert str(excinfo.value) == expected
-
-
-class TestTheRefusalPrecedesTheHandleRead:
-    """A refused size costs no render.
-
-    The guard sits above every ``cam.handle`` read, so a camera whose handle
-    fails on contact still reports the pixel count as the problem.
-    """
-
-    @pytest.mark.parametrize("method,context", READBACKS)
-    @pytest.mark.parametrize("value", [0, -8, "64"], ids=["0", "-8", "str-64"])
-    def test_no_handle_read_happens(self, method: str, context: str, value: Any) -> None:
-        handle = _FatalCameraHandle()
-        with pytest.raises(ValueError) as excinfo:
-            _call(_engine(handle), method, camera_name="cam", width=value)
-        assert str(excinfo.value) == positive_count_error(value, "width", context)
-        assert handle.reads == []
-
-    @pytest.mark.parametrize("method", ["get_frame", "get_camera_params"])
-    def test_a_usable_size_does_reach_the_handle(self, method: str) -> None:
-        """Non-vacuity: the handle is reached when the size is usable."""
-        handle = _FakeCameraHandle()
-        _call(_engine(handle), method, camera_name="cam", width=NATIVE_W)
-        assert handle.reads
-
-
-class TestTheNativeResolutionCheckStillFires:
-    """Over-reach control: the floor did not swallow the resolution check.
-
-    A positive integer is inside the shared domain, so it must reach the
-    Isaac-specific native-resolution comparison and be refused by *that*
-    message instead.
-    """
-
-    @pytest.mark.parametrize(
-        "method,param,value",
-        [
-            ("get_frame", "width", NATIVE_W * 2),
-            ("get_frame", "height", NATIVE_H + 1),
-            ("get_camera_params", "width", 1),
-            ("get_camera_params", "height", NATIVE_H * 3),
-        ],
-    )
-    def test_a_usable_but_mismatched_size_reports_the_resolution(self, method: str, param: str, value: int) -> None:
-        assert positive_count_error(value, param, method) is None
-        with pytest.raises(ValueError) as excinfo:
-            _call(_engine(), method, camera_name="cam", **{param: value})
-        message = str(excinfo.value)
-        # The two surfaces word their mismatch differently ("the resolution
-        # fixed at add_camera time" vs "only valid at the native render
-        # resolution"); what both must do is name the requested size, the
-        # camera's actual size, and the remedy.
-        assert f"requested {param}={value}" in message, message
-        assert f"{NATIVE_W}x{NATIVE_H}" in message, message
-        assert "Re-add the camera with the desired size." in message, message
-        assert "must be a positive integer" not in message, message
+    def test_the_message_is_the_shared_domains_verdict(self, method: str, context: str) -> None:
+        for param in ("width", "height"):
+            for value in UNUSABLE:
+                expected = positive_count_error(value, param, context)
+                assert expected is not None, f"probe {param}={value!r} must be outside the shared domain"
+                handle = _FatalCameraHandle()
+                with pytest.raises(ValueError) as excinfo:
+                    _call(_engine(handle), method, camera_name="cam", **{param: value})
+                assert str(excinfo.value) == expected
+                assert handle.reads == []
 
 
 class TestUsableSizesAndTheOmissionStillWork:
-    """The accepted side, including the documented ``None``.
+    """The accepted side, including the documented ``None``, reaches the handle.
 
     Membership decides "omitted", not truthiness - reading ``0`` as absent is
     the failure the shared floor exists to prevent, and it would look identical
@@ -239,21 +184,43 @@ class TestUsableSizesAndTheOmissionStillWork:
     """
 
     @pytest.mark.parametrize("method", ["get_frame", "get_camera_params"])
-    @pytest.mark.parametrize(
-        "kwargs",
-        [
+    def test_the_readback_succeeds(self, method: str) -> None:
+        accepted: list[dict[str, Any]] = [
             {},
             {"width": None},
             {"height": None},
             {"width": NATIVE_W},
             {"height": NATIVE_H},
             {"width": NATIVE_W, "height": NATIVE_H},
-        ],
-        ids=["omitted", "width-None", "height-None", "native-width", "native-height", "both-native"],
-    )
-    def test_the_readback_succeeds(self, method: str, kwargs: dict[str, Any]) -> None:
-        result = _call(_engine(), method, camera_name="cam", **kwargs)
-        assert result is not None
+        ]
+        for kwargs in accepted:
+            handle = _FakeCameraHandle()
+            assert _call(_engine(handle), method, camera_name="cam", **kwargs) is not None, kwargs
+            assert handle.reads, f"{kwargs} never reached the handle"
+
+    def test_a_usable_but_mismatched_size_reports_the_resolution(self) -> None:
+        """Over-reach control: the floor did not swallow the resolution check.
+
+        A positive integer is inside the shared domain, so it must reach the
+        Isaac-specific native-resolution comparison and be refused by *that*
+        message instead. The two surfaces word their mismatch differently;
+        what both must do is name the requested size, the camera's actual
+        size, and the remedy.
+        """
+        for method, param, value in [
+            ("get_frame", "width", NATIVE_W * 2),
+            ("get_frame", "height", NATIVE_H + 1),
+            ("get_camera_params", "width", 1),
+            ("get_camera_params", "height", NATIVE_H * 3),
+        ]:
+            assert positive_count_error(value, param, method) is None
+            with pytest.raises(ValueError) as excinfo:
+                _call(_engine(), method, camera_name="cam", **{param: value})
+            message = str(excinfo.value)
+            assert f"requested {param}={value}" in message, message
+            assert f"{NATIVE_W}x{NATIVE_H}" in message, message
+            assert "Re-add the camera with the desired size." in message, message
+            assert "must be a positive integer" not in message, message
 
 
 class TestTheReadbackContract:
@@ -300,21 +267,14 @@ class TestTheDomainIsDocumented:
     causes.
     """
 
-    @pytest.mark.parametrize("method", ["get_frame", "get_camera_params"])
-    def test_the_valueerror_entry_names_the_pixel_floor(self, method: str) -> None:
-        doc = inspect.getdoc(getattr(IsaacSimulation, method)) or ""
-        raises = doc.split("Raises:", 1)
-        assert len(raises) == 2, f"{method} documents no Raises: section"
-        body = " ".join(raises[1].split())
-        assert "positive integer" in body, body
-
-    @pytest.mark.parametrize("method", ["get_frame", "get_camera_params"])
-    def test_the_args_entry_names_the_pixel_floor(self, method: str) -> None:
-        doc = inspect.getdoc(getattr(IsaacSimulation, method)) or ""
-        args = doc.split("Args:", 1)
-        assert len(args) == 2, f"{method} documents no Args: section"
-        body = " ".join(args[1].split("Raises:", 1)[0].split())
-        assert "positive integer when supplied" in body, body
+    def test_the_args_and_raises_entries_name_the_pixel_floor(self) -> None:
+        for method in ("get_frame", "get_camera_params"):
+            doc = inspect.getdoc(getattr(IsaacSimulation, method)) or ""
+            args = doc.split("Args:", 1)
+            raises = doc.split("Raises:", 1)
+            assert len(args) == 2 and len(raises) == 2, f"{method} documents no Args:/Raises: section"
+            assert "positive integer when supplied" in " ".join(args[1].split("Raises:", 1)[0].split()), method
+            assert "positive integer" in " ".join(raises[1].split()), method
 
 
 def _dims_surfaces() -> dict[str, tuple[bool, bool]]:
@@ -364,10 +324,9 @@ class TestEveryPublicDimsSurfaceIsAccountedFor:
         """Non-vacuity: a scan that found nothing would pass every assertion."""
         assert set(_dims_surfaces()) == {"render", "get_frame", "get_camera_params", "add_camera"}
 
-    @pytest.mark.parametrize("name", ["render", "get_frame", "get_camera_params", "add_camera"])
-    def test_it_applies_the_floor_or_forwards_the_value(self, name: str) -> None:
-        guards, forwards = _dims_surfaces()[name]
-        assert guards or forwards, f"{name} neither applies the pixel floor nor forwards width/height"
+    def test_it_applies_the_floor_or_forwards_the_value(self) -> None:
+        for name, (guards, forwards) in _dims_surfaces().items():
+            assert guards or forwards, f"{name} neither applies the pixel floor nor forwards width/height"
 
     def test_the_two_readbacks_apply_the_floor_themselves(self) -> None:
         """They raise rather than returning an envelope, so they cannot delegate."""

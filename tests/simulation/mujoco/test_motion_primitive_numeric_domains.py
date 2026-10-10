@@ -43,25 +43,11 @@ from .test_motion_primitives import ARM_XML, REACHABLE  # noqa: E402
 # absent: it is the documented "not supplied" spelling for ``target_yaw`` and
 # reports as a missing required field rather than a domain error, which
 # ``TestTheOmittedTargetIsNotADomainError`` pins separately.
-NOT_A_FINITE_NUMBER = [
-    pytest.param(math.nan, id="nan"),
-    pytest.param(math.inf, id="inf"),
-    pytest.param(-math.inf, id="-inf"),
-    pytest.param(True, id="True"),
-    pytest.param(False, id="False"),
-    pytest.param("0.05", id="str"),
-    pytest.param([0.05], id="list"),
-    pytest.param(np.bool_(True), id="np.bool_"),
-]
+NOT_A_FINITE_NUMBER: list[Any] = [math.nan, math.inf, -math.inf, True, False, "0.05", [0.05], np.bool_(True)]
 
 # Values no control-tick budget can be built from. A budget is a count, so an
 # integral float is refused too: ``range()`` and the tick loop want an int.
-NOT_A_STEP_BUDGET = [
-    *NOT_A_FINITE_NUMBER,
-    pytest.param(2.7, id="2.7"),
-    pytest.param(3.0, id="integral-float"),
-    pytest.param(None, id="None"),
-]
+NOT_A_STEP_BUDGET: list[Any] = [*NOT_A_FINITE_NUMBER, 2.7, 3.0, None]
 
 # Continuous fields, with the other required fields of that call and the unit
 # word the message is documented to carry.
@@ -103,52 +89,41 @@ def _text(result: dict[str, Any]) -> str:
 class TestTheSharedFinitenessPredicate:
     """``_is_finite_real`` is the numeric half of all three continuous guards."""
 
-    @pytest.mark.parametrize("value", [*NOT_A_FINITE_NUMBER, pytest.param(None, id="None")])
-    def test_a_value_no_number_can_be_built_from_is_rejected(self, value):
-        assert _is_finite_real(value) is False
+    def test_a_value_no_number_can_be_built_from_is_rejected(self):
+        for value in [*NOT_A_FINITE_NUMBER, None]:
+            assert _is_finite_real(value) is False, value
 
-    @pytest.mark.parametrize(
-        "value",
-        [
-            pytest.param(0.05, id="float"),
-            pytest.param(1, id="int"),
-            pytest.param(-0.5, id="negative"),
-            pytest.param(0.0, id="zero"),
-            pytest.param(np.float64(0.05), id="np.float64"),
-            pytest.param(np.int64(1), id="np.int64"),
-        ],
-    )
-    def test_a_real_finite_scalar_is_accepted(self, value):
+    def test_a_real_finite_scalar_is_accepted(self):
         """Sign and magnitude are the caller's business; this predicate is not."""
-        assert _is_finite_real(value) is True
+        for value in [0.05, 1, -0.5, 0.0, np.float64(0.05), np.int64(1)]:
+            assert _is_finite_real(value) is True, value
 
 
 class TestEveryPrimitiveRefusesAnUnusableContinuousField:
     """A tolerance or set-point no number can be built from is a tool error."""
 
     @pytest.mark.parametrize(("action", "field", "rest", "unit"), CONTINUOUS_FIELDS)
-    @pytest.mark.parametrize("value", NOT_A_FINITE_NUMBER)
-    def test_the_refusal_names_the_field_the_unit_and_the_value(self, sim, action, field, rest, unit, value):
-        # Returning at all is the "Never raises" half of the contract.
-        result = _call(sim, action, robot_name="arm", **rest, **{field: value})
-        assert result["status"] == "error"
-        text = _text(result)
-        assert f"'{field}'" in text
-        assert unit in text
-        assert repr(value) in text
+    def test_the_refusal_names_the_field_the_unit_and_the_value(self, sim, action, field, rest, unit):
+        for value in NOT_A_FINITE_NUMBER:
+            # Returning at all is the "Never raises" half of the contract.
+            result = _call(sim, action, robot_name="arm", **rest, **{field: value})
+            assert result["status"] == "error", value
+            text = _text(result)
+            assert f"'{field}'" in text and unit in text and repr(value) in text, text
 
 
 class TestEveryPrimitiveRefusesAnUnusableStepBudget:
     """A control-tick budget that is not an integer is a tool error."""
 
     @pytest.mark.parametrize(("action", "field", "rest"), STEP_BUDGET_FIELDS)
-    @pytest.mark.parametrize("value", NOT_A_STEP_BUDGET)
-    def test_the_refusal_names_the_field_and_the_type(self, sim, action, field, rest, value):
-        result = _call(sim, action, robot_name="arm", **rest, **{field: value})
-        assert result["status"] == "error"
-        text = _text(result)
-        assert f"'{field}'" in text
-        assert f"got {type(value).__name__}." in text
+    def test_the_refusal_is_the_shared_wording_naming_the_field_and_the_type(self, sim, action, field, rest):
+        """All three tick budgets route through ``_validate_step_budget``."""
+        for value in NOT_A_STEP_BUDGET:
+            result = _call(sim, action, robot_name="arm", **rest, **{field: value})
+            assert result["status"] == "error", value
+            text = _text(result)
+            assert f"'{field}'" in text and f"got {type(value).__name__}." in text, text
+            assert text == _text(MotionPrimitivesMixin._validate_step_budget(action, field, value) or {"content": []})
 
     def test_a_numpy_integer_budget_is_honoured(self, sim):
         """The rule refuses non-integers, not every spelling of an integer."""
@@ -199,13 +174,3 @@ class TestTheOmittedTargetIsNotADomainError:
         result = _call(sim, "rotate_wrist", robot_name="arm", target_yaw=0.3, tol=0.02, max_steps=300)
         assert result["status"] == "success"
         assert "reached" in _text(result)
-
-
-class TestTheStepBudgetRuleHasOneOwner:
-    """All three tick budgets route through ``_validate_step_budget``."""
-
-    @pytest.mark.parametrize(("action", "field", "rest"), STEP_BUDGET_FIELDS)
-    def test_each_primitive_reports_the_shared_wording(self, sim, action, field, rest):
-        shared = _text(MotionPrimitivesMixin._validate_step_budget(action, field, "not-a-count") or {"content": []})
-        assert shared, "the shared validator must produce a message"
-        assert _text(_call(sim, action, robot_name="arm", **rest, **{field: "not-a-count"})) == shared
