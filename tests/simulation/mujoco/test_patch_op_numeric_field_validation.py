@@ -104,35 +104,33 @@ class TestNonFiniteComponentsAreRefused:
     """A non-finite component is refused on every numeric field of every op."""
 
     @pytest.mark.parametrize(("kind", "field"), ALL_NUMERIC_FIELDS)
-    @pytest.mark.parametrize("bad", NON_FINITE, ids=["nan", "inf", "-inf"])
-    def test_every_numeric_op_field_refuses_a_non_finite_component(
-        self, sim, kind: str, field: str, bad: float
-    ) -> None:
+    def test_every_numeric_op_field_refuses_a_non_finite_component(self, sim, kind: str, field: str) -> None:
         _seeded_world(sim)
-        result = sim.patch_scene_mjcf([_op_with(kind, field, bad)])
-        assert result["status"] == "error", f"{kind}.{field}={bad} was accepted"
-        message = _text(result)
-        assert kind in message
-        assert f"'{field}'" in message
-        assert "finite" in message
+        for bad in NON_FINITE:
+            result = sim.patch_scene_mjcf([_op_with(kind, field, bad)])
+            assert result["status"] == "error", f"{kind}.{field}={bad} was accepted"
+            message = _text(result)
+            assert kind in message, f"{bad!r}"
+            assert f"'{field}'" in message, f"{bad!r}"
+            assert "finite" in message, f"{bad!r}"
 
-    @pytest.mark.parametrize("bad", NON_FINITE, ids=["nan", "inf", "-inf"])
-    def test_a_refused_pose_leaves_the_body_and_the_physics_state_untouched(self, sim, bad: float) -> None:
+    def test_a_refused_pose_leaves_the_body_and_the_physics_state_untouched(self, sim) -> None:
         """The headline consequence: the model keeps the old pose and the state stays usable.
 
         Pre-fix this reported success, wrote the component into ``body_pos`` and
         left ``qpos``/``qvel`` non-finite after the next step.
         """
         _seeded_world(sim)
-        sim.step(n_steps=5)
-        assert _state_is_finite(sim), "fixture premise: the scene starts with a usable state"
+        for bad in NON_FINITE:
+            sim.step(n_steps=5)
+            assert _state_is_finite(sim), "fixture premise: the scene starts with a usable state"
 
-        result = sim.patch_scene_mjcf([{"op": "set_body_pos", "name": "crate", "pos": [bad, 0.0, 0.3]}])
+            result = sim.patch_scene_mjcf([{"op": "set_body_pos", "name": "crate", "pos": [bad, 0.0, 0.3]}])
 
-        assert result["status"] == "error"
-        assert _body_pos(sim, "crate") == pytest.approx(CRATE_POS)
-        assert sim.step(n_steps=20)["status"] == "success"
-        assert _state_is_finite(sim), "a refused patch must not poison qpos/qvel"
+            assert result["status"] == "error", f"{bad!r}"
+            assert _body_pos(sim, "crate") == pytest.approx(CRATE_POS), f"{bad!r}"
+            assert sim.step(n_steps=20)["status"] == "success", f"{bad!r}"
+            assert _state_is_finite(sim), "a refused patch must not poison qpos/qvel"
 
     def test_a_non_finite_op_does_not_half_apply_the_batch(self, sim) -> None:
         """A valid op ahead of a bad one is rolled back, matching the documented atomicity."""
@@ -179,35 +177,22 @@ class TestNonNumericComponentsAreRefused:
 class TestSameVerdictAsTheMoveObjectSibling:
     """One write to ``body_pos``, one verdict, whichever method issues it."""
 
-    @pytest.mark.parametrize(
-        "pose",
-        [
+    def test_set_body_pos_and_move_object_agree_on_a_position(self, sim) -> None:
+        _seeded_world(sim)
+        poses: list[list[Any]] = [
             [float("nan"), 0.0, 0.3],
             [float("inf"), 0.0, 0.3],
             [-float("inf"), 0.0, 0.3],
             ["a", "b", "c"],
             [True, 0.0, 0.3],
             [0.2, 0.1, 0.4],
-        ],
-        ids=["nan", "inf", "-inf", "strings", "bool", "valid"],
-    )
-    def test_set_body_pos_and_move_object_agree_on_a_position(self, sim, pose: list[Any]) -> None:
-        _seeded_world(sim)
-        via_move = sim.move_object(name="crate", position=list(pose))["status"]
-        via_patch = sim.patch_scene_mjcf([{"op": "set_body_pos", "name": "crate", "pos": list(pose)}])["status"]
-        assert via_patch == via_move, f"verdicts differ for pos={pose!r}"
+        ]
+        for pose in poses:
+            via_move = sim.move_object(name="crate", position=list(pose))["status"]
+            via_patch = sim.patch_scene_mjcf([{"op": "set_body_pos", "name": "crate", "pos": list(pose)}])["status"]
+            assert via_patch == via_move, f"verdicts differ for pos={pose!r}"
 
-    @pytest.mark.parametrize(
-        "quat",
-        [
-            [float("nan"), 0.0, 0.0, 0.0],
-            [float("inf"), 0.0, 0.0, 0.0],
-            [0.0, 0.0, 0.0, 0.0],
-            [1.0, 0.0, 0.0, 0.0],
-        ],
-        ids=["nan", "inf", "all-zero", "identity"],
-    )
-    def test_set_body_quat_and_move_object_agree_on_an_orientation(self, sim, quat: list[float]) -> None:
+    def test_set_body_quat_and_move_object_agree_on_an_orientation(self, sim) -> None:
         """Includes the all-zero quaternion, which both sides accept.
 
         MuJoCo reads an all-zero ``quat`` as the identity rotation rather than
@@ -215,24 +200,27 @@ class TestSameVerdictAsTheMoveObjectSibling:
         not refused - the guard is finiteness, not unit norm.
         """
         _seeded_world(sim)
-        via_move = sim.move_object(name="crate", orientation=list(quat))["status"]
-        via_patch = sim.patch_scene_mjcf([{"op": "set_body_quat", "name": "crate", "quat": list(quat)}])["status"]
-        assert via_patch == via_move, f"verdicts differ for quat={quat!r}"
+        for quat in [
+            [float("nan"), 0.0, 0.0, 0.0],
+            [float("inf"), 0.0, 0.0, 0.0],
+            [0.0, 0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0, 0.0],
+        ]:
+            via_move = sim.move_object(name="crate", orientation=list(quat))["status"]
+            via_patch = sim.patch_scene_mjcf([{"op": "set_body_quat", "name": "crate", "quat": list(quat)}])["status"]
+            assert via_patch == via_move, f"verdicts differ for quat={quat!r}"
 
 
 class TestUsableValuesStillCompile:
     """No false positives: the numeric shapes MuJoCo defines are still accepted."""
 
-    @pytest.mark.parametrize(
-        "pos",
-        [[0.2, 0.1, 0.4], [0, 0, 1], [np.float64(0.2), np.float32(0.1), 0.4]],
-        ids=["floats", "ints", "numpy-scalars"],
-    )
-    def test_a_finite_pose_is_applied(self, sim, pos: list[Any]) -> None:
+    def test_a_finite_pose_is_applied(self, sim) -> None:
         _seeded_world(sim)
-        result = sim.patch_scene_mjcf([{"op": "set_body_pos", "name": "crate", "pos": list(pos)}])
-        assert result["status"] == "success"
-        assert _body_pos(sim, "crate") == pytest.approx([float(v) for v in pos])
+        positions: list[list[Any]] = [[0.2, 0.1, 0.4], [0, 0, 1], [np.float64(0.2), np.float32(0.1), 0.4]]
+        for pos in positions:
+            result = sim.patch_scene_mjcf([{"op": "set_body_pos", "name": "crate", "pos": list(pos)}])
+            assert result["status"] == "success", f"{pos!r}"
+            assert _body_pos(sim, "crate") == pytest.approx([float(v) for v in pos]), f"{pos!r}"
 
     def test_a_full_op_vocabulary_batch_still_applies(self, sim) -> None:
         """Every op writing every numeric field it accepts, with usable values."""

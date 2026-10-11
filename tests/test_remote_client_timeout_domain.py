@@ -100,36 +100,27 @@ class TestATimeoutThatNamesNoBudgetIsRefused:
     """Both knobs refuse the same values, naming the class, param and domain."""
 
     @pytest.mark.parametrize("param", TIMEOUT_PARAMS)
-    @pytest.mark.parametrize("value", UNUSABLE_TIMEOUTS)
-    @pytest.mark.parametrize(("name", "build"), CLIENTS)
-    def test_it_is_refused_at_construction(self, name: str, build: Any, value: Any, param: str) -> None:
-        """The refusal is a ``ValueError`` that identifies what the caller got wrong."""
-        with pytest.raises(ValueError) as exc:
-            build(**{param: value})
-        text = str(exc.value)
-        assert name in text, f"the refusal must name the class, got {text!r}"
-        assert param in text, f"the refusal must name the parameter, got {text!r}"
-        assert "must be a positive finite number" in text, f"the refusal must state the domain, got {text!r}"
+    def test_it_is_refused_at_construction(self, param: str) -> None:
+        """The refusal is a ``ValueError`` that identifies what the caller got wrong.
+
+        Nothing in it suggests starting or reaching a server: a ``0`` connect
+        timeout used to produce "could not reach a PolicyServer ... Start one
+        first" against a server that was running and reachable, because
+        ``TimeoutError`` is inside the clause that composes that message.
+        """
+        for name, build in CLIENTS:
+            for value in UNUSABLE_TIMEOUTS:
+                with pytest.raises(ValueError) as exc:
+                    build(**{param: value})
+                text = str(exc.value)
+                assert name in text, f"the refusal must name the class, got {text!r}"
+                assert param in text, f"the refusal must name the parameter, got {text!r}"
+                assert "must be a positive finite number" in text, f"the refusal must state the domain, got {text!r}"
+                assert "Start one first" not in text and "could not reach" not in text, f"{value!r}: {text!r}"
 
 
 class TestARunningServerIsNoLongerBlamedForTheCallersTimeout:
-    """The failure this issue is about: an unusable timeout read as an absent server.
-
-    A ``0`` connect timeout produced "could not reach a PolicyServer ... Start
-    one first" against a server that was running and reachable, because
-    ``TimeoutError`` is inside the clause that composes that message.
-    """
-
-    @pytest.mark.parametrize("param", TIMEOUT_PARAMS)
-    @pytest.mark.parametrize("value", [0, -1, math.nan, math.inf])
-    @pytest.mark.parametrize(("name", "build"), CLIENTS)
-    def test_the_refusal_does_not_implicate_the_server(self, name: str, build: Any, value: Any, param: str) -> None:
-        """Nothing in the message suggests starting or reaching a server."""
-        with pytest.raises(ValueError) as exc:
-            build(**{param: value})
-        text = str(exc.value)
-        assert "Start one first" not in text
-        assert "could not reach" not in text
+    """The failure this issue is about: an unusable timeout read as an absent server."""
 
     def test_it_is_a_value_error_rather_than_a_connection_error(self) -> None:
         """The exception type carries the same distinction as the message.
@@ -216,34 +207,34 @@ class TestInfinityIsRefusedRatherThanReadAsNoDeadline:
 class TestTheClientDefersToTheSharedDomain:
     """The verdict is the shared one, so the two cannot drift apart."""
 
-    @pytest.mark.parametrize("value", [*UNUSABLE_TIMEOUTS, *USABLE_TIMEOUTS])
     @pytest.mark.parametrize("param", TIMEOUT_PARAMS)
-    def test_the_client_agrees_with_the_shared_verdict(self, param: str, value: Any) -> None:
+    def test_the_client_agrees_with_the_shared_verdict(self, param: str) -> None:
         """Refuse exactly when :func:`positive_finite_number_error` refuses.
 
         Pinned over the accepted values too, so a client that grows a private
         extra restriction - a minimum budget, say - fails here rather than
         drifting silently from the shared rule.
         """
-        shared_refuses = positive_finite_number_error(value, param, "Ctx") is not None
-        for name, build in CLIENTS:
-            if shared_refuses:
-                with pytest.raises(ValueError, match="must be a positive finite number"):
-                    build(**{param: value})
-            else:
-                build(**{param: value})  # constructs; no transport is touched
+        for value in [*UNUSABLE_TIMEOUTS, *USABLE_TIMEOUTS]:
+            shared_refuses = positive_finite_number_error(value, param, "Ctx") is not None
+            for _name, build in CLIENTS:
+                if shared_refuses:
+                    with pytest.raises(ValueError, match="must be a positive finite number"):
+                        build(**{param: value})
+                else:
+                    build(**{param: value})  # constructs; no transport is touched
 
 
 class TestAnAcceptedTimeoutIsStoredUnchanged:
     """A usable value is kept as given - no coercion stands in for the guard."""
 
-    @pytest.mark.parametrize("value", USABLE_TIMEOUTS)
     @pytest.mark.parametrize("param", TIMEOUT_PARAMS)
-    @pytest.mark.parametrize(("name", "build"), CLIENTS)
-    def test_it_survives_construction(self, name: str, build: Any, param: str, value: Any) -> None:
+    def test_it_survives_construction(self, param: str) -> None:
         """The attribute the transport reads carries the caller's value."""
-        client = build(**{param: value})
-        assert getattr(client, param) == value
+        for _name, build in CLIENTS:
+            for value in USABLE_TIMEOUTS:
+                client = build(**{param: value})
+                assert getattr(client, param) == value, f"{value!r}"
 
     @pytest.mark.parametrize(("name", "build"), CLIENTS)
     def test_the_defaults_are_inside_the_domain(self, name: str, build: Any) -> None:

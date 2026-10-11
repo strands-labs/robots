@@ -101,26 +101,20 @@ def _published_rate() -> float:
 class TestTheReportedCameraRateIsThePublishedOne:
     """One knob, two surfaces, and the panel that writes it must not disagree."""
 
-    @pytest.mark.parametrize("spelling", RATE_SPELLINGS)
-    def test_the_dashboard_reports_the_rate_the_camera_loop_resolves(
-        self, monkeypatch: pytest.MonkeyPatch, spelling: str
-    ) -> None:
-        _set_rate(monkeypatch, spelling)
-        reported = mesh_bridge.MeshBridge(peer_id="parity").mesh_info()["camera_hz"]
-        assert reported == _published_rate(), (
-            f"STRANDS_MESH_CAMERA_HZ={spelling!r}: the settings panel reports {reported!r} while the "
-            f"camera loop resolves {_published_rate()!r}, so an operator reads a rate nothing publishes at"
-        )
+    def test_the_dashboard_reports_the_rate_the_camera_loop_resolves(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """The panel reports the publisher's rate, as JSON a client can parse.
 
-    @pytest.mark.parametrize("spelling", RATE_SPELLINGS)
-    def test_the_posture_payload_is_json_a_client_can_parse(
-        self, monkeypatch: pytest.MonkeyPatch, spelling: str
-    ) -> None:
-        """``NaN`` and ``Infinity`` are not JSON, so ``/api/mesh/config`` must not emit them."""
-        _set_rate(monkeypatch, spelling)
-        rate = mesh_bridge.MeshBridge(peer_id="json").mesh_info()["camera_hz"]
-        assert math.isfinite(rate), f"STRANDS_MESH_CAMERA_HZ={spelling!r} reported {rate!r}"
-        json.dumps({"camera_hz": rate}, allow_nan=False)
+        ``NaN`` and ``Infinity`` are not JSON, so ``/api/mesh/config`` must not emit them.
+        """
+        for spelling in RATE_SPELLINGS:
+            _set_rate(monkeypatch, spelling)
+            reported = mesh_bridge.MeshBridge(peer_id="parity").mesh_info()["camera_hz"]
+            assert reported == _published_rate(), (
+                f"STRANDS_MESH_CAMERA_HZ={spelling!r}: the settings panel reports {reported!r} while the "
+                f"camera loop resolves {_published_rate()!r}, so an operator reads a rate nothing publishes at"
+            )
+            assert math.isfinite(reported), f"STRANDS_MESH_CAMERA_HZ={spelling!r} reported {reported!r}"
+            json.dumps({"camera_hz": reported}, allow_nan=False)
 
     @pytest.mark.parametrize(("spelling", "expected"), [("5", 5.0), ("0.5", 0.5), ("30", 30.0)])
     def test_a_usable_rate_is_still_reported_verbatim(
@@ -145,17 +139,17 @@ class TestEveryDashboardKnobResolvesToAUsableNumber:
     """The bridge's own knobs are read at import, where a typo costs the module."""
 
     @pytest.mark.parametrize(("name", "default"), DASHBOARD_KNOBS)
-    @pytest.mark.parametrize("spelling", UNUSABLE)
     def test_an_unusable_value_falls_back_to_the_documented_default(
-        self, monkeypatch: pytest.MonkeyPatch, name: str, default: float, spelling: str
+        self, monkeypatch: pytest.MonkeyPatch, name: str, default: float
     ) -> None:
-        if spelling == "":
-            monkeypatch.delenv(name, raising=False)
-        else:
-            monkeypatch.setenv(name, spelling)
-        resolved = mesh_bridge._env_float(name, str(default))
-        assert resolved == default, f"{name}={spelling!r} resolved to {resolved!r}"
-        assert math.isfinite(resolved)
+        for spelling in UNUSABLE:
+            if spelling == "":
+                monkeypatch.delenv(name, raising=False)
+            else:
+                monkeypatch.setenv(name, spelling)
+            resolved = mesh_bridge._env_float(name, str(default))
+            assert resolved == default, f"{name}={spelling!r} resolved to {resolved!r}"
+            assert math.isfinite(resolved), f"{spelling!r}"
 
     @pytest.mark.parametrize(("spelling", "expected"), [("42", 42.0), ("0", 0.0), ("-1", -1.0), ("0.25", 0.25)])
     def test_a_usable_value_is_honoured_including_the_floors_its_consumer_owns(

@@ -86,30 +86,30 @@ def rmd():
 class TestDialHostDomain:
     """The constructor accepts exactly the hosts the shared domain accepts."""
 
-    @pytest.mark.parametrize("host", USABLE_HOSTS)
-    def test_a_usable_host_is_accepted_and_stored(self, rmd, host):
+    def test_a_usable_host_is_accepted_and_stored(self, rmd):
         """Every host a Mini is reached by still constructs, carried verbatim."""
-        assert rmd.ReachyMiniDriver(host=host)._host == host
+        for host in USABLE_HOSTS:
+            assert rmd.ReachyMiniDriver(host=host)._host == host, f"{host!r}"
 
     def test_the_default_host_is_usable(self, rmd):
         """The documented default must satisfy the domain it now enforces."""
         assert rmd.ReachyMiniDriver()._host == "reachy-mini.local"
 
-    @pytest.mark.parametrize("host", UNUSABLE_HOSTS + USABLE_HOSTS, ids=repr)
-    def test_the_accepted_domain_is_the_shared_dial_host_domain(self, rmd, host):
+    def test_the_accepted_domain_is_the_shared_dial_host_domain(self, rmd):
         """The driver refuses a host iff the shared domain refuses it.
 
         Asserted as an equivalence so the two cannot drift: the same value must
         not be refused by one surface that dials a service and accepted by the
         next.
         """
-        shared_refuses = dial_host_error(host, "host", "ReachyMiniDriver") is not None
-        try:
-            rmd.ReachyMiniDriver(host=host)
-            driver_refuses = False
-        except ValueError:
-            driver_refuses = True
-        assert driver_refuses is shared_refuses
+        for host in UNUSABLE_HOSTS + USABLE_HOSTS:
+            shared_refuses = dial_host_error(host, "host", "ReachyMiniDriver") is not None
+            try:
+                rmd.ReachyMiniDriver(host=host)
+                driver_refuses = False
+            except ValueError:
+                driver_refuses = True
+            assert driver_refuses is shared_refuses, f"{host!r}"
 
 
 class TestWhyTheConstructorOwnsTheDomain:
@@ -130,8 +130,7 @@ class TestWhyTheConstructorOwnsTheDomain:
         """The authority is what follows ``@``, so another host is reached."""
         assert urlsplit("http://bot.local@evil.example:8000/api/daemon/status").hostname == "evil.example"
 
-    @pytest.mark.parametrize("host", ["127.0.0.1/foo", None, 8000], ids=repr)
-    def test_the_daemon_url_interpolates_the_host_verbatim(self, monkeypatch, host):
+    def test_the_daemon_url_interpolates_the_host_verbatim(self, monkeypatch):
         """``api`` builds ``http://<host>:port/path`` with no coercion."""
         from strands_robots.drivers import reachy_transport
 
@@ -142,8 +141,10 @@ class TestWhyTheConstructorOwnsTheDomain:
             raise urllib.error.URLError("test: never dialed")
 
         monkeypatch.setattr(urllib.request, "urlopen", spy)
-        reachy_transport.api(host, 8000, "/api/daemon/status")
-        assert captured == [f"http://{host}:8000/api/daemon/status"]
+        for host in ["127.0.0.1/foo", None, 8000]:
+            captured.clear()
+            reachy_transport.api(host, 8000, "/api/daemon/status")
+            assert captured == [f"http://{host}:8000/api/daemon/status"], f"{host!r}"
 
     def test_the_websocket_target_carries_the_same_value(self):
         """The Lite link interpolates the host into its own ``ws://`` target."""
