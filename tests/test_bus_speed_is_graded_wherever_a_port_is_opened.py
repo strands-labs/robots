@@ -81,8 +81,6 @@ _UNUSABLE: tuple[tuple[Any, str], ...] = (
     (1_000_000.0, "was converted to the speed meant; the tool surface refuses it"),
     ("1000000", "was converted to the speed meant; the tool surface refuses it"),
 )
-_UNUSABLE_VALUES = [value for value, _ in _UNUSABLE]
-_UNUSABLE_IDS = [repr(value) for value, _ in _UNUSABLE]
 
 # Speeds a servo bus really runs at, plus the extremes of the accepted domain.
 # The rule is a floor on the type, not a whitelist of standard rates: a caller
@@ -116,21 +114,13 @@ def _refusal(param: str, build: Callable[[Any], Any], value: Any) -> str | None:
 class TestAnUnusableSpeedIsRefusedEverywhere:
     """No surface may apply a speed that is not a positive integer count."""
 
-    @pytest.mark.parametrize(("value", "did"), _UNUSABLE, ids=_UNUSABLE_IDS)
     @pytest.mark.parametrize(("name", "build", "attr", "param"), _SURFACES, ids=_SURFACE_IDS)
-    def test_it_is_refused_by_name(
-        self,
-        name: str,
-        build: Callable[[Any], Any],
-        attr: str,
-        param: str,
-        value: Any,
-        did: str,
-    ) -> None:
+    def test_it_is_refused_by_name(self, name: str, build: Callable[[Any], Any], attr: str, param: str) -> None:
         del attr
-        refusal = _refusal(param, build, value)
-        assert refusal is not None, f"{name} accepted {param}={value!r}, which {did}"
-        assert param in refusal and "positive integer" in refusal
+        for value, did in _UNUSABLE:
+            refusal = _refusal(param, build, value)
+            assert refusal is not None, f"{name} accepted {param}={value!r}, which {did}"
+            assert param in refusal and "positive integer" in refusal, f"{value!r}: {refusal}"
 
     def test_the_refusal_names_the_surface_that_received_it(self) -> None:
         """A message naming only the option sends the caller to the wrong layer."""
@@ -143,14 +133,14 @@ class TestAnUnusableSpeedIsRefusedEverywhere:
 class TestAUsableSpeedIsAcceptedUnchanged:
     """The over-reach control: nothing that worked stops working, or is rewritten."""
 
-    @pytest.mark.parametrize("value", _USABLE, ids=[str(v) for v in _USABLE])
     @pytest.mark.parametrize(("name", "build", "attr", "param"), _SURFACES, ids=_SURFACE_IDS)
     def test_it_is_stored_exactly_as_supplied(
-        self, name: str, build: Callable[[Any], Any], attr: str, param: str, value: int
+        self, name: str, build: Callable[[Any], Any], attr: str, param: str
     ) -> None:
         del param
-        stored = getattr(build(value), attr)
-        assert stored == value and type(stored) is int, f"{name} stored {stored!r} for a supplied {value!r}"
+        for value in _USABLE:
+            stored = getattr(build(value), attr)
+            assert stored == value and type(stored) is int, f"{name} stored {stored!r} for a supplied {value!r}"
 
     def test_the_documented_default_is_within_the_domain(self) -> None:
         """A domain that refuses its own default is the one real risk here."""
@@ -162,11 +152,11 @@ class TestAUsableSpeedIsAcceptedUnchanged:
 class TestTheToolAndTheDriverAgree:
     """The divergence this domain removes: one speed, one answer."""
 
-    @pytest.mark.parametrize("value", _UNUSABLE_VALUES, ids=_UNUSABLE_IDS)
-    def test_the_tool_refuses_what_the_drivers_refuse(self, value: Any) -> None:
-        result = serial_tool(action="send", port=_PORT, data="x", baudrate=value)
-        assert result["status"] == "error"
-        assert "baudrate must be a positive integer" in result["content"][0]["text"]
+    def test_the_tool_refuses_what_the_drivers_refuse(self) -> None:
+        for value, _did in _UNUSABLE:
+            result = serial_tool(action="send", port=_PORT, data="x", baudrate=value)
+            assert result["status"] == "error", f"{value!r}"
+            assert "baudrate must be a positive integer" in result["content"][0]["text"], f"{value!r}"
 
     def test_a_usable_speed_gets_past_the_tools_option_check(self) -> None:
         """So the cell above measures the option and not the missing port.
@@ -193,34 +183,28 @@ class TestPyserialCoerces:
     the domain gives for existing needs rewriting.
     """
 
-    @pytest.mark.parametrize(
-        ("value", "coerced"),
-        [(0, 0), (True, 1), (2.7, 2), ("1000000", 1_000_000)],
-        ids=["0", "True", "2.7", "'1000000'"],
-    )
-    def test_a_speed_that_is_not_a_count_is_coerced_not_refused(self, value: Any, coerced: int) -> None:
+    def test_a_speed_that_is_not_a_count_is_coerced_not_refused(self) -> None:
         serial = pytest.importorskip("serial")
-        conn = serial.Serial(None, value)
-        assert conn.is_open is False, "a port here would put the case back on the platform's ioctl"
-        assert conn.baudrate == coerced
+        coercions: list[tuple[Any, int]] = [(0, 0), (True, 1), (2.7, 2), ("1000000", 1_000_000)]
+        for value, coerced in coercions:
+            conn = serial.Serial(None, value)
+            assert conn.is_open is False, "a port here would put the case back on the platform's ioctl"
+            assert conn.baudrate == coerced, f"{value!r}"
 
-    @pytest.mark.parametrize(
-        ("value", "applied"),
-        [(9600.7, 9600), ("9600", 9600)],
-        ids=["9600.7", "'9600'"],
-    )
-    def test_the_coerced_speed_is_applied_to_the_port(self, value: Any, applied: int) -> None:
+    def test_the_coerced_speed_is_applied_to_the_port(self) -> None:
         serial = pytest.importorskip("serial")
-        master, follower = os.openpty()
-        try:
-            conn = serial.Serial(os.ttyname(follower), value, timeout=0.1)
+        applied: list[Any] = [9600.7, "9600"]
+        for value in applied:
+            master, follower = os.openpty()
             try:
-                assert conn.baudrate == applied
+                conn = serial.Serial(os.ttyname(follower), value, timeout=0.1)
+                try:
+                    assert conn.baudrate == 9600, f"{value!r}"
+                finally:
+                    conn.close()
             finally:
-                conn.close()
-        finally:
-            os.close(master)
-            os.close(follower)
+                os.close(master)
+                os.close(follower)
 
 
 class TestEverySurfaceThatOpensAPortIsRostered:

@@ -150,20 +150,20 @@ WEBSOCKET_SURFACES: dict[str, Any] = {
 
 
 @pytest.mark.parametrize("surface", sorted(WEBSOCKET_SURFACES))
-@pytest.mark.parametrize("host", UNUSABLE_HOSTS, ids=repr)
-def test_a_host_a_uri_cannot_carry_is_refused_by_every_websocket_surface(surface: str, host: Any) -> None:
+def test_a_host_a_uri_cannot_carry_is_refused_by_every_websocket_surface(surface: str) -> None:
     """A value that cannot address a host is refused, not dialled as something else."""
-    message = WEBSOCKET_SURFACES[surface](host)
-    assert message is not None, f"{surface} accepted host={host!r}"
-    assert message.startswith(f"{surface}: host "), message
-    assert repr(host) in message, message
+    for host in UNUSABLE_HOSTS:
+        message = WEBSOCKET_SURFACES[surface](host)
+        assert message is not None, f"{surface} accepted host={host!r}"
+        assert message.startswith(f"{surface}: host "), message
+        assert repr(host) in message, message
 
 
 @pytest.mark.parametrize("surface", sorted(WEBSOCKET_SURFACES))
-@pytest.mark.parametrize("host", USABLE_HOSTS)
-def test_every_host_a_uri_can_carry_is_still_accepted_everywhere(surface: str, host: str) -> None:
+def test_every_host_a_uri_can_carry_is_still_accepted_everywhere(surface: str) -> None:
     """The over-reach control: the domain refuses addresses, not deployments."""
-    assert WEBSOCKET_SURFACES[surface](host) is None
+    for host in USABLE_HOSTS:
+        assert WEBSOCKET_SURFACES[surface](host) is None, f"{host!r}"
 
 
 def test_every_surface_gives_the_same_verdict_on_the_same_host() -> None:
@@ -173,8 +173,7 @@ def test_every_surface_gives_the_same_verdict_on_the_same_host() -> None:
         assert len(set(verdicts.values())) == 1, f"host={host!r} split the surfaces: {verdicts}"
 
 
-@pytest.mark.parametrize("host", RECUT_THE_URI, ids=repr)
-def test_a_refused_delimiter_host_is_what_takes_the_validated_port(host: str) -> None:
+def test_a_refused_delimiter_host_is_what_takes_the_validated_port() -> None:
     """Measured against the real parser: the refusal is the port being discarded.
 
     Pins the harm rather than restating the rule. ``websockets`` is the parser
@@ -183,15 +182,16 @@ def test_a_refused_delimiter_host_is_what_takes_the_validated_port(host: str) ->
     """
     parse_uri = pytest.importorskip("websockets.uri").parse_uri
     port = 8765
-    try:
-        parsed = parse_uri(f"ws://{host}:{port}")
-    except Exception:
-        # Some spellings the parse refuses outright; either way it is not a dial
-        # to the configured port, which is what the refusal exists to prevent.
-        return
-    assert (parsed.host, parsed.port) != (host, port), (
-        f"host={host!r} was expected to re-cut the URI, but parsed as the configured address"
-    )
+    for host in RECUT_THE_URI:
+        try:
+            parsed = parse_uri(f"ws://{host}:{port}")
+        except Exception:
+            # Some spellings the parse refuses outright; either way it is not a dial
+            # to the configured port, which is what the refusal exists to prevent.
+            continue
+        assert (parsed.host, parsed.port) != (host, port), (
+            f"host={host!r} was expected to re-cut the URI, but parsed as the configured address"
+        )
 
 
 def test_a_zmq_endpoint_is_left_to_the_transport_that_already_refuses_it() -> None:
@@ -450,8 +450,7 @@ BOTH_HALVES_UNUSABLE: dict[str, Any] = {
 
 
 @pytest.mark.parametrize("surface", sorted(BOTH_HALVES_UNUSABLE))
-@pytest.mark.parametrize("host", RECUT_THE_URI, ids=repr)
-def test_the_host_is_graded_before_the_port_it_would_have_taken(surface: str, host: str) -> None:
+def test_the_host_is_graded_before_the_port_it_would_have_taken(surface: str) -> None:
     """A caller who gets both halves wrong is told about the host.
 
     The two refusals sit in each constructor as consecutive statements, so which
@@ -461,8 +460,9 @@ def test_the_host_is_graded_before_the_port_it_would_have_taken(surface: str, ho
     the one that discarded it. Stated independently in all three constructors,
     so it is pinned per surface rather than once.
     """
-    with pytest.raises(ValueError) as caught:
-        BOTH_HALVES_UNUSABLE[surface](host)
-    message = str(caught.value)
-    assert "host" in message, f"{surface} refused the port before the host that would have taken it: {message}"
-    assert "65536" not in message, f"{surface} named the discarded port instead of the host: {message}"
+    for host in RECUT_THE_URI:
+        with pytest.raises(ValueError) as caught:
+            BOTH_HALVES_UNUSABLE[surface](host)
+        message = str(caught.value)
+        assert "host" in message, f"{surface} refused the port before the host that would have taken it: {message}"
+        assert "65536" not in message, f"{surface} named the discarded port instead of the host: {message}"

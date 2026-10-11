@@ -82,13 +82,13 @@ RESOLUTION = max(terrain.TERRAIN_MIN_RESOLUTION.values())
 class TestASeedOutsideTheDomainIsRefused:
     """The regression: every value that could not name one stream is refused."""
 
-    @pytest.mark.parametrize(("label", "value"), REFUSED, ids=[r[0] for r in REFUSED])
-    def test_the_seeded_kind_refuses_it(self, label: str, value: Any) -> None:
-        with pytest.raises(ValueError) as excinfo:
-            terrain.generate_heightfield(SEEDED_KIND, resolution=RESOLUTION, seed=value)
-        message = str(excinfo.value)
-        assert "seed" in message, message
-        assert "generate_heightfield" in message, message
+    def test_the_seeded_kind_refuses_it(self) -> None:
+        for label, value in REFUSED:
+            with pytest.raises(ValueError) as excinfo:
+                terrain.generate_heightfield(SEEDED_KIND, resolution=RESOLUTION, seed=value)
+            message = str(excinfo.value)
+            assert "seed" in message, f"{label}: {message}"
+            assert "generate_heightfield" in message, f"{label}: {message}"
 
     def test_the_refusal_is_the_shared_domain_verbatim(self) -> None:
         """Single-sourced: no second spelling of the rule to drift from."""
@@ -140,11 +140,11 @@ class TestWhyTheDomainIsNonNegativeAndWhole:
 class TestASeedInsideTheDomainStillDrawsItsField:
     """Controls: the guard refuses the domain, not the callers."""
 
-    @pytest.mark.parametrize(("label", "value"), ACCEPTED, ids=[a[0] for a in ACCEPTED])
-    def test_it_draws_a_normalized_field_of_the_documented_length(self, label: str, value: Any) -> None:
-        field = terrain.generate_heightfield(SEEDED_KIND, resolution=RESOLUTION, seed=value)
-        assert len(field) == RESOLUTION * RESOLUTION
-        assert all(0.0 <= height <= 1.0 for height in field)
+    def test_it_draws_a_normalized_field_of_the_documented_length(self) -> None:
+        for label, value in ACCEPTED:
+            field = terrain.generate_heightfield(SEEDED_KIND, resolution=RESOLUTION, seed=value)
+            assert len(field) == RESOLUTION * RESOLUTION, label
+            assert all(0.0 <= height <= 1.0 for height in field), label
 
     def test_the_module_default_satisfies_its_own_domain(self) -> None:
         assert non_negative_whole_number_error(terrain.TERRAIN_SEED, "seed", "terrain") is None
@@ -175,10 +175,10 @@ class TestTheSeedIndependentKindsAreNotRefused:
     """
 
     @pytest.mark.parametrize("kind", UNSEEDED_KINDS)
-    @pytest.mark.parametrize(("label", "value"), REFUSED, ids=[r[0] for r in REFUSED])
-    def test_a_value_the_domain_refuses_is_ignored(self, kind: str, label: str, value: Any) -> None:
-        field = terrain.generate_heightfield(kind, resolution=RESOLUTION, seed=value)
-        assert len(field) == RESOLUTION * RESOLUTION
+    def test_a_value_the_domain_refuses_is_ignored(self, kind: str) -> None:
+        for label, value in REFUSED:
+            field = terrain.generate_heightfield(kind, resolution=RESOLUTION, seed=value)
+            assert len(field) == RESOLUTION * RESOLUTION, label
 
     @pytest.mark.parametrize("kind", UNSEEDED_KINDS)
     def test_the_field_is_the_same_whatever_the_seed_says(self, kind: str) -> None:

@@ -114,17 +114,17 @@ class TestAnUnusableComponentCountIsRefused:
     """Every fixed-width field refuses a count it cannot consume, naming both."""
 
     @pytest.mark.parametrize(("body", "field", "width"), FIXED_WIDTH_CASES, ids=str)
-    @pytest.mark.parametrize("count", UNUSABLE_COUNTS)
-    def test_the_message_names_the_op_and_the_field(self, sim, body, field, width, count) -> None:
-        if field == "rgba" and count == 3:  # RGB is a usable colour, not a mismatch
-            pytest.skip("three components is the RGB spelling")
+    def test_the_message_names_the_op_and_the_field(self, sim, body, field, width) -> None:
         _seeded_world(sim)
-        result = sim.patch_scene_mjcf([_op_with(body, field, [0.1] * count)])
-        text = _text(result)
-        assert result["status"] == "error", text
-        assert body["op"] in text, text
-        assert f"'{field}'" in text, text
-        assert PYBIND_DUMP not in text, text
+        for count in UNUSABLE_COUNTS:
+            if field == "rgba" and count == 3:  # RGB is a usable colour, not a mismatch
+                continue
+            result = sim.patch_scene_mjcf([_op_with(body, field, [0.1] * count)])
+            text = _text(result)
+            assert result["status"] == "error", f"count={count}: {text}"
+            assert body["op"] in text, text
+            assert f"'{field}'" in text, text
+            assert PYBIND_DUMP not in text, text
 
     @pytest.mark.parametrize(("body", "field", "width"), FIXED_WIDTH_CASES, ids=str)
     def test_the_declared_width_is_accepted(self, sim, body, field, width) -> None:
@@ -168,21 +168,21 @@ class TestTheAttributeWritingOpsNoLongerDumpASignature:
 class TestTheWidthVerdictMatchesTheSceneConstructionSibling:
     """``set_body_pos`` and ``move_object`` write ``body_pos``; they must agree."""
 
-    @pytest.mark.parametrize("count", [*UNUSABLE_COUNTS, 3])
-    def test_pos_agrees_with_move_object(self, sim, count) -> None:
+    def test_pos_agrees_with_move_object(self, sim) -> None:
         _seeded_world(sim)
-        value = [0.3] * count
-        patched = sim.patch_scene_mjcf([{"op": "set_body_pos", "name": "crate", "pos": list(value)}])
-        moved = sim.move_object(name="crate", position=list(value))
-        assert patched["status"] == moved["status"], f"count={count}: {_text(patched)} vs {_text(moved)}"
+        for count in [*UNUSABLE_COUNTS, 3]:
+            value = [0.3] * count
+            patched = sim.patch_scene_mjcf([{"op": "set_body_pos", "name": "crate", "pos": list(value)}])
+            moved = sim.move_object(name="crate", position=list(value))
+            assert patched["status"] == moved["status"], f"count={count}: {_text(patched)} vs {_text(moved)}"
 
-    @pytest.mark.parametrize("count", [*UNUSABLE_COUNTS, 4])
-    def test_quat_agrees_with_move_object(self, sim, count) -> None:
+    def test_quat_agrees_with_move_object(self, sim) -> None:
         _seeded_world(sim)
-        value = [1.0] + [0.0] * (count - 1) if count else []
-        patched = sim.patch_scene_mjcf([{"op": "set_body_quat", "name": "crate", "quat": list(value)}])
-        moved = sim.move_object(name="crate", orientation=list(value))
-        assert patched["status"] == moved["status"], f"count={count}: {_text(patched)} vs {_text(moved)}"
+        for count in [*UNUSABLE_COUNTS, 4]:
+            value = [1.0] + [0.0] * (count - 1) if count else []
+            patched = sim.patch_scene_mjcf([{"op": "set_body_quat", "name": "crate", "quat": list(value)}])
+            moved = sim.move_object(name="crate", orientation=list(value))
+            assert patched["status"] == moved["status"], f"count={count}: {_text(patched)} vs {_text(moved)}"
 
 
 class TestTheColourVerdictMatchesAddObject:
@@ -198,23 +198,23 @@ class TestTheColourVerdictMatchesAddObject:
         np.array([0.9, 0.3, 0.1, 1.0]),
     ]
 
-    @pytest.mark.parametrize("colour", COLOURS, ids=lambda v: f"{len(v)}-comp-{type(v).__name__}")
-    def test_add_geom_agrees_with_add_object(self, sim, colour) -> None:
+    def test_add_geom_agrees_with_add_object(self, sim) -> None:
         _seeded_world(sim)
-        patched = sim.patch_scene_mjcf(
-            [
-                {
-                    "op": "add_geom",
-                    "body": "crate",
-                    "name": "patched",
-                    "type": "box",
-                    "size": [0.1, 0.1, 0.1],
-                    "rgba": colour,
-                }
-            ]
-        )
-        built = sim.add_object(name="built", shape="box", size=[0.1, 0.1, 0.1], color=colour)
-        assert patched["status"] == built["status"], f"{_text(patched)} vs {_text(built)}"
+        for index, colour in enumerate(self.COLOURS):
+            patched = sim.patch_scene_mjcf(
+                [
+                    {
+                        "op": "add_geom",
+                        "body": "crate",
+                        "name": f"patched_{index}",
+                        "type": "box",
+                        "size": [0.1, 0.1, 0.1],
+                        "rgba": colour,
+                    }
+                ]
+            )
+            built = sim.add_object(name=f"built_{index}", shape="box", size=[0.1, 0.1, 0.1], color=colour)
+            assert patched["status"] == built["status"], f"{colour!r}: {_text(patched)} vs {_text(built)}"
 
     def test_an_rgb_triple_is_completed_with_an_opaque_alpha(self, sim) -> None:
         """The RGB spelling was refused; now it paints the colour it names."""
@@ -265,12 +265,12 @@ class TestTheColourVerdictMatchesAddObject:
 class TestAPresentFieldIsAValueNotAnOmission:
     """A key that is present carries a value, so ``None`` is refused."""
 
-    @pytest.mark.parametrize("field", ["pos", "quat"])
-    def test_a_none_pose_is_refused(self, sim, field) -> None:
+    def test_a_none_pose_is_refused(self, sim) -> None:
         _seeded_world(sim)
-        op = {"op": f"set_body_{field}", "name": "crate", field: None}
-        text = _text(sim.patch_scene_mjcf([op]))
-        assert f"'{field}'" in text, text
+        for field in ["pos", "quat"]:
+            op = {"op": f"set_body_{field}", "name": "crate", field: None}
+            text = _text(sim.patch_scene_mjcf([op]))
+            assert f"'{field}'" in text, text
 
     def test_a_none_colour_is_refused_rather_than_painted_grey(self, sim) -> None:
         _seeded_world(sim)
