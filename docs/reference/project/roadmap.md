@@ -1,10 +1,10 @@
 ---
-description: What 1.0 keeps, what it replaces, where it is built, and what changes for a 0.5.x user.
+description: What 1.0 keeps, what it replaces, how it lands, and what changes for a 0.5.x user.
 ---
 
 # Roadmap: the road to 1.0
 
-`main` is 0.5.x. Version 1.0 is a rewrite in progress, with its own site at [cagataycali.github.io/stobor](https://cagataycali.github.io/stobor/). This page says what 1.0 keeps, replaces and changes for a 0.5.x user.
+`main` is 0.5.x. Version 1.0 is a rewrite in progress. This page says what 1.0 keeps, replaces and changes for a 0.5.x user.
 
 ## Why a rewrite
 
@@ -12,7 +12,7 @@ The 0.5.x package is {{module_map_total}} lines of Python. It grew by adding: ev
 
 ## What 1.0 is
 
-The stobor `DESIGN.md` is the build contract. Its shape:
+The 1.0 design document is the build contract. Its shape:
 
 - **Six contracts, one module each.** `Policy`, `Driver`, `SimEngine`, `Transport`, `Recorder`, `RobotLike`; a class that does two is two files. Every contract returns typed values and raises `core.errors` types; the agent envelope (`{"ok": ..., "refusal": {...}}`) exists only in `tools/` and `dashboard/`.
 - **The same seven layers.** `core -> registry -> drivers | mesh -> sim | policies -> app -> tools -> dashboard`, with `scripts/check_layers.py` as referee. Siblings never import each other.
@@ -38,6 +38,6 @@ Registry rows, robot names and aliases, wire protocols and safety postures carry
 
 ## How it lands
 
-The stobor repository is the staging ground; every file lands in `strands-labs/robots` by path, unrenamed, in reviewed pull requests once the acceptance suite is green on hardware as well as headless. Until then `main` stays 0.5.x and receives fixes. Progress: the [contracts](https://cagataycali.github.io/stobor/contracts/robot/), the [coverage matrix](https://cagataycali.github.io/stobor/robots/) with a witness mark per cell, the [acceptance page](https://cagataycali.github.io/stobor/reference/acceptance/).
+1.0 lands in `strands-labs/robots` in reviewed pull requests once the acceptance suite is green on hardware as well as headless. Until then `main` stays 0.5.x and receives fixes.
 
 No date is promised; done is the acceptance run.
