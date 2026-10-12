@@ -4,7 +4,7 @@ description: What 1.0 keeps, what it replaces, where it is built, and what chang
 
 # Roadmap: the road to 1.0
 
-`main` is 0.5.x. Version 1.0 is a rewrite in progress, built in the open at [github.com/cagataycali/stobor](https://github.com/cagataycali/stobor) with its own site, [cagataycali.github.io/stobor](https://cagataycali.github.io/stobor/). This page says what 1.0 keeps, replaces and changes for a 0.5.x user.
+`main` is 0.5.x. Version 1.0 is a rewrite in progress, with its own site at [cagataycali.github.io/stobor](https://cagataycali.github.io/stobor/). This page says what 1.0 keeps, replaces and changes for a 0.5.x user.
 
 ## Why a rewrite
 
