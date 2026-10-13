@@ -181,7 +181,8 @@ def build_agent(
             },
         )
 
-    robot = Robot("so100", mode=mode, **robot_kwargs)
+    # mesh=True: joining the mesh is opt-in, and Step 5 broadcasts over it.
+    robot = Robot("so100", mode=mode, mesh=True, **robot_kwargs)
     tools: list[Any] = [robot, robot_mesh]
 
     resolved_model_id = model_id or os.environ.get("STRANDS_BEDROCK_MODEL_ID") or DEFAULT_MODEL_ID
