@@ -1,0 +1,42 @@
+{% set install = "uv pip install -e \".[mujoco,onnx,lerobot,mesh]\"" %}
+{% set columns = [
+  ("Start", [("Quickstart", "quickstart/"), ("Status", "status/"), ("Notebooks", "notebooks/")]),
+  ("Build", [("Robots", "robots/"), ("One world", "simulation/"), ("Policies", "policies/"), ("Hardware", "hardware/"), ("GPU backends", "gpu/")]),
+  ("Operate", [("Device and safety", "device/"), ("Mesh", "mesh/"), ("Recording", "recording/"), ("Agent tools", "tools/"), ("Dashboard", "dashboard/")]),
+  ("Reference", [("API", "api/"), ("Design (#4749)", "https://github.com/strands-labs/robots/issues/4749"), ("Roadmap (#3818)", "https://github.com/strands-labs/robots/issues/3818")]),
+  ("Community", [("GitHub", config.repo_url), ("Strands Agents", "https://strandsagents.com/"), ("Strands Labs", "https://github.com/strands-labs")]),
+] %}
+<div class="sr-cta"><div class="sr-cta__panel">
+  <p class="sr-cta__title">A world. A robot. A brain.</p>
+  <p class="sr-cta__links">
+    <a href="{{ 'quickstart/' | url }}">Quickstart &rarr;</a>
+    <a href="{{ 'notebooks/' | url }}">Notebooks &rarr;</a>
+    <a href="{{ 'status/' | url }}">Status &rarr;</a>
+  </p>
+</div></div>
+<footer class="md-footer sr-footer">
+  <div class="sr-footer__inner md-grid">
+    <p class="sr-footer__kicker">Start building in seconds</p>
+    <p class="sr-install sr-install--footer">{{ install }}<button class="sr-copy" type="button" data-clipboard-text="{{ install | e }}">copy</button></p>
+    <div class="sr-footer__columns">
+      {% for title, links in columns %}
+        <div>
+          <p class="sr-footer__heading">{{ title }}</p>
+          <ul>
+            {% for label, href in links %}
+              <li><a href="{{ href if href.startswith('http') else href | url }}">{{ label }}</a></li>
+            {% endfor %}
+          </ul>
+        </div>
+      {% endfor %}
+    </div>
+  </div>
+  <div class="sr-footmark" aria-hidden="true">{% include "partials/wordmark.svg" %}</div>
+  <div class="sr-footer__legal md-grid">
+    <span class="sr-aws" aria-label="AWS">{% include "partials/aws.svg" %}</span>
+    <a href="https://aws.amazon.com/privacy/">Privacy</a>
+    <a href="https://aws.amazon.com/terms/">Site terms</a>
+    <a href="{{ config.repo_url }}/blob/main/LICENSE">License</a>
+  </div>
+  <p class="sr-footer__copyright md-grid">&copy; {{ build_date_utc.year }}, Amazon Web Services, Inc. or its affiliates. All rights reserved.</p>
+</footer>

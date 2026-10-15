@@ -8,7 +8,7 @@ def scene() -> Scene:
         "The dashboard is a twin of one world",
         "Physics stays on the server; the browser loads the same merged MJCF and gets joint values by name at 30 Hz.",
         "Left, the server: one Simulation with every robot in it, and one strands Agent whose tools are sim.tool, each "
-        "robot.tool and use_fleet. Middle, four routes: GET /api/scene (merged MJCF plus assets plus revision), "
+        "robot.tool and use_mesh. Middle, four routes: GET /api/scene (merged MJCF plus assets plus revision), "
         "WS /ws/state (joint values by name at 30 Hz, about 1.5 KB a frame), WS /ws/chat (the agent's stream), POST "
         "/api/robots/{id}/act (X-Confirm for a real robot). Right, the one green element: the browser, MuJoCo WASM "
         "running mj_forward on the received joints and three.js drawing. Under it standalone mode, no server: the "
@@ -22,7 +22,7 @@ def scene() -> Scene:
     s.chips(74, 252, ["revision"])
     s.box(60, 304, 340, 150, "Agent(tools=[...])", "one strands agent for the whole world", size=14, subsize=12)
     s.chips(74, 368, ["sim.tool", "robot.tool"])
-    s.chips(74, 398, ["use_fleet"])
+    s.chips(74, 398, ["use_mesh"])
 
     s.section(440, 122, "four routes")
     routes = [

@@ -1,0 +1,22 @@
+{% extends "base.html" %}
+
+{% block extrahead %}
+  <meta property="og:type" content="website">
+  <meta property="og:title" content="{{ page.title if page.title else config.site_name }} | strands-robots">
+  <meta property="og:description" content="{{ config.site_description }}">
+  <meta name="twitter:card" content="summary">
+{% endblock %}
+
+{% block content %}
+  {% if page.meta and page.meta.template_class %}
+    <div class="{{ page.meta.template_class }}">{{ super() }}</div>
+  {% else %}
+    {{ super() }}
+  {% endif %}
+{% endblock %}
+
+{% block footer %}
+  {{ super() }}
+  {#- The Strands frog wanders along the bottom of every page. Click it. -#}
+  <div class="sr-frog" aria-hidden="true" data-say="strands"><span class="sr-frog__face"><span class="sr-frog__hop">{% include "partials/frog.svg" %}</span></span></div>
+{% endblock %}

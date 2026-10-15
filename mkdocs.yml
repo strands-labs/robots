@@ -1,0 +1,109 @@
+site_name: strands-robots
+site_description: A world. A robot. A brain. Robots your agents can drive, in sim and for real.
+repo_url: https://github.com/strands-labs/robots
+repo_name: strands-labs/robots
+site_url: https://strands-labs.github.io/robots/
+edit_uri: edit/dev/docs/
+strict: true
+docs_dir: docs
+exclude_docs: |
+  /hooks/
+  /drawings/
+  /requirements.txt
+
+theme:
+  name: material
+  custom_dir: overrides
+  language: en
+  font: false                       # self-hosted in docs/assets/fonts
+  logo: assets/img/mark.svg
+  favicon: assets/img/mark.svg
+  icon:
+    repo: fontawesome/brands/github
+  palette:
+    - media: "(prefers-color-scheme: light)"
+      scheme: paper
+      primary: custom
+      accent: custom
+      toggle: {icon: material/weather-night, name: Dark}
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: custom
+      accent: custom
+      toggle: {icon: material/weather-sunny, name: Paper}
+  features:
+    - navigation.indexes
+    - navigation.top
+    - navigation.tracking
+    - content.action.edit
+    - content.code.copy
+    - content.tabs.link
+    - search.suggest
+    - search.highlight
+    - toc.follow
+
+extra_css: [stylesheets/extra.css]
+extra_javascript: [assets/site.js]
+extra:
+  generator: false
+  social:
+    - icon: fontawesome/brands/github
+      link: https://github.com/strands-labs/robots
+
+hooks:
+  - docs/hooks/drawings.py
+
+plugins:
+  - search
+  - mkdocstrings:
+      handlers:
+        python:
+          paths: ["."]
+          options:
+            docstring_style: google
+            docstring_options: {warnings: false}
+            docstring_section_style: table
+            show_source: false
+            show_signature_annotations: true
+            separate_signature: true
+            merge_init_into_class: true
+            show_if_no_docstring: true
+            show_root_toc_entry: false
+            allow_inspection: false
+            heading_level: 3
+            members_order: source
+            filters: ["!^_"]
+
+markdown_extensions:
+  - admonition
+  - attr_list
+  - md_in_html
+  - tables
+  - footnotes
+  - toc: {title: On this page, permalink: true, toc_depth: 3}
+  - pymdownx.highlight: {anchor_linenums: true, pygments_lang_class: true}
+  - pymdownx.inlinehilite
+  - pymdownx.superfences
+  - pymdownx.tabbed: {alternate_style: true}
+  - pymdownx.details
+
+nav:
+  - Home: index.md
+  - Quickstart: quickstart.md
+  - Build:
+      - Robots: robots.md
+      - One world: simulation.md
+      - A robot: robot.md
+      - Policies: policies.md
+      - Hardware: hardware.md
+      - GPU backends: gpu.md
+  - Operate:
+      - Device and safety: device.md
+      - Mesh: mesh.md
+      - Recording: recording.md
+      - Agent tools: tools.md
+      - Dashboard: dashboard.md
+  - Reference:
+      - Status: status.md
+      - Notebooks: notebooks.md
+      - API: api.md

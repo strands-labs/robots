@@ -8,12 +8,12 @@ PARTS = [
     ("4", "Policy", "one factory, ChunkedPolicy, lerobot, onnx, remote"),
     ("5", "drivers + twin + gate", "feetech, unitree, microduck, Robot(confirm=)"),
     ("6", "isaac + newton", "Isaac singleton, physics=\"newton\", mjlab folds in"),
-    ("7", "transports + Fleet", "zenoh, IoT Direct Messaging, use_fleet"),
+    ("7", "the mesh", "Mesh, use_mesh, zenoh and AWS IoT"),
     ("8", "agent tools", "robot.tool and sim.tool generated from the verbs"),
     ("9", "recording", "run(record=) writes LeRobot v3"),
     ("10", "dashboard", "one world, four routes, MuJoCo WASM twin"),
     ("11", "dev becomes main", "one release PR; v0.5.x kept on its own branch"),
-    ("12", "docs + release", "the site, migration guide, v1.0.0"),
+    ("12", "docs + release", "the site, notebooks, v1.0.0"),
 ]
 
 
@@ -24,7 +24,7 @@ def scene() -> Scene:
         "Each part is one pull request with a gate; it merges into dev when the gate is green, and the next part starts there.",
         "Twelve numbered cards in three rows of four, lit one after another: 1 types and Description, 2 Simulation and "
         "the MuJoCo backend, 3 Robot becomes a class, 4 Policy, 5 drivers, twin and operator gate, 6 Isaac and Newton, "
-        "7 transports and Fleet, 8 generated agent tools, 9 recording to LeRobot v3, 10 the dashboard, 11 dev becoming "
+        "7 the mesh, 8 generated agent tools, 9 recording to LeRobot v3, 10 the dashboard, 11 dev becoming "
         "main, 12 docs and the v1.0.0 release. Part 1, the one green element, is where the first "
         "agent starts. Wires run left to right along each row and down to the next row. Footnote: parts 4, 5 and 6 "
         "can run in parallel once part 3 has merged.",
