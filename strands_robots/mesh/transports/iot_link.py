@@ -209,6 +209,6 @@ class AwsLink:
         try:
             self.client.stop()
             self._down.wait(5.0)
-        except Exception:
+        except Exception:  # closing a link that already dropped: nothing left to stop
             pass
         self.subs.close()

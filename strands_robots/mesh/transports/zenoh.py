@@ -85,7 +85,7 @@ def _undeclarer(entity: Any) -> Unsubscribe:
             done[0] = True
             try:
                 entity.undeclare()
-            except Exception:
+            except Exception:  # the session closed first and took the declaration with it
                 pass
 
     return undo
@@ -117,7 +117,7 @@ class ZenohTransport:
             except Exception as exc:
                 try:
                     query.reply_err(f"{type(exc).__name__}: {exc}")
-                except Exception:
+                except Exception:  # the caller is gone: no one is left to tell, and its own timeout reports it
                     pass
             finally:
                 query.drop()
