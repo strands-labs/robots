@@ -27,6 +27,7 @@ import mujoco  # noqa: E402
 
 _FILE_ATTR = re.compile(r'(\bfile=)"([^"]+)"')
 BROWSER_MUJOCO = "3.14.0"  # static/vendor/mujoco.{js,wasm}; NOTICE carries the sha256 (tests/dashboard/test_vendor.py)
+BROWSER_ORT = "1.20.1"  # static/vendor/ort*: onnxruntime-web for standalone mode, pinned the same way
 _ACTUATOR_INPUT = re.compile(r'\s+input="[a-z0-9]+"')  # newer MuJoCo writes it; the vendored browser build rejects it
 
 

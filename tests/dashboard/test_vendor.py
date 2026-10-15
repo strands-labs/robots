@@ -1,4 +1,4 @@
-"""The browser's MuJoCo is one pinned version: NOTICE, the hashes and twin_scene agree; its scene parses."""
+"""The browser's vendored libraries are pinned: NOTICE, the hashes and twin_scene agree; its scene parses."""
 
 from __future__ import annotations
 
@@ -18,7 +18,10 @@ VENDOR = Path(twin_scene.__file__).parent / "static" / "vendor"
 def test_notice_pins_the_vendored_mujoco_and_its_hashes() -> None:
     notice = (VENDOR / "NOTICE").read_text()
     assert f"@mujoco/mujoco {twin_scene.BROWSER_MUJOCO}" in notice
-    for name in ("mujoco.js", "mujoco.wasm", "three.module.min.js", "OrbitControls.js"):
+    assert f"onnxruntime-web {twin_scene.BROWSER_ORT}" in notice
+    names = ("mujoco.js", "mujoco.wasm", "three.module.min.js", "OrbitControls.js")
+    ort = ("ort.wasm.min.mjs", "ort-wasm-simd-threaded.mjs", "ort-wasm-simd-threaded.wasm")
+    for name in names + ort:
         pinned = re.search(rf"sha256 {re.escape(name)}\s+([0-9a-f]{{64}})", notice)
         assert pinned, name
         assert hashlib.sha256((VENDOR / name).read_bytes()).hexdigest() == pinned.group(1), name

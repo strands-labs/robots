@@ -9,7 +9,9 @@
  * worker owns the physics and posts geom poses, and the page only renders.
  *
  * Protocol (main -> worker): init {url} · compile {id, sceneXml, files} · setQpos {qadr,
- * value, act} · setQposAll {qpos} · setQposByName {q, poses} · reset · physics {on} · dispose.
+ * value, act} · setQposAll {qpos} · setQposByName {q, poses} · reset · physics {on} · dispose ·
+ * standalone {on, hz, root, joints, defaultPose, actionScale, obsWidth, commandWidth, fallZ, port} ·
+ * skill {defaultPose, actionScale} · command {vx, vy, wz} (standalone-loop.js; only when no server is reachable).
  * setQposByName is the dashboard's path: joint values keyed by joint NAME and free-base poses
  * keyed by BODY name ([x y z qw qx qy qz]); names resolve to qpos addresses once per compile. Worker -> main: ready ·
  * compiled {id, model, pose, pluginsStripped} · pose {xpos, xmat, qpos, time} · error {id?,
@@ -21,6 +23,8 @@
  * tween from the default pose into the keyframe when the robot first appears.
  */
 
+import { StandaloneLoop } from "./standalone-loop.js";
+
 let mj = null;
 let model = null;
 let data = null;
@@ -30,8 +34,12 @@ let lastTick = 0;
 let actuated = []; // [{qadr, act}] for joints driven by a joint transmission actuator
 let qadrByJoint = new Map(); // joint name -> qposadr (setQposByName)
 let freeByBody = new Map(); // body name -> qposadr of its free joint (setQposByName poses)
+let loop = null; // the standalone control loop, when one runs
 
 const post = (msg, transfer) => self.postMessage(msg, transfer || []);
+const engine = { get mj() { return mj; }, get model() { return model; }, get data() { return data; }, rest: () => rest(), pose: () => pose(), post };
+
+function standaloneStop() { loop?.stop(); loop = null; }
 
 function fail(id, err) {
   post({ type: "error", id, message: String(err?.message || err) });
@@ -100,6 +108,7 @@ function snapshot() {
 function compile({ id, sceneXml, files }) {
   // Free the previous world first: the WASM heap is finite and every recompile (add/remove a robot) used to leak
   // vfs + model + data — the fourth world in one page died with "Cannot enlarge memory" (gate 8 caught it).
+  standaloneStop();
   setPhysics(false);
   for (const h of handles.reverse()) { try { h.delete(); } catch { /* already freed */ } }
   handles.length = 0;
@@ -225,12 +234,27 @@ self.onmessage = async (e) => {
         if (!data) return;
         rest();
         for (const { qadr, act } of actuated) data.ctrl[act] = data.qpos[qadr];
+        if (loop) { loop.lastAction.fill(0); loop.settle(); }
         pose();
         return;
       case "physics":
         setPhysics(Boolean(msg.on));
         return;
+      case "standalone":
+        standaloneStop();
+        if (!msg.on) return;
+        if (!data) throw new Error("standalone: no model compiled");
+        setPhysics(false);
+        loop = new StandaloneLoop(engine, msg);
+        return;
+      case "skill":
+        loop?.skill(msg);
+        return;
+      case "command":
+        loop?.setCommand(msg);
+        return;
       case "dispose":
+        standaloneStop();
         setPhysics(false);
         for (const h of handles.reverse()) { try { h.delete(); } catch { /* already freed */ } }
         handles.length = 0;

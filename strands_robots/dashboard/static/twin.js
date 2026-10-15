@@ -27,8 +27,10 @@ class Engine {
       if (msg.type === "ready") { this._settle("init", "resolve"); return; }
       if (msg.type === "compiled") { this._settle(msg.id, "resolve", msg); return; }
       if (msg.type === "unresolved") { this._onInfo(msg); return; }
+      if (msg.type === "standalone") { this.onStandalone?.(msg); return; }
       if (msg.type === "error") {
         if (this._pending.has(msg.id ?? "init")) this._settle(msg.id ?? "init", "reject", new Error(msg.message));
+        else if (this.onStandalone) this.onStandalone({ error: msg.message });
         else console.error("mujoco worker:", msg.message);
       }
     };
@@ -50,6 +52,7 @@ class Engine {
   }
   setQposByName(frame, seq) { this._worker.postMessage({ type: "setQposByName", q: frame.q, poses: frame.poses, seq }); }
   reset() { this._worker.postMessage({ type: "reset" }); }
+  post(msg, transfer) { this._worker.postMessage(msg, transfer || []); }
   dispose() { try { this._worker.postMessage({ type: "dispose" }); } catch { /* gone */ } this._worker.terminate(); }
 }
 

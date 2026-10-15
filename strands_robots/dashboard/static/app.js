@@ -2,8 +2,11 @@
  *   ?scene=<url>   static: draw a scene description, no server (tests/dashboard/fixtures/scene.json)
  *   server         GET /api/scene + WS /ws/state + WS /ws/chat from the Dashboard server (same origin, or
  *                  the reader's own CLI at 127.0.0.1:8090 when this page is served from the docs site)
- *   no server      the page says how to start one; the browser never steps physics.
+ *   standalone     no server reachable: the bundled world steps in this browser and an ONNX skill drives it
+ *                  (?standalone=<scene.json> picks another bundle). The browser never steps physics while a server
+ *                  is connected; a server that answers later wins (re-probe every 5 s, then a reload).
  */
+import { Standalone } from "./standalone.js";
 import { Twin } from "./twin.js";
 
 const $ = (s) => document.querySelector(s);
@@ -342,6 +345,68 @@ function connectChat() {
   });
 }
 
+/* ---------- standalone ---------- */
+
+const STANDALONE_SCENE = params.get("standalone") || "./scenes/microduck/scene.json";
+const CMD = { vx: 0.3, back: -0.2, wz: 1.0 };
+
+async function standalone(why) {
+  const desc = await loadStatic(STANDALONE_SCENE);
+  chip("compile", "loading policy…");
+  const t0 = performance.now();
+  const sa = new Standalone(twin, desc, STANDALONE_SCENE, { onStats: onStandalone });
+  const ready = await sa.start();
+  twin.follow = desc.standalone.root; // the camera walks with the body
+  chip("compile", "");
+  state.standalone = sa;
+  window.__standalone = sa; // the browser gates read stats, ready and errors here
+  sa.loadMs = performance.now() - t0;
+  policyChip(ready);
+  notice(`<b>standalone</b> — physics in your browser (MuJoCo WASM, ${desc.physics.timestep * 1000} ms × ${desc.physics.substeps}; ` +
+    `the ONNX skill on onnxruntime-web at ${desc.standalone.hz} Hz). ${why} <span class="keys">W A S D walk · R reset</span>`);
+  const pick = $("#skill");
+  pick.innerHTML = sa.skills.map((k) => `<option value="${k}"${k === sa.skill ? " selected" : ""}>${k}</option>`).join("");
+  pick.addEventListener("change", async () => { pick.disabled = true; try { policyChip(await sa.use(pick.value)); } finally { pick.disabled = false; } });
+  $("#pad").hidden = false;
+  wireCommand(sa);
+}
+
+function policyChip(ready) {
+  chip("policy", `<b>${ready.skill}</b> · ${(ready.modelBytes / 1024).toFixed(0)} KB · loaded ${Math.round(ready.loadMs)} ms`, "opt");
+}
+
+function onStandalone(m) {
+  if (m.stats) {
+    chip("sim", `sim <b>${m.stats.hz.toFixed(0)}</b> Hz · policy <b>${m.stats.policyMs.toFixed(1)}</b> ms · <b>${twin.fps ?? "–"}</b> fps · z ${m.stats.z.toFixed(3)} m` + (m.stats.falls ? ` · ${m.stats.falls} falls` : ""));
+    chip("t", `t=<b>${m.stats.t.toFixed(1)}</b>s`);
+    for (const el of document.querySelectorAll(".val[data-joint]")) { const v = twin.qpos(el.dataset.joint); if (v !== undefined && v !== null) el.textContent = fmt(v); }
+  }
+  if (m.fell) chip("fall", `fell · reset ${m.fell}`, "warn");
+  if (m.error) { chip("sim", m.error, "bad"); notice(`<b>standalone</b> — ${m.error}. The twin still draws the last pose; physics is off.`, true); }
+}
+
+function wireCommand(sa) {
+  const held = new Set();
+  const send = () => {
+    const vx = held.has("w") ? CMD.vx : held.has("s") ? CMD.back : 0;
+    const wz = held.has("a") ? CMD.wz : held.has("d") ? -CMD.wz : 0;
+    sa.command(vx, 0, wz);
+    for (const b of document.querySelectorAll("#pad button")) b.setAttribute("aria-pressed", String(held.has(b.dataset.key)));
+  };
+  document.addEventListener("keydown", (e) => {
+    if (/^(INPUT|TEXTAREA|SELECT)$/.test(document.activeElement?.tagName || "")) return;
+    const k = e.key.toLowerCase();
+    if ("wasd".includes(k) && k.length === 1) { held.add(k); send(); e.preventDefault(); }
+    else if (k === "r") twin.engine.reset();
+  });
+  document.addEventListener("keyup", (e) => { if (held.delete(e.key.toLowerCase())) send(); });
+  for (const b of document.querySelectorAll("#pad button")) {
+    const down = (e) => { e.preventDefault(); held.add(b.dataset.key); send(); };
+    const up = () => { if (held.delete(b.dataset.key)) send(); };
+    b.addEventListener("pointerdown", down); b.addEventListener("pointerup", up); b.addEventListener("pointercancel", up); b.addEventListener("pointerleave", up);
+  }
+}
+
 /* ---------- mode probe ---------- */
 
 /** Is a Dashboard server reachable? Same origin first (the CLI serves this page), then the reader's own CLI.
@@ -387,18 +452,27 @@ async function probe() {
       connectChat();
       return;
     }
-    // No server anywhere: say how to start one; re-probe every 5 s and reload into server mode when it answers.
-    setMode("offline", "no server");
+    // No server anywhere: standalone, said on screen. A server that answers later wins: re-probe every 5 s, stop the
+    // browser's physics and reload into server mode, so nothing from the standalone world survives the flip.
     $("#chatform").querySelector("button").disabled = true;
+    $("#prompt").placeholder = "start strands-robots dashboard to chat with an agent";
     const why = server && server.blocked
-      ? `a <code>strands-robots dashboard</code> answers on <code>${LOCAL_CLI}</code> but does not allow this origin (<code>${location.origin}</code>) to read <code>/api/scene</code> — open <a href="http://${LOCAL_CLI}/">${LOCAL_CLI}</a> directly.`
-      : `start <code>strands-robots dashboard</code> and open <a href="http://${LOCAL_CLI}/">${LOCAL_CLI}</a>.`;
+      ? `A <code>strands-robots dashboard</code> answers on <code>${LOCAL_CLI}</code> but does not allow this origin (<code>${location.origin}</code>) to read <code>/api/scene</code>: open <a href="http://${LOCAL_CLI}/">${LOCAL_CLI}</a> directly.`
+      : `Start <code>strands-robots dashboard</code> to drive real worlds.`;
     if (server && server.blocked) window.__blocked = true;
-    notice(`<b>no world connected</b> — ${why}`);
     state.reprobe = setInterval(async () => {
       const again = await probe().catch(() => null);
-      if (again && !again.blocked && !again.unreachable) { clearInterval(state.reprobe); location.reload(); }
+      if (again && !again.blocked && !again.unreachable) { clearInterval(state.reprobe); state.standalone?.stop(); location.reload(); }
     }, 5000);
+    const bundled = await fetch(STANDALONE_SCENE, { method: "HEAD" }).then((r) => r.ok, () => false);
+    if (!bundled) {
+      setMode("offline", "no server");
+      notice(`<b>no world connected</b> — ${why} (No standalone bundle here: <code>python -m strands_robots.dashboard.standalone</code> writes one.)`);
+      return;
+    }
+    setMode("standalone", "standalone");
+    notice(`<b>standalone</b> — physics in your browser; ${why}`);
+    await standalone(why);
   } catch (err) {
     setMode("error", "error");
     notice(err.message, true);

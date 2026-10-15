@@ -52,6 +52,7 @@
   .pill::before { content: ""; width: .45rem; height: .45rem; border-radius: 50%; background: var(--sr-muted); }
   .pill[data-mode="server"] { border-color: var(--sr-accent); color: var(--sr-accent); } .pill[data-mode="server"]::before { background: var(--sr-accent); }
   .pill[data-mode="offline"] { border-color: var(--sr-warn); color: var(--sr-warn); } .pill[data-mode="offline"]::before { background: var(--sr-warn); }
+  .pill[data-mode="standalone"] { border-color: var(--sr-warn); color: var(--sr-warn); } .pill[data-mode="standalone"]::before { background: var(--sr-warn); }
   .pill[data-mode="static"]::before { background: var(--sr-fg-light); }
   .pill[data-mode="error"] { border-color: var(--sr-bad); color: var(--sr-bad); } .pill[data-mode="error"]::before { background: var(--sr-bad); }
   #status { display: flex; flex-wrap: wrap; gap: .3rem; margin-left: auto; font-size: .62rem; color: var(--sr-muted); }
@@ -66,6 +67,15 @@
   /* A notice over the stage: what mode the page is in and why (no server / static / errors). */
   #notice { position: absolute; left: .7rem; bottom: .7rem; max-width: min(34rem, calc(100% - 1.4rem)); padding: .45rem .7rem; border-radius: var(--sr-radius); border: 1px solid var(--sr-pill-border); background: var(--sr-panel); color: var(--sr-fg-light); font-size: .7rem; line-height: 1.4; }
   #notice:empty { display: none; }
+  /* Walk pad (standalone): a skill picker and four pills bottom-left above the notice; keys W A S D do the same. */
+  #pad { position: absolute; left: .7rem; bottom: .7rem; display: grid; grid-template-columns: repeat(3, 2.2rem); grid-template-rows: auto repeat(2, 2.2rem); gap: .25rem; }
+  #pad[hidden] { display: none; }
+  #pad button { border-radius: 999px; border: 1px solid var(--sr-pill-border); background: var(--sr-panel); color: var(--sr-fg); font-size: .8rem; cursor: pointer; touch-action: none; user-select: none; -webkit-user-select: none; }
+  #pad button[aria-pressed="true"] { background: var(--sr-accent); color: var(--sr-on-accent); border-color: var(--sr-accent); }
+  #pad #skill { grid-column: 1 / 4; min-width: 0; background: var(--sr-panel); color: var(--sr-fg); border: 1px solid var(--sr-pill-border); border-radius: 999px; padding: .25rem .55rem; font-family: var(--sr-mono); font-size: .62rem; }
+  #pad button[data-key="w"] { grid-column: 2; } #pad button[data-key="a"] { grid-column: 1; grid-row: 3; } #pad button[data-key="s"] { grid-column: 2; grid-row: 3; } #pad button[data-key="d"] { grid-column: 3; grid-row: 3; }
+  #pad:not([hidden]) ~ #notice { left: 8.4rem; }
+  #notice .keys { display: inline-block; margin-left: .4rem; color: var(--sr-muted); font-family: var(--sr-mono); font-size: .62rem; }
   #notice code { background: var(--sr-chip-bg); padding: 0 .3rem; border-radius: 3px; }
   #notice.bad { border-color: var(--sr-bad); color: var(--sr-bad); }
 
@@ -133,6 +143,7 @@
     #notice { bottom: calc(46% + .6rem); font-size: .64rem; }
 
     #notice .keys { display: none; }
+    #pad { bottom: calc(46% + .6rem); } #drawer[hidden] ~ #pad { bottom: .6rem; }
     #drawer[hidden] ~ #notice, #notice.lowered { bottom: .6rem; }
   }
   @media (max-width: 90em) { #status .chip.opt { display: none; } }
@@ -145,7 +156,7 @@
   <div id="stage"><canvas id="twin"></canvas></div>
   <header id="bar">
     <a class="brand" href="./" title="strands-robots"><img src="./mark.svg" alt="">strands-robots <small>/dashboard</small></a>
-    <span class="pill" id="mode" data-mode="loading" title="server: your CLI's Simulation is the truth · no server: the page says how to start one">loading</span>
+    <span class="pill" id="mode" data-mode="loading" title="server: your CLI's Simulation is the truth · standalone: no server, physics and the policy run in this browser">loading</span>
     <div id="status" aria-live="polite"></div>
     <button class="iconbtn" id="toggle" aria-pressed="true" aria-label="robots and chat" title="robots + chat (d)"><svg viewBox="0 0 24 24"><path d="M3 5h18v2H3zm0 6h18v2H3zm0 6h18v2H3z"/></svg></button>
   </header>
@@ -171,6 +182,13 @@
       <form id="chatform"><input id="prompt" placeholder="ask the agent…  (⌘K or /)" autocomplete="off"><button type="submit">send</button></form>
     </div>
   </aside>
+  <div id="pad" hidden aria-label="walk command">
+    <select id="skill" aria-label="skill"></select>
+    <button data-key="w" aria-label="forward">▲</button>
+    <button data-key="a" aria-label="turn left">◀</button>
+    <button data-key="s" aria-label="back">▼</button>
+    <button data-key="d" aria-label="turn right">▶</button>
+  </div>
   <div id="notice"></div>
 </div>
 <script type="module" src="./app.js"></script>
