@@ -1,0 +1,18 @@
+Vendored browser libraries for the dashboard twin (strands_robots/dashboard/static/vendor/).
+Vendored, not fetched from a CDN, so the page renders on a robot LAN with no internet.
+
+@mujoco/mujoco 3.14.0 (https://github.com/google-deepmind/mujoco/tree/main/wasm)
+  Apache License 2.0, Copyright DeepMind Technologies Limited.
+  Obtained with `npm pack @mujoco/mujoco@3.14.0` on 2026-10-12; files unmodified.
+  sha256 mujoco.js   bc6980e4bc5ee5f809a6cabde0743798637e113d333f9e85124714d42be1ccae
+  sha256 mujoco.wasm 2d380f1070a556c3003b4a7c7c10c98a5f61db4e91815de1075ec478e9487e76
+  The browser build does kinematics only (mj_forward); the server's Simulation is the truth.
+
+three.js r170 (https://github.com/mrdoob/three.js)
+  MIT License, Copyright (c) 2010-2024 three.js authors.
+  Files: three.module.min.js (build/three.module.min.js, unmodified),
+         OrbitControls.js (examples/jsm/controls/OrbitControls.js, with the bare `three`
+         import rewritten to ./three.module.min.js). Both copied from the reference
+         strands-robots 0.5.3 dashboard vendor directory.
+  sha256 three.module.min.js 08fd7545d13d2c7fb65ab691530a802dafefd638596501854f267d0fb13c39e7
+  sha256 OrbitControls.js    e9c4f26866d39a36c8c9e8215e7d2a90a8a0b50ea6d44a005906e3d1fc726b8f

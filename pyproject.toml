@@ -29,13 +29,15 @@ isaac = ["isaacsim[all,extscache]>=6.1 ; python_version >= '3.12'"]
 newton = ["mujoco-warp>=3.11", "warp-lang>=1.10"]
 # robot.tool / sim.tool: the strands agent tool generated from the manifest (pillow encodes the images it returns).
 tools = ["strands-agents>=1.0", "pillow>=10"]
+# The dashboard: a loopback web server and the world in a browser tab (the page's chat also needs [tools]).
+dashboard = ["fastapi>=0.115", "uvicorn>=0.35", "websockets>=13"]
 dev = ["pytest>=8", "pytest-timeout", "ruff>=0.6", "mypy>=1.10", "import-linter>=2.1", "onnx>=1.16"]
 
 [tool.hatch.build.targets.wheel]
 packages = ["strands_robots"]
 
 [tool.hatch.envs.default]
-features = ["dev", "mujoco", "onnx", "tools"]
+features = ["dev", "mujoco", "onnx", "tools", "dashboard"]
 
 [tool.hatch.envs.default.scripts]
 lint = [

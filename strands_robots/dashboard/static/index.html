@@ -1,0 +1,179 @@
+<!doctype html>
+<html lang="en" data-scheme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>strands-robots</title>
+<link rel="icon" href="./mark.svg" type="image/svg+xml">
+<style>
+  /* strands design tokens (docs/stylesheets/extra.css carries the same --sr-* set). The page is dark by default — it
+     is a 3D stage — and follows the docs site's palette when embedded there (app.js reads Material's localStorage). */
+  :root {
+    --sr-radius: 8px;
+    --sr-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+    --sr-text: "Space Grotesk", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    --sr-black: #000; --sr-charcoal-1: #28292a; --sr-charcoal-2: #3d3c3c;
+  }
+  [data-scheme="dark"] {
+    color-scheme: dark;
+    --sr-accent: #00cc60; --sr-accent-soft: rgba(0,204,96,.14); --sr-on-accent: #000;
+    --sr-bg: #000; --sr-fg: #fff; --sr-fg-light: #b6b6b6; --sr-muted: #999696; --sr-line: #28292a;
+    --sr-chip-bg: #28292a; --sr-pill-bg: #28292a; --sr-pill-border: #3d3c3c; --sr-card-bg: #000; --sr-card-border: #fff;
+    --sr-viewer-bg: #111213; --sr-grid-major: #46505c; --sr-grid-minor: #303740; --sr-warn: #f6bc00; --sr-bad: #ff6b6b;
+    --sr-panel: rgba(0,0,0,.86);
+  }
+  [data-scheme="paper"] {
+    color-scheme: light;
+    --sr-accent: #007a3d; --sr-accent-soft: rgba(2,164,53,.12); --sr-on-accent: #fff;
+    --sr-bg: #fff; --sr-fg: #000; --sr-fg-light: #3d3c3c; --sr-muted: #767373; --sr-line: rgba(0,0,0,.15);
+    --sr-chip-bg: #f4f4f4; --sr-pill-bg: #fff; --sr-pill-border: #999696; --sr-card-bg: #fff; --sr-card-border: #000;
+    --sr-viewer-bg: #f4f4f4; --sr-grid-major: #b6b6b6; --sr-grid-minor: #d9d9d9; --sr-warn: #946e00; --sr-bad: #cf222e;
+    --sr-panel: rgba(255,255,255,.9);
+  }
+  @font-face { font-family: "Space Grotesk"; font-weight: 400; font-display: swap; src: url("./fonts/SpaceGrotesk-400.woff2") format("woff2"); }
+  @font-face { font-family: "JetBrains Mono"; font-weight: 500; font-display: swap; src: url("./fonts/JetBrainsMono-500.woff2") format("woff2"); }
+
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; background: var(--sr-viewer-bg); color: var(--sr-fg); font: 13px/1.45 var(--sr-text); }
+  button, input { font: inherit; color: inherit; }
+  code, .mono, #status, .pill, .chip, .card h3, .joint, .msg.tool, #prompt { font-family: var(--sr-mono); }
+
+  #app { position: relative; height: 100%; overflow: hidden; }
+  #stage { position: absolute; inset: 0; }
+  #stage canvas { display: block; width: 100%; height: 100%; touch-action: none; }
+
+  /* Top bar: wordmark, mode pill, status chips, drawer toggle. One row, transparent over the stage. */
+  #bar { position: absolute; top: 0; left: 0; right: 0; display: flex; align-items: center; gap: .5rem; padding: .55rem .7rem; pointer-events: none; }
+  #bar > * { pointer-events: auto; }
+  .brand { white-space: nowrap; display: inline-flex; align-items: center; gap: .45rem; color: var(--sr-fg); text-decoration: none; font-family: var(--sr-mono); font-weight: 500; font-size: .8rem; letter-spacing: .02em; }
+  .brand img { width: 18px; height: 18px; display: block; }
+  .brand small { color: var(--sr-muted); font-weight: 400; }
+  .pill { display: inline-flex; align-items: center; gap: .35rem; height: 1.7rem; padding: 0 .7rem; border-radius: 999px; border: 1px solid var(--sr-pill-border); background: var(--sr-panel); color: var(--sr-fg); font-size: .68rem; letter-spacing: .03em; white-space: nowrap; cursor: default; }
+  .pill::before { content: ""; width: .45rem; height: .45rem; border-radius: 50%; background: var(--sr-muted); }
+  .pill[data-mode="server"] { border-color: var(--sr-accent); color: var(--sr-accent); } .pill[data-mode="server"]::before { background: var(--sr-accent); }
+  .pill[data-mode="offline"] { border-color: var(--sr-warn); color: var(--sr-warn); } .pill[data-mode="offline"]::before { background: var(--sr-warn); }
+  .pill[data-mode="static"]::before { background: var(--sr-fg-light); }
+  .pill[data-mode="error"] { border-color: var(--sr-bad); color: var(--sr-bad); } .pill[data-mode="error"]::before { background: var(--sr-bad); }
+  #status { display: flex; flex-wrap: wrap; gap: .3rem; margin-left: auto; font-size: .62rem; color: var(--sr-muted); }
+  .chip { display: inline-flex; align-items: center; gap: .3rem; height: 1.5rem; padding: 0 .55rem; border-radius: 999px; border: 1px solid var(--sr-pill-border); background: var(--sr-panel); white-space: nowrap; letter-spacing: .02em; }
+  .chip b { color: var(--sr-fg); font-weight: 500; }
+  .chip.warn { border-color: var(--sr-warn); color: var(--sr-warn); } .chip.bad { border-color: var(--sr-bad); color: var(--sr-bad); }
+  .iconbtn { display: inline-flex; align-items: center; justify-content: center; width: 1.7rem; height: 1.7rem; border-radius: 999px; border: 1px solid var(--sr-pill-border); background: var(--sr-panel); color: var(--sr-fg); cursor: pointer; }
+  .iconbtn:hover, .pill:hover { border-color: var(--sr-accent); }
+  .iconbtn[aria-pressed="true"] { background: var(--sr-accent); color: var(--sr-on-accent); border-color: var(--sr-accent); }
+  .iconbtn svg { width: .9rem; height: .9rem; fill: currentColor; }
+
+  /* A notice over the stage: what mode the page is in and why (no server / static / errors). */
+  #notice { position: absolute; left: .7rem; bottom: .7rem; max-width: min(34rem, calc(100% - 1.4rem)); padding: .45rem .7rem; border-radius: var(--sr-radius); border: 1px solid var(--sr-pill-border); background: var(--sr-panel); color: var(--sr-fg-light); font-size: .7rem; line-height: 1.4; }
+  #notice:empty { display: none; }
+  #notice code { background: var(--sr-chip-bg); padding: 0 .3rem; border-radius: 3px; }
+  #notice.bad { border-color: var(--sr-bad); color: var(--sr-bad); }
+
+  #notice .keys { display: inline-block; margin-left: .4rem; color: var(--sr-muted); font-family: var(--sr-mono); font-size: .62rem; }
+
+  /* Drawer: robots on top, chat below. Over the stage on the right; a bottom sheet with tabs on phones. */
+  #drawer { position: absolute; top: 3rem; right: .7rem; bottom: .7rem; width: 22.5rem; display: flex; flex-direction: column; border: 1px solid var(--sr-pill-border); border-radius: var(--sr-radius); background: var(--sr-panel); backdrop-filter: blur(6px); overflow: hidden; transition: transform 200ms ease, opacity 200ms ease; }
+  #drawer[hidden] { display: flex; transform: translateX(calc(100% + 1rem)); opacity: 0; pointer-events: none; }
+  #tabs { display: none; }
+  #cards { flex: 0 1 50%; min-height: 6rem; overflow: auto; padding: .6rem; }
+  #cards:empty::before { content: "no robots in this world yet"; color: var(--sr-muted); font-size: .7rem; }
+  #chat { display: flex; flex-direction: column; flex: 1 1 50%; min-height: 0; border-top: 1px solid var(--sr-line); }
+  #log { flex: 1; overflow: auto; padding: .6rem; }
+  #log:empty::before { content: "ask the agent — it holds sim.tool and every robot.tool"; color: var(--sr-muted); font-size: .7rem; }
+  #chatform { display: flex; gap: .4rem; padding: .5rem .6rem; border-top: 1px solid var(--sr-line); }
+  #prompt { flex: 1; min-width: 0; background: var(--sr-bg); color: var(--sr-fg); border: 1px solid var(--sr-pill-border); border-radius: 999px; padding: .4rem .8rem; font-size: .72rem; }
+  #prompt:focus { outline: none; border-color: var(--sr-accent); }
+  #prompt::placeholder { color: var(--sr-muted); }
+  #chatform button { border-radius: 999px; border: 1px solid var(--sr-accent); background: var(--sr-accent); color: var(--sr-on-accent); padding: 0 .9rem; font-family: var(--sr-mono); font-size: .68rem; cursor: pointer; }
+  #chatform button:disabled { opacity: .5; cursor: default; }
+
+  /* run row + add row (server mode, when the server has /api/policies, /run, /stop and POST /api/robots) */
+  #run, #add { display: grid; gap: .35rem; padding: .55rem .6rem .25rem; }
+  #run { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
+  #run input { grid-column: 1 / 3; }
+  #run button { grid-column: 1 / 3; }
+  #add { grid-template-columns: minmax(0, 1fr) auto; padding-top: 0; }
+  #run[hidden], #add[hidden] { display: none; }
+  #run select, #run input, #add input { min-width: 0; background: var(--sr-bg); color: var(--sr-fg); border: 1px solid var(--sr-pill-border); border-radius: 999px; padding: .32rem .7rem; font-family: var(--sr-mono); font-size: .66rem; }
+  #run button, #add button { border-radius: 999px; border: 1px solid var(--sr-accent); background: var(--sr-accent); color: var(--sr-on-accent); padding: .32rem .9rem; font-family: var(--sr-mono); font-size: .68rem; cursor: pointer; }
+  #run button[data-running="true"] { background: transparent; color: var(--sr-warn); border-color: var(--sr-warn); }
+  #add button { background: transparent; color: var(--sr-fg); border-color: var(--sr-pill-border); }
+  #add button:hover, #run button:hover { opacity: .85; }
+  .card .running { font-size: .58rem; padding: .2rem .45rem; border-radius: 999px; border: 1px solid var(--sr-accent); color: var(--sr-accent); white-space: nowrap; }
+
+  .card { border: 1px solid var(--sr-pill-border); border-radius: var(--sr-radius); padding: .55rem .65rem; margin-bottom: .5rem; background: var(--sr-card-bg); transition: border-color 120ms ease; cursor: pointer; }
+  .card:hover { border-color: var(--sr-fg); }
+  .card.picked { border-color: var(--sr-accent); }
+  .card h3 { margin: 0 0 .4rem; font-size: .76rem; font-weight: 500; display: flex; justify-content: space-between; align-items: center; gap: .5rem; }
+  .card h3 small { color: var(--sr-muted); font-weight: 400; margin-left: .35rem; }
+  .tag { font-size: .58rem; line-height: 1; padding: .2rem .45rem; border-radius: 999px; border: 1px solid var(--sr-pill-border); color: var(--sr-fg-light); letter-spacing: .02em; white-space: nowrap; }
+  .tag.sim { border-color: var(--sr-accent); color: var(--sr-accent); }
+  .tag.real { border-color: var(--sr-warn); color: var(--sr-warn); }
+  .joint { display: grid; grid-template-columns: minmax(0, 1fr) 3.4rem 6.5rem; gap: .4rem; align-items: center; margin: .15rem 0; color: var(--sr-muted); font-size: .64rem; }
+  .joint > span:first-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .joint .val { text-align: right; color: var(--sr-fg); font-variant-numeric: tabular-nums; }
+  .joint input[type=range] { width: 100%; accent-color: var(--sr-accent); margin: 0; }
+
+  .msg { margin: .3rem 0; white-space: pre-wrap; font-size: .74rem; overflow-wrap: anywhere; }
+  .msg.user { color: var(--sr-accent); }
+  .msg.user::before { content: "› "; }
+  .msg.tool { color: var(--sr-muted); border-left: 2px solid var(--sr-line); padding-left: .5rem; font-size: .66rem; }
+  .msg.tool summary { cursor: pointer; } .msg.tool pre { margin: .2rem 0 0; white-space: pre-wrap; }
+  .msg.err { color: var(--sr-bad); }
+
+  @media (max-width: 56em) {
+    #bar { padding: .5rem; } .brand small, #status .chip.opt { display: none; }
+    #drawer { top: auto; left: 0; right: 0; bottom: 0; width: auto; height: 46%; border-radius: var(--sr-radius) var(--sr-radius) 0 0; border-bottom: 0; }
+    #drawer[hidden] { transform: translateY(100%); }
+    #tabs { display: flex; border-bottom: 1px solid var(--sr-line); }
+    #tabs button { flex: 1; height: 2.4rem; border: 0; background: transparent; color: var(--sr-muted); font-family: var(--sr-mono); font-size: .68rem; letter-spacing: .04em; cursor: pointer; }
+    #tabs button[aria-selected="true"] { color: var(--sr-fg); box-shadow: inset 0 -2px var(--sr-accent); }
+    #drawer[data-tab="robots"] #chat, #drawer[data-tab="chat"] #cards { display: none; }
+    #drawer[data-tab="robots"] #cards { flex: 1; } #drawer[data-tab="chat"] #chat { border-top: 0; }
+    #notice { bottom: calc(46% + .6rem); font-size: .64rem; }
+
+    #notice .keys { display: none; }
+    #drawer[hidden] ~ #notice, #notice.lowered { bottom: .6rem; }
+  }
+  @media (max-width: 90em) { #status .chip.opt { display: none; } }
+  @media (pointer: coarse) { .iconbtn, .pill { min-height: 2.2rem; } }
+  @media (prefers-reduced-motion: reduce) { #drawer { transition: none; } }
+</style>
+</head>
+<body>
+<div id="app">
+  <div id="stage"><canvas id="twin"></canvas></div>
+  <header id="bar">
+    <a class="brand" href="./" title="strands-robots"><img src="./mark.svg" alt="">strands-robots <small>/dashboard</small></a>
+    <span class="pill" id="mode" data-mode="loading" title="server: your CLI's Simulation is the truth · no server: the page says how to start one">loading</span>
+    <div id="status" aria-live="polite"></div>
+    <button class="iconbtn" id="toggle" aria-pressed="true" aria-label="robots and chat" title="robots + chat (d)"><svg viewBox="0 0 24 24"><path d="M3 5h18v2H3zm0 6h18v2H3zm0 6h18v2H3z"/></svg></button>
+  </header>
+  <aside id="drawer" data-tab="robots">
+    <div id="tabs" role="tablist">
+      <button role="tab" data-tab="robots" aria-selected="true">robots</button>
+      <button role="tab" data-tab="chat" aria-selected="false">chat</button>
+    </div>
+    <div id="run" hidden>
+      <select id="run-robot" aria-label="robot"></select>
+      <select id="run-policy" aria-label="policy"></select>
+      <input id="run-text" placeholder="vx=0.3 for a walker · an instruction for a VLA · ws://host:8765 · lerobot/<repo>" autocomplete="off">
+      <button id="run-go" type="button">run ▸</button>
+    </div>
+    <div id="add" hidden>
+      <input id="add-robot" list="add-names" placeholder="registry name: so101 · g1 · microduck · franka …" aria-label="registry robot" autocomplete="off">
+      <datalist id="add-names"></datalist>
+      <button id="add-go" type="button">+ robot</button>
+    </div>
+    <div id="cards"></div>
+    <div id="chat">
+      <div id="log"></div>
+      <form id="chatform"><input id="prompt" placeholder="ask the agent…  (⌘K or /)" autocomplete="off"><button type="submit">send</button></form>
+    </div>
+  </aside>
+  <div id="notice"></div>
+</div>
+<script type="module" src="./app.js"></script>
+<script type="module" src="./safety.js"></script>
+</body>
+</html>
