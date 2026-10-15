@@ -14,6 +14,7 @@ classes a program names, and everything else is imported from its package
     arm.run(lambda obs: {"elbow_flex": 0.4}, hz=50, steps=60)   # -> RunResult
     real = Robot("so101", port="/dev/ttyACM0", confirm=ask)     # a feetech bus, a twin in the default world
     real.act({"shoulder_pan": 0.3})         # writes the bus; the twin mirrors it and its world steps once
+    lab = Mesh("zenoh://", tenant="lab-a")                   # every robot on the LAN; lab.mount(real)
 
 Every refusal (the operator said no, a limit, the e-stop) raises ``RequestRefused``, a ``PermissionError``.
 """
@@ -21,6 +22,7 @@ Every refusal (the operator said no, a limit, the e-stop) raises ``RequestRefuse
 from __future__ import annotations
 
 from .description import Description
+from .mesh import Mesh
 from .policy import Policy
 from .robot import Body, Robot
 from .robot.safety import RequestRefused
@@ -40,5 +42,6 @@ __all__ = [
     "JointState",
     "Pose",
     "RequestRefused",
+    "Mesh",
     "__version__",
 ]
