@@ -1,4 +1,5 @@
-"""The 1.0 acceptance suite (one test per check, real backends, no doubles) and the helpers its checks share.
+"""The helpers the 1.0 acceptance checks share: one test per check, on real backends (the hardware checks use a
+recorded serial line, so every bus frame is visible).
 
 A check that needs something this machine does not have (a GPU, hardware, credentials, a part that has
 not landed yet) is skipped with the reason named, so ``pytest tests/acceptance -rs`` is the checklist.
