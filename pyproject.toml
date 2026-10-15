@@ -31,13 +31,17 @@ newton = ["mujoco-warp>=3.11", "warp-lang>=1.10"]
 tools = ["strands-agents>=1.0", "pillow>=10"]
 # The dashboard: a loopback web server and the world in a browser tab (the page's chat also needs [tools]).
 dashboard = ["fastapi>=0.115", "uvicorn>=0.35", "websockets>=13"]
+# The mesh over zenoh (peer mode, zero config on a LAN). Same pin as above.
+mesh = ["eclipse-zenoh>=1.9.0,<1.10.0", "cryptography>=42"]
+# The mesh over AWS IoT Core (Direct Messaging for rpcs, MQTT for state).
+iot = ["awsiotsdk>=1.31", "boto3>=1.40"]
 dev = ["pytest>=8", "pytest-timeout", "ruff>=0.6", "mypy>=1.10", "import-linter>=2.1", "onnx>=1.16"]
 
 [tool.hatch.build.targets.wheel]
 packages = ["strands_robots"]
 
 [tool.hatch.envs.default]
-features = ["dev", "mujoco", "onnx", "tools", "dashboard"]
+features = ["dev", "mujoco", "onnx", "mesh", "tools", "dashboard"]
 
 [tool.hatch.envs.default.scripts]
 lint = [
@@ -124,6 +128,14 @@ name = "policy imports neither simulation nor the drivers"
 type = "forbidden"
 source_modules = ["strands_robots.policy"]
 forbidden_modules = ["strands_robots.simulation", "strands_robots.robot.drivers"]
+
+[[tool.importlinter.contracts]]
+name = "the mesh never imports policy"
+type = "forbidden"
+source_modules = ["strands_robots.mesh"]
+forbidden_modules = ["strands_robots.policy"]
+# The mesh imports robot.safety (RequestRefused), and the robot package runs policies; no mesh module may.
+allow_indirect_imports = true
 
 [[tool.importlinter.contracts]]
 name = "robot.safety and robot.device import no policy, no simulation backend"
