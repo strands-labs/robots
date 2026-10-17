@@ -1,0 +1,28 @@
+Vendored browser libraries for the dashboard twin (strands_robots/dashboard/static/vendor/).
+Vendored, not fetched from a CDN, so the page renders on a robot LAN with no internet.
+
+@mujoco/mujoco 3.14.0 (https://github.com/google-deepmind/mujoco/tree/main/wasm)
+  Apache License 2.0, Copyright DeepMind Technologies Limited.
+  Obtained with `npm pack @mujoco/mujoco@3.14.0` on 2026-10-12; files unmodified.
+  sha256 mujoco.js   bc6980e4bc5ee5f809a6cabde0743798637e113d333f9e85124714d42be1ccae
+  sha256 mujoco.wasm 2d380f1070a556c3003b4a7c7c10c98a5f61db4e91815de1075ec478e9487e76
+  In server mode the browser build does kinematics only (mj_forward) — the server's Simulation is the truth;
+  in standalone mode (no server reachable, said on screen) it steps mj_step for the bundled scene.
+
+three.js r170 (https://github.com/mrdoob/three.js)
+  MIT License, Copyright (c) 2010-2024 three.js authors.
+  Files: three.module.min.js (build/three.module.min.js, unmodified),
+         OrbitControls.js (examples/jsm/controls/OrbitControls.js, with the bare `three`
+         import rewritten to ./three.module.min.js). Both copied from the reference
+         strands-robots 0.5.3 dashboard vendor directory.
+  sha256 three.module.min.js 08fd7545d13d2c7fb65ab691530a802dafefd638596501854f267d0fb13c39e7
+  sha256 OrbitControls.js    e9c4f26866d39a36c8c9e8215e7d2a90a8a0b50ea6d44a005906e3d1fc726b8f
+
+onnxruntime-web 1.20.1 (https://github.com/microsoft/onnxruntime)
+  MIT License, Copyright (c) Microsoft Corporation.
+  Obtained with `npm pack onnxruntime-web@1.20.1` on 2026-10-13; files unmodified. Used only in standalone mode
+  (no server reachable) by policy-worker.js to run the bundled ONNX skills in the browser; never loaded in
+  server mode. The "threaded" binary runs single-threaded without cross-origin isolation (numThreads = 1).
+  sha256 ort.wasm.min.mjs             f53ed4792e758e7232f779d479eb8931b97ff3ab2e3b9a33ee00d1251ffdaad6
+  sha256 ort-wasm-simd-threaded.mjs   745eb7c0ce6f18a6aa521971b2877babc7ffb27eecb58ab3bc6e5ef4692672e8
+  sha256 ort-wasm-simd-threaded.wasm  207d02be4591c156b0a98f024f3d58005b5b04c92274d759fb390338c63559ea  (11.2 MB)
