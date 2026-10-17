@@ -19,6 +19,7 @@ _TOP_LEVEL = {
     "JointState",
     "Pose",
     "RequestRefused",
+    "Mesh",
     "__version__",
 }
 
@@ -34,6 +35,12 @@ def test_every_refusal_is_caught_by_the_one_public_exception():
 
     assert RequestRefused is safety.RequestRefused and issubclass(RequestRefused, PermissionError)
     assert issubclass(safety.EStopped, RequestRefused)
+
+
+def test_mesh_is_the_same_class_at_the_top_level():
+    from strands_robots.mesh import Mesh
+
+    assert strands_robots.Mesh is Mesh
 
 
 def test_names_that_left_the_top_level_import_from_their_package():

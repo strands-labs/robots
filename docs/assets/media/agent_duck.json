@@ -1,0 +1,51 @@
+{
+ "ask": "walk forward a bit, turn left, do a roll, then chill",
+ "calls": [
+  {
+   "t": 3.9,
+   "input": {
+    "rpc": "run",
+    "run": {
+     "policy": "microduck?skill=velstand&vx=0.3",
+     "seconds": 2
+    }
+   }
+  },
+  {
+   "t": 9.4,
+   "input": {
+    "rpc": "run",
+    "run": {
+     "policy": "microduck?skill=velstand&wz=0.8",
+     "seconds": 2
+    }
+   }
+  },
+  {
+   "t": 13.6,
+   "input": {
+    "rpc": "run",
+    "run": {
+     "policy": "microduck?skill=roulade",
+     "seconds": 3
+    }
+   }
+  },
+  {
+   "t": 19.0,
+   "input": {
+    "rpc": "run",
+    "run": {
+     "policy": "microduck?skill=velstand&vx=0&vy=0&wz=0",
+     "seconds": 2
+    }
+   }
+  }
+ ],
+ "answer": "Done! The microduck walked forward for 2 seconds, turned left for 2 seconds, executed a forward roll in 3 seconds, and is now standing still and chilling.\n",
+ "pose": [
+  0.11104956028778568,
+  0.5747095414483835,
+  0.11567072236664733
+ ]
+}

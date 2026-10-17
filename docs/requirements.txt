@@ -1,0 +1,11 @@
+# Build dependencies for the docs site (mkdocs build --strict).
+# Pinned to the versions the site was authored and verified with; upper bounds
+# hold the next major out until someone rebuilds against it.
+mkdocs>=1.6.1,<2.0
+mkdocs-material>=9.7.7,<10.0
+mkdocs-redirects>=1.2.3,<2.0
+mkdocstrings>=1.0.6,<2.0
+mkdocstrings-python>=2.0.9,<3.0
+griffelib>=2.3.0,<3.0
+mkdocs-gen-files>=0.6.1,<0.7
+mkdocs-literate-nav>=0.6.3,<0.7

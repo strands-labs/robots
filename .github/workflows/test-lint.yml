@@ -44,3 +44,8 @@ jobs:
 
       - name: Run tests
         run: hatch run test -q
+
+      - name: Build the docs (strict)
+        run: |
+          pip install --no-cache-dir -r docs/requirements.txt
+          mkdocs build --strict

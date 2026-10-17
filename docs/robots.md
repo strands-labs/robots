@@ -1,37 +1,32 @@
 ---
-description: What a robot is, independent of any world, and the data that flows between a world, a robot and a policy.
+description: 76 robots in the registry. Load one by name and it tells you everything about itself.
 ---
 
-# Robots and their data
+# Robots
 
 {{drawing:d01_description}}
 
 ```python
 from strands_robots import Description
 
-d = Description.load("so101")       # a registry name, an alias, a robot_descriptions name or an MJCF/URDF path
-d.action_keys   # ('shoulder_pan', 'shoulder_lift', 'elbow_flex', 'wrist_flex', 'wrist_roll', 'gripper')
-d.limits["gripper"], d.keyframes, d.floating
-d.describe()    # JSON-safe summary
+d = Description.load("so101")
+d.action_keys     # ('shoulder_pan', 'shoulder_lift', 'elbow_flex', 'wrist_flex', 'wrist_roll', 'gripper')
+d.limits["gripper"]
 ```
 
-`Description.load(name)` resolves the name through the registry (`registry/robots.json`, 76 robots, and
-`registry/urdf_robots.json`) to a model file, `model_path` (and its scene, `scene_path`). A `robot_descriptions` module is cloned on first use; an asset
-with a `github` source is fetched once into `$STRANDS_ROBOTS_CACHE` (default `~/.cache/strands_robots`).
-The joints, actuators, `action_keys`, limits and keyframes are read from the model itself: through MuJoCo when
-the `mujoco` extra is installed, through a plain XML walk when it is not. A robot file that only compiles
-inside its scene is read through the scene. A registry robot that ships no simulation model (hardware only)
-refuses with `FileNotFoundError` naming it; a name that is not in the registry refuses with `KeyError`.
+A `Description` is everything about a robot that doesn't depend on where it is: its joints, their limits, its
+keyframes, how it's driven on real hardware. It's read straight from the robot's model file, which is downloaded once
+and cached. The registry knows 76 robots (arms, hands, humanoids, quadrupeds, a duck). Ask for one it doesn't know and
+it says so.
 
-| type | what it holds |
+Facts about a robot are **data**, not code: its LeRobot units, its driver, its safe ranges all live in
+`registry/robots.json`. Adding a robot means adding an entry, not editing Python.
+
+| what flows around | |
 |---|---|
-| `JointState` | `names`, `positions`, `velocities`, `efforts` (rad, rad/s, N·m), read-only arrays |
-| `Pose` | `position` (m), `orientation` (w, x, y, z), optional twist |
-| `Observation` | `t`, `joints`, `pose`, `images`, `extras`; `to_lerobot()` is the one place LeRobot key names live |
-| `Action` | a vector in `action_keys` order or a `{joint: target}` mapping |
-| `Calibration` | per-joint bus calibration, `to_json` / `from_json` in LeRobot's file format |
-| `Requirements` | what a policy needs (camera names and sizes, state length); `check(obs)` refuses naming the gap |
-| `Physics`, `Contact`, `RunResult` | engine and step sizes, one contact, what a run measured |
+| `Observation` | joints, base pose, camera images, time |
+| `Action` | a number per joint, or `{joint: target}` for just the ones you care about |
+| `JointState`, `Pose` | positions, velocities, efforts · position and orientation |
 
-Units: the robot speaks radians. `Units.for_robot(description, "lerobot_so10x")` maps them to the
-Feetech bus range a LeRobot SO-10x checkpoint was trained on (body joints -100..100, gripper 0..100).
+The robot speaks radians. A policy trained in LeRobot speaks something else (degrees, or -100..100). The unit
+conversion is automatic: the policy says what it speaks, the robot converts.

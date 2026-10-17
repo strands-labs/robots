@@ -1,5 +1,5 @@
 ---
-description: A Robot is a body in a world. observe, act, run; the loop is written once and returns what it measured.
+description: A Robot is a body. Look, move, run a policy. The loop is written once, for sim and real.
 ---
 
 # A robot
@@ -7,31 +7,20 @@ description: A Robot is a body in a world. observe, act, run; the loop is writte
 {{drawing:d03_one_loop}}
 
 ```python
-from strands_robots import Robot, Policy
+from strands_robots import Robot
 
-arm = Robot("so101")                        # a body in Simulation.default(); arm.sim is that world
-g1 = Robot("g1", position=[1, 0, 0])        # the same world: arm.sim is g1.sim
-arm.observe()                               # Observation: joints, base pose, images of cameras attached to it
-arm.act({"shoulder_pan": 0.3})              # write targets for THIS body, then one control step for the world
-res = arm.run(lambda obs: {"elbow_flex": 0.4}, hz=50, steps=60)   # RunResult(steps, seconds, ..., final)
-task = arm.start(my_policy, seconds=30)     # the same loop in the background; arm.stop() returns its RunResult
-arm.sim.run({arm: p1, g1: p2}, steps=20)    # many robots in lock-step, each policy bound as run() binds it
+arm = Robot("so101")
+arm.observe()                                  # what it sees and feels right now
+arm.act({"shoulder_pan": 0.3})                 # move, one control step
+r = arm.run(lambda obs: {"elbow_flex": 0.4}, seconds=2)
+print(r.steps, r.stopped_by)                   # 60 steps (30 Hz by default), "steps"
+task = arm.start(my_policy, seconds=30)        # the same loop, in the background
+arm.stop()
 ```
 
-`Robot(name)` loads the `Description` and joins `Simulation.default()`, or the world passed as `sim=`;
-`position`, `orientation`, `keyframe` and `id` place it. Its `id` is unique in the world (a second
-`so101` is `so101_2`). The `Body` is the only thing that differs between bodies: `SimBody` is a handle
-into a world, and the loop never knows which one it has.
+`run` keeps going until `seconds`, `steps` or `stop_when` says stop, then hands back a `RunResult`: how many steps,
+how fast, and why it stopped (`"steps"`, `"stopped"`, `"fault"` if the policy gave up, `"estop"` if someone pressed
+the button). Before the first step it checks the policy has what it needs, so a missing camera is a clear error
+instead of a weird crash ten minutes later.
 
-An `Action` is a vector in `action_keys` order or a `{joint: target}` mapping (missing joints hold where
-they are). An unknown joint raises `KeyError`, a vector of the wrong length raises `ValueError`, and every
-target is clipped to the joint limits. `set_pose` teleports, `set_gains(kp, kd)` sets the PD gains of
-its actuators, `describe()` is JSON-safe, `close()` removes it from its world (a removed robot raises
-`RuntimeError` on its next `observe`).
-
-`run(policy, hz=, seconds=|steps=|stop_when=)` takes a `Policy` subclass, anything with `act(obs)` and
-`reset()`, or a bare callable (it receives `instruction=` when it declares it). In a world, `hz` sets how
-many physics steps each `act()` advances and time is sim time; `realtime=True` also paces the loop to the
-wall clock. Before the first inference `policy.requirements()` is checked against a real observation, so
-a missing camera or a wrong state length is refused by name. `units="auto"` converts joints between the
-robot's radians and the units the policy declares (`policy.units`, for example `lerobot_so10x`).
+Unknown joints raise, targets outside the limits are clipped, and joints you don't mention stay where they are.

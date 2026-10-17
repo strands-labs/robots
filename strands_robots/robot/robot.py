@@ -19,10 +19,10 @@ from . import gate as _gate
 from . import twin as _twin
 from .body import Body, SimBody
 from .device import DeviceVerbs, Emitter, position_hold_of
+from .run import loop as _run
 from .safety import Latch, Validator, guarded_write
 
 if TYPE_CHECKING:
-    from ..policy import PolicyLike
     from ..simulation import Simulation
     from .drivers.calibration import Calibration
     from .run.result import RunResult
@@ -46,7 +46,9 @@ class Robot(DeviceVerbs):
         cameras: Mapping[str, int | str] | None = None,
         twin: bool = True,
         confirm: Callable[[np.ndarray], bool] | None = None,
+        mesh: Any = None,
     ) -> None:
+        """``mesh=`` (a ``strands_robots.mesh.Mesh``) mounts this robot as a device on it once it is built."""
         from ..simulation import Simulation
 
         self.description: Description = Description.load(name)
@@ -80,16 +82,17 @@ class Robot(DeviceVerbs):
                     name, position=position, orientation=orientation, keyframe=keyframe, id=f"{self.id}_twin"
                 )
                 self.twin.twin_of = self
-            return
-
-        if cameras is not None:
-            raise TypeError("cameras= is a hardware argument; in a world use sim.camera(name, attach=robot)")
-        world = sim if sim is not None else Simulation.default()
-        self.id = world.unique_id(id or self.name)
-        self.sim = world
-        world.add(self, position=position, orientation=orientation, keyframe=keyframe)
-        self._body = SimBody(world, self.id, self.description.action_keys)
-        self.supports_position_hold = True  # a simulated actuator keeps its last target
+        else:
+            if cameras is not None:
+                raise TypeError("cameras= is a hardware argument; in a world use sim.camera(name, attach=robot)")
+            world = sim if sim is not None else Simulation.default()
+            self.id = world.unique_id(id or self.name)
+            self.sim = world
+            world.add(self, position=position, orientation=orientation, keyframe=keyframe)
+            self._body = SimBody(world, self.id, self.description.action_keys)
+            self.supports_position_hold = True  # a simulated actuator keeps its last target
+        if mesh is not None:
+            mesh.mount(self)
 
     @property
     def body(self) -> Body:
@@ -213,20 +216,18 @@ class Robot(DeviceVerbs):
                 out[i] = min(max(out[i], lim[0]), lim[1])
         return out
 
-    def run(self, policy: PolicyLike | Callable[[Observation], Any], **kw: Any) -> RunResult:
-        """observe -> policy -> act at ``hz`` until ``seconds``/``steps``/``stop_when`` (see ``robot.run``)."""
-        from .run import run
-
-        return run(self, policy, **kw)
-
-    def start(self, policy: PolicyLike | Callable[[Observation], Any], **kw: Any) -> Task:
-        """``run`` in a background thread; ``Task.stop()`` / ``.status`` / ``.result``."""
-        from .run import start
-
-        return start(self, policy, **kw)
+    run = _run.run  # the run loop's own signature, robot first: one place spells every keyword
+    start = _run.start
 
     def stop(self) -> RunResult | None:
         return self._task.stop() if self._task is not None else None
+
+    @property
+    def tool(self) -> Any:
+        """This robot as a strands agent tool, generated from its rpcs (imports strands on first use)."""
+        from ..tools.agent import agent_tool
+
+        return agent_tool(self)
 
     def close(self) -> None:
         self.events.close()
