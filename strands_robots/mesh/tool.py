@@ -95,6 +95,9 @@ def dispatch(mesh: Mesh, inp: Mapping[str, Any]) -> Any:
         return mesh.invoke(did, "act", action=dict(inp.get("act") or {}))
     if action == "run":
         args = dict(inp.get("run") or {})
+        prev = mesh.tasks.get(did)
+        if prev is not None and prev.running:
+            raise RuntimeError(f"robot {did!r} already has a running task; call stop() first")
         task = mesh.connect(did).start(args.pop("policy"), **args)
         mesh.tasks[did] = task
         return {"started": did, "status": getattr(task, "status", None)}

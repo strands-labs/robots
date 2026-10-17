@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import sys
+import time
 
 import pytest
 
@@ -95,3 +96,20 @@ def test_strands_is_imported_only_when_the_tool_is_built():
     code = "import strands_robots.mesh, sys; m = strands_robots.mesh.Mesh('mem://x'); print('strands' in sys.modules)"
     out = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, check=True).stdout.strip()
     assert out == "False"
+
+
+def test_a_second_run_is_refused_while_the_first_runs_and_stop_halts_it(lab):
+    from strands_robots.mesh.tool import dispatch
+
+    m, arm = lab
+    writes = []
+    gate = arm.confirm_act
+    arm.confirm_act = lambda *a, **k: (writes.append(1), gate(*a, **k))[1]  # type: ignore[method-assign]
+    run = {"policy": lambda o: {"shoulder_pan": 0.1}, "seconds": 3, "hz": 20}
+    dispatch(m, {"action": "run", "device_id": "arm", "run": run})
+    with pytest.raises(RuntimeError, match="already has a running task"):
+        dispatch(m, {"action": "run", "device_id": "arm", "run": run})
+    dispatch(m, {"action": "stop", "device_id": "arm"})
+    n = len(writes)
+    time.sleep(0.5)
+    assert n > 0 and len(writes) == n and not m.tasks
