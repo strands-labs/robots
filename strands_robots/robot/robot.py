@@ -46,7 +46,9 @@ class Robot(DeviceVerbs):
         cameras: Mapping[str, int | str] | None = None,
         twin: bool = True,
         confirm: Callable[[np.ndarray], bool] | None = None,
+        mesh: Any = None,
     ) -> None:
+        """``mesh=`` (a ``strands_robots.mesh.Mesh``) mounts this robot as a device on it once it is built."""
         from ..simulation import Simulation
 
         self.description: Description = Description.load(name)
@@ -80,16 +82,17 @@ class Robot(DeviceVerbs):
                     name, position=position, orientation=orientation, keyframe=keyframe, id=f"{self.id}_twin"
                 )
                 self.twin.twin_of = self
-            return
-
-        if cameras is not None:
-            raise TypeError("cameras= is a hardware argument; in a world use sim.camera(name, attach=robot)")
-        world = sim if sim is not None else Simulation.default()
-        self.id = world.unique_id(id or self.name)
-        self.sim = world
-        world.add(self, position=position, orientation=orientation, keyframe=keyframe)
-        self._body = SimBody(world, self.id, self.description.action_keys)
-        self.supports_position_hold = True  # a simulated actuator keeps its last target
+        else:
+            if cameras is not None:
+                raise TypeError("cameras= is a hardware argument; in a world use sim.camera(name, attach=robot)")
+            world = sim if sim is not None else Simulation.default()
+            self.id = world.unique_id(id or self.name)
+            self.sim = world
+            world.add(self, position=position, orientation=orientation, keyframe=keyframe)
+            self._body = SimBody(world, self.id, self.description.action_keys)
+            self.supports_position_hold = True  # a simulated actuator keeps its last target
+        if mesh is not None:
+            mesh.mount(self)
 
     @property
     def body(self) -> Body:
