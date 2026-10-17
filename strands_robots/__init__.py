@@ -13,11 +13,13 @@ classes a program names, and everything else is imported from its package
     arm.act({"shoulder_pan": 0.3})          # one control step for the world
     arm.run(lambda obs: {"elbow_flex": 0.4}, hz=50, steps=60)   # -> RunResult
     real = Robot("so101", port="/dev/ttyACM0", confirm=ask)     # a feetech bus, a twin in the default world
+    lab = Mesh("zenoh://", tenant="lab-a")                   # every robot on the LAN; lab.mount(real)
 """
 
 from __future__ import annotations
 
 from .description import Description
+from .mesh import Mesh
 from .policy import Policy
 from .robot import Body, Robot
 from .simulation import Simulation
@@ -35,5 +37,6 @@ __all__ = [
     "Action",
     "JointState",
     "Pose",
+    "Mesh",
     "__version__",
 ]
