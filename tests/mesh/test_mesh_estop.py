@@ -129,3 +129,23 @@ def test_the_refusal_names_the_ways_out():
         Authority().check("arm", Lockout(True, "e1", None), "me", None, local=True)
     msg = str(err.value)
     assert "by=<operator>" in msg and "Authority(names=" in msg and "public_keys" in msg
+
+
+def test_a_transport_whose_publish_raises_does_not_stop_the_estop_on_the_others(tenant):
+    from strands_robots.mesh.transports import open_transport
+
+    down, good = open_transport(f"mem://down-{tenant}"), f"mem://good-{tenant}"
+    device, controller = Mesh(good, tenant=tenant), Mesh([down, good], tenant=tenant)
+
+    def dead(*_a, **_k):
+        raise RuntimeError("session closed")
+
+    down.publish = dead  # type: ignore[method-assign]
+    arm = Robot("so101")
+    device.mount(arm, device_id="arm0")
+    assert controller.discover("arm0", min_count=1, timeout=3.0)
+    assert controller.broadcast("estop", selector="arm0") == ["arm0"]
+    assert arm.estopped
+    device.close()
+    controller.close()
+    arm.close()

@@ -107,6 +107,9 @@ def test_a_second_run_is_refused_while_the_first_runs_and_stop_halts_it(lab):
     arm.confirm_act = lambda *a, **k: (writes.append(1), gate(*a, **k))[1]  # type: ignore[method-assign]
     run = {"policy": lambda o: {"shoulder_pan": 0.1}, "seconds": 3, "hz": 20}
     dispatch(m, {"action": "run", "device_id": "arm", "run": run})
+    deadline = time.monotonic() + 2.0
+    while not writes and time.monotonic() < deadline:  # the first loop is writing before the second run is asked
+        time.sleep(0.01)
     with pytest.raises(RuntimeError, match="already has a running task"):
         dispatch(m, {"action": "run", "device_id": "arm", "run": run})
     dispatch(m, {"action": "stop", "device_id": "arm"})

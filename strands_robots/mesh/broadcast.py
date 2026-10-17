@@ -30,11 +30,7 @@ def broadcast(mesh: Mesh, command: str, selector: str, deadline: float, approved
     args: dict[str, Any] = {}
     if command == "estop":
         args = {"by": mesh.operator, "epoch": uuid.uuid4().hex}
-        raw = wire.encode(
-            wire.envelope(mesh.tenant, mesh.peer_id, "event", "estop", args={**args, "selector": selector})
-        )
-        for t in mesh.transports:
-            t.publish(wire.key("estop", mesh.tenant), raw)
+        publish_estop(mesh, selector, args)
     elif command == "resume":
         args = {"approved_by": approved_by}
     if deadline <= 0:
