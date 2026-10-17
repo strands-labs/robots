@@ -191,6 +191,11 @@ class AwsLink:
             self._boto = boto3.client(
                 "iot-data", region_name=self.region, endpoint_url=f"https://{self.endpoint}", config=cfg
             )
+            if not hasattr(self._boto, "send_direct_message"):
+                raise ImportError(
+                    "the iot mesh transport needs boto3>=1.43.17 for iot-data SendDirectMessage; "
+                    f"this environment has an older boto3: {hint('iot')}"
+                )
         if len(payload) > DIRECT_PAYLOAD_CAP:
             return 413
         try:

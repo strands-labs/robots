@@ -34,7 +34,7 @@ dashboard = ["fastapi>=0.115", "uvicorn>=0.35", "websockets>=13"]
 # The mesh over zenoh (peer mode, zero config on a LAN). Same pin as above.
 mesh = ["eclipse-zenoh>=1.9.0,<1.10.0", "cryptography>=42"]
 # The mesh over AWS IoT Core (Direct Messaging for rpcs, MQTT for state).
-iot = ["awsiotsdk>=1.31", "boto3>=1.40"]
+iot = ["awsiotsdk>=1.31", "boto3>=1.43.17"]
 dev = ["pytest>=8", "pytest-timeout", "ruff>=0.6", "mypy>=1.10", "import-linter>=2.1", "onnx>=1.16"]
 
 [tool.hatch.build.targets.wheel]
