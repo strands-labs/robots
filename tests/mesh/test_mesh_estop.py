@@ -113,6 +113,8 @@ def test_claimed_names_are_not_trusted_on_a_real_network():
     assert not is_local("zenoh://") and not is_local("zenoh://?connect=tcp/10.0.0.5:7447")
     assert not is_local("zenoh://?listen=tcp/127.0.0.1:7447&connect=tcp/10.0.0.5:7447")
     assert not is_local("zenoh://?listen=tcp/0.0.0.0:7447")
+    assert not is_local("zenoh://?connect=tcp/127.0.0.1:7447")
+    assert is_local("iot://fake?broker=b") and not is_local("iot://fake-west-2?cert=c&endpoint=e")
     stop = Lockout(True, "e1", "alice")
     with pytest.raises(RequestRefused, match="needs operator keys"):
         Authority().check("arm", stop, "alice", None, local=False)

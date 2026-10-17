@@ -102,16 +102,20 @@ def _handlers(
 
 
 def is_local(url: str) -> bool:
-    """In-process (``mem://``, the fake IoT broker), or zenoh with explicit endpoints that are all loopback."""
-    if url.startswith(("mem://", "iot://fake")):
+    """In-process (``mem://``, the fake IoT broker), or zenoh listening only on loopback with no ``connect=``.
+
+    A ``connect=`` to loopback is no evidence: the router or peer there may route for the whole network.
+    """
+    from urllib.parse import parse_qs, urlparse
+
+    if url.startswith("mem://") or (url.startswith("iot://") and urlparse(url).netloc == "fake"):
         return True
     if not url.startswith("zenoh://") or "?" not in url:
         return False
-    from urllib.parse import parse_qs
-
     q = parse_qs(url.split("?", 1)[1])
-    eps = q.get("listen", []) + q.get("connect", [])
-    hosts = [e.split("/", 1)[-1].rsplit(":", 1)[0] for e in eps]
+    if "connect" in q:
+        return False
+    hosts = [e.split("/", 1)[-1].rsplit(":", 1)[0] for e in q.get("listen", [])]
     return bool(hosts) and all(h in ("127.0.0.1", "localhost", "[::1]") for h in hosts)
 
 

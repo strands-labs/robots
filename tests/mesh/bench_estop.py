@@ -24,7 +24,12 @@ def main(rounds: int = 50) -> None:
     env = {**os.environ, "PYTHONPATH": ROOT}
     urls = [f"zenoh://?listen=tcp/127.0.0.1:{port}", f"zenoh://?connect=tcp/127.0.0.1:{port}"]
     procs = [
-        subprocess.Popen([sys.executable, peer, u, tenant, f"arm{i}"], stdout=subprocess.PIPE, text=True, env=env)
+        subprocess.Popen(
+            [sys.executable, peer, u, tenant, f"arm{i}", "-", "500", "trust"],
+            stdout=subprocess.PIPE,
+            text=True,
+            env=env,
+        )
         for i, u in enumerate(urls)
     ]
     for p in procs:
