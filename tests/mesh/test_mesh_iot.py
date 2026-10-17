@@ -131,6 +131,12 @@ def test_a_stale_boto3_without_send_direct_message_fails_with_a_clear_floor_hint
     stale_boto3 = types.ModuleType("boto3")  # stands in for the installed boto3, present or not
     stale_boto3.client = lambda *a, **k: _StaleIotData()  # type: ignore[attr-defined]
     monkeypatch.setitem(sys.modules, "boto3", stale_boto3)
+    botocore = types.ModuleType("botocore")  # the transport imports botocore too; CI's [dev] has neither
+    exceptions, config = types.ModuleType("botocore.exceptions"), types.ModuleType("botocore.config")
+    exceptions.ClientError = type("ClientError", (Exception,), {})  # type: ignore[attr-defined]
+    config.Config = lambda **k: k  # type: ignore[attr-defined]
+    for mod_name, mod in (("botocore", botocore), ("botocore.exceptions", exceptions), ("botocore.config", config)):
+        monkeypatch.setitem(sys.modules, mod_name, mod)
     link = object.__new__(AwsLink)  # skip the live MQTT connect in __init__
     link._boto = None
     link.region, link.endpoint = "us-east-1", "example-ats.iot.us-east-1.amazonaws.com"
