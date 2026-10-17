@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
 import signal
 import subprocess
@@ -75,8 +76,8 @@ def main() -> int:
                 out["disconnect_event_example"] = {k: v for k, v in e[0][1].items() if k in ("eventType", "disconnectReason", "clientInitiatedDisconnect", "sessionIdentifier")}
             link.down.wait(5.0)
             time.sleep(0.5)
-        out["connect_success_to_connected_event_ms"] = {**pct([x for x in conn if x == x]), "lost": sum(1 for x in conn if x != x)}
-        out["clean_disconnect_to_disconnected_event_ms"] = {**pct([x for x in disc if x == x]), "lost": sum(1 for x in disc if x != x)}
+        out["connect_success_to_connected_event_ms"] = {**pct([x for x in conn if not math.isnan(x)]), "lost": sum(1 for x in conn if math.isnan(x))}
+        out["clean_disconnect_to_disconnected_event_ms"] = {**pct([x for x in disc if not math.isnan(x)]), "lost": sum(1 for x in disc if math.isnan(x))}
 
         # ungraceful: SIGKILL a device process; the broker only notices at keep-alive
         events.clear()

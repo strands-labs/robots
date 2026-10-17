@@ -53,13 +53,10 @@ def so101_manifest() -> dict[str, Any]:
     from strands_robots import Robot
     from strands_robots.mesh import Mesh
 
-    m = Mesh(f"mem://exp-{uuid.uuid4().hex[:6]}", tenant="exp")
-    m.mount(Robot("so101"), device_id="arm", watchdog_ms=None)
-    try:
+    with Mesh(f"mem://exp-{uuid.uuid4().hex[:6]}", tenant="exp") as m:
+        m.mount(Robot("so101"), device_id="arm", watchdog_ms=None)
         d = m.discover("arm", min_count=1, timeout=3.0)[0]
         return {"id": d.id, "device_type": d.device_type, "labels": dict(d.labels), "manifest": d.manifest}
-    finally:
-        m.close()
 
 
 def account_and_endpoint(iot) -> tuple[str, str]:
@@ -208,7 +205,7 @@ def sweep_deprecated_thing_types(iot) -> list[str]:
                 try:
                     iot.delete_thing_type(thingTypeName=x["thingTypeName"])
                     gone.append(x["thingTypeName"])
-                except Exception:
+                except Exception:  # best-effort cleanup: a type still in use is reported by the next sweep
                     pass
     return gone
 
@@ -254,7 +251,7 @@ class Mqtt5:
         for h in list(self.handlers):
             try:
                 h(pkt)
-            except Exception:
+            except Exception:  # one handler's error must not stop the others from seeing the packet
                 pass
 
     def on(self, handler) -> None:
@@ -276,5 +273,5 @@ class Mqtt5:
         try:
             self.client.stop()
             self.down.wait(5.0)
-        except Exception:
+        except Exception:  # best-effort teardown: nobody left to report to
             pass

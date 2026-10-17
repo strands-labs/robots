@@ -14,9 +14,9 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import sys
 import tempfile
-import threading
 import time
 from pathlib import Path
 
@@ -53,7 +53,7 @@ def main() -> int:
         sqs.set_queue_attributes(QueueUrl=q, Attributes={"Policy": json.dumps({"Version": "2012-10-17", "Statement": [{
             "Effect": "Allow", "Principal": {"Service": "sns.amazonaws.com"}, "Action": "sqs:SendMessage", "Resource": q_arn,
             "Condition": {"ArnEquals": {"aws:SourceArn": topic_arn}}}]})})
-        sub_arn = sns.subscribe(TopicArn=topic_arn, Protocol="sqs", Endpoint=q_arn, Attributes={"RawMessageDelivery": "true"})["SubscriptionArn"]
+        sns.subscribe(TopicArn=topic_arn, Protocol="sqs", Endpoint=q_arn, Attributes={"RawMessageDelivery": "true"})["SubscriptionArn"]
         role_name = a.role
         try:
             role = iam.get_role(RoleName=role_name)["Role"]["Arn"]
@@ -101,7 +101,7 @@ def main() -> int:
         t_warm, lost = time.perf_counter(), 0
         while True:  # a rule whose role policy is seconds old drops messages silently until IAM propagates
             warm = fire(f"strands/{tenant}/@estop", -1)
-            if warm == warm:
+            if not math.isnan(warm):
                 break
             lost += 1
             if time.perf_counter() - t_warm > 120:
@@ -109,7 +109,7 @@ def main() -> int:
         out["rule_warmup"] = {"seconds_until_first_republish": round(time.perf_counter() - t_warm, 1), "messages_lost_silently": lost, "first_ms": round(warm, 1)}
         time.sleep(0.5)
         rep = [fire(f"strands/{tenant}/@estop", i) for i in range(a.n)]
-        out["rule_republish_ms"] = {**pct([x for x in rep if x == x]), "lost": sum(1 for x in rep if x != x)}
+        out["rule_republish_ms"] = {**pct([x for x in rep if not math.isnan(x)]), "lost": sum(1 for x in rep if math.isnan(x))}
         out["republish_payload_example"] = got[0][1] if got else None
         # Basic Ingest: skip the pub/sub layer, hit the rule directly
         # (the device policy has no $aws/rules/* publish right, so a device publish there is refused: PUBACK 135; measured from the operator)
@@ -117,8 +117,8 @@ def main() -> int:
         out["basic_ingest_from_device_without_policy_puback"] = int(r.puback.reason_code) if r and r.puback else None
         bi = [fire(f"$aws/rules/{rule_name}", i, via=op) for i in range(a.n)]
         rep_op = [fire(f"strands/{tenant}/@estop", i, via=op) for i in range(a.n)]
-        out["rule_republish_from_operator_ms"] = {**pct([x for x in rep_op if x == x]), "lost": sum(1 for x in rep_op if x != x)}
-        out["basic_ingest_republish_ms"] = {**pct([x for x in bi if x == x]), "lost": sum(1 for x in bi if x != x)}
+        out["rule_republish_from_operator_ms"] = {**pct([x for x in rep_op if not math.isnan(x)]), "lost": sum(1 for x in rep_op if math.isnan(x))}
+        out["basic_ingest_republish_ms"] = {**pct([x for x in bi if not math.isnan(x)]), "lost": sum(1 for x in bi if math.isnan(x))}
         # SNS → SQS hook latency: drain, fire n, receive with timestamps
         while sqs.receive_message(QueueUrl=q, MaxNumberOfMessages=10, WaitTimeSeconds=1).get("Messages"):
             pass

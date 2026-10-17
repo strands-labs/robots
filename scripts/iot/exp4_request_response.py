@@ -15,13 +15,13 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import re
 import subprocess
 import sys
 import tempfile
 import threading
 import time
-import uuid
 from pathlib import Path
 
 from _common import REGION, ROOT, Mqtt5, Provisioned, account_and_endpoint, leftovers, name, pct, run_id, so101_manifest, sweep_deprecated_thing_types
@@ -105,7 +105,7 @@ def main() -> int:
         rr(0, -1); rr(1, -1)  # warm
         for qos in (0, 1):
             xs = [rr(qos, i) for i in range(a.n)]
-            out[f"mqtt5_request_response_qos{qos}_ms"] = {**pct([x for x in xs if x == x]), "lost": sum(1 for x in xs if x != x)}
+            out[f"mqtt5_request_response_qos{qos}_ms"] = {**pct([x for x in xs if not math.isnan(x)]), "lost": sum(1 for x in xs if math.isnan(x))}
         out["request_payload_bytes"] = len(json.dumps({"id": f"{run}-0-0", "action": {"shoulder_pan.pos": 0.0}}))
 
         # (b) Direct Message on the v1 link's path (same boto3 call as transports/iot_link.AwsLink.send_direct)
@@ -127,14 +127,13 @@ def main() -> int:
         for confirm in (True, False):
             rows = [dm(i, confirm) for i in range(a.n)]
             out[f"direct_message_confirm_{str(confirm).lower()}"] = {
-                "rtt_ms": {**pct([r for r, _ in rows if r == r]), "lost": sum(1 for r, _ in rows if r != r)},
+                "rtt_ms": {**pct([r for r, _ in rows if not math.isnan(r)]), "lost": sum(1 for r, _ in rows if math.isnan(r))},
                 "https_call_ms": pct([c for _, c in rows])}
         out["device_served_requests"] = served["n"]
 
         # (c) offline: the device vanishes without a goodbye
         link.client.stop()
         link.down.wait(5.0)
-        t_off = time.perf_counter()
         offline = []
         statuses = set()
         for i in range(20):

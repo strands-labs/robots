@@ -87,7 +87,6 @@ def main() -> int:
         out["operator_sub_tenant"] = {"reason_codes": codes, "ms": ms}
 
         # connect-twice-as-the-same-thing: the second connection must evict the first (IoT Core rule, worth knowing)
-        t = time.perf_counter()
         dev2 = Mqtt5(endpoint, p.thing, cert=p.cert_path, key=p.key_path, timeout=10.0)
         time.sleep(1.5)
         out["same_client_id_twice"] = {"first_link_disconnects": len(dev_link.disconnects), "second_connect_ms": dev2.connect_ms,
