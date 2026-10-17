@@ -157,6 +157,13 @@ class Simulation(_SceneOps):
 
         return lockstep(self, policies, hz=hz, seconds=seconds, steps=steps, instruction=instruction, units=units)
 
+    @property
+    def tool(self) -> Any:
+        """This world as a strands agent tool, generated from its public verbs (imports strands on first use)."""
+        from ..tools.agent import sim_tool
+
+        return sim_tool(self)
+
     def describe(self) -> dict[str, Any]:
         """Robots, objects, cameras, physics, time — JSON-safe; the dashboard reads THIS (under the world lock)."""
         with self.lock:

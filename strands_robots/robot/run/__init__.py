@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from .loop import lockstep, run, start
+from .lockstep import lockstep
+from .loop import run, start
 from .result import RunResult
 from .task import Task
 

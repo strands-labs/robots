@@ -27,13 +27,15 @@ lerobot = ["eclipse-zenoh>=1.9.0,<1.10.0 ; python_version >= '3.12'"]
 # warp-lang 1.19 and mujoco 3.11.
 isaac = ["isaacsim[all,extscache]>=6.1 ; python_version >= '3.12'"]
 newton = ["mujoco-warp>=3.11", "warp-lang>=1.10"]
+# robot.tool / sim.tool: the strands agent tool generated from the manifest (pillow encodes the images it returns).
+tools = ["strands-agents>=1.0", "pillow>=10"]
 dev = ["pytest>=8", "pytest-timeout", "ruff>=0.6", "mypy>=1.10", "import-linter>=2.1", "onnx>=1.16"]
 
 [tool.hatch.build.targets.wheel]
 packages = ["strands_robots"]
 
 [tool.hatch.envs.default]
-features = ["dev", "mujoco", "onnx"]
+features = ["dev", "mujoco", "onnx", "tools"]
 
 [tool.hatch.envs.default.scripts]
 lint = [
@@ -107,10 +109,12 @@ forbidden_modules = ["strands_robots.robot", "strands_robots.policy"]
 ignore_imports = [
     # Simulation.run delegates to the one run loop by a lazy import inside the method, and the two
     # TYPE_CHECKING-only names it annotates with; none is a runtime module-level edge.
-    "strands_robots.simulation.simulation -> strands_robots.robot.run",
+    "strands_robots.simulation.simulation -> strands_robots.robot.run.lockstep",
     "strands_robots.simulation.simulation -> strands_robots.robot.run.result",
     "strands_robots.simulation.simulation -> strands_robots.robot",
     "strands_robots.simulation.simulation -> strands_robots.policy",
+    # Simulation.tool builds the agent tool by a lazy import inside the property.
+    "strands_robots.simulation.simulation -> strands_robots.tools.agent",
 ]
 
 [[tool.importlinter.contracts]]

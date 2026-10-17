@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+import contextvars
 import threading
 import time as _time
-from collections.abc import Callable, Iterable, Mapping
+from collections.abc import Callable, Iterable
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -14,14 +15,14 @@ from ...types import Observation
 from ..safety import EStopped
 from .bind import Bound, bind, decide, looks, release
 from .result import RunResult
+from .source import is_agent
 from .task import Task
 
 if TYPE_CHECKING:
     from ...policy import PolicyLike
-    from ...simulation import Simulation
     from ..robot import Robot
 
-__all__ = ["run", "start", "lockstep", "Task", "RunResult"]
+__all__ = ["run", "start", "Task", "RunResult"]
 
 
 def run(
@@ -125,6 +126,7 @@ def _loop(
     fault: str | None = None
     next_tick = wall0 = _time.perf_counter()
     always = robot.sim is None or stop_when is not None or ep.wants_images  # a recorded step keeps its cameras
+    write = robot.confirm_act if is_agent() else robot.act  # an agent's run passes the gate on every step
     while True:
         if robot.estopped or robot.estop_latch.count != stops0:  # an e-stop outranks a plain stop()
             why = "estop"
@@ -144,7 +146,7 @@ def _loop(
             why, fault = "fault", str(e)
             break
         try:
-            robot.act(action, steps=sim_steps)
+            write(action, steps=sim_steps)
         except EStopped:
             why = "estop"
             break
@@ -162,89 +164,39 @@ def _loop(
     return RunResult(n, elapsed, hz, (n / wall) if wall else 0.0, why, recorded, final, fault)  # type: ignore[arg-type]
 
 
-def start(robot: Robot, policy: PolicyLike | Callable[[Observation], Any], **kw: Any) -> Task:
-    """``run`` in a background thread; ``Task.stop()`` / ``.status`` / ``.result``."""
-    if robot._task is not None and robot._task.running:
-        raise RuntimeError(f"robot {robot.id!r} already has a running task; call stop() first")
-    robot._task = Task(lambda ev: run(robot, policy, stop_event=ev, **kw))
-    return robot._task
-
-
-def lockstep(
-    sim: Simulation,
-    policies: Mapping[Robot, PolicyLike | Callable[[Observation], Any]],
+def start(
+    robot: Robot,
+    policy: PolicyLike | Callable[[Observation], Any],
     *,
+    instruction: str | None = None,
     hz: float | None = None,
     seconds: float | None = None,
     steps: int | None = None,
-    instruction: str | None = None,
+    stop_when: Callable[[Observation], bool] | None = None,
     units: str | None = "auto",
-) -> dict[str, RunResult]:
-    """Drive N robots in lock-step: every robot observes, every policy acts, the world steps once."""
-    if seconds is None and steps is None:
-        raise ValueError("Simulation.run needs seconds= or steps=")
-    for r in policies:
-        if r.sim is not sim:
-            raise ValueError(f"robot {r.id!r} is not in this world")
-    bound: dict[Robot, Bound] = {}
-    try:
-        for r, p in policies.items():
-            bound[r] = bind(r, p, units)
-        for r, b in bound.items():
-            _emit(r, "run.started", {"policy": repr(b.policy)})
-        results = _lockstep(sim, bound, hz, seconds, steps, instruction)
-    finally:
-        for b in bound.values():
-            release(b)
-    for r in bound:
-        _announce(r, results[r.id])
-    return results
-
-
-def _lockstep(
-    sim: Simulation,
-    bound: Mapping[Robot, Bound],
-    hz: float | None,
-    seconds: float | None,
-    steps: int | None,
-    instruction: str | None,
-) -> dict[str, RunResult]:
-    declared = _declared(bound.values(), hz)
-    rate = hz if hz is not None else declared
-    dt = sim.physics.control_dt if rate is None else 1.0 / rate
-    per = max(1, round(dt / sim.physics.timestep))
-    total = steps if steps is not None else int(round(float(seconds or 0.0) / dt))
-    realtime = any(getattr(b.policy, "realtime", False) for b in bound.values())
-    faults: dict[str, str] = {}
-    stopped: list[Robot] = []
-    t0, n, next_tick = sim.time, 0, _time.perf_counter()
-    stops0 = {r: r.estop_latch.count for r in bound}
-    with sim.manual_time():
-        for _ in range(total):
-            stopped = [r for r in bound if r.estopped or r.estop_latch.count != stops0[r]]
-            for r, b in bound.items():
-                if stopped:
-                    break
-                try:
-                    r.act(decide(r, b, r.observe(images=r.sim is None or looks(b, instruction)), instruction))
-                except PolicyFault as e:
-                    faults[r.id] = str(e)
-                except EStopped:
-                    stopped.append(r)
-            if faults or stopped:
-                break
-            sim.step(per)
-            n += 1
-            if realtime:
-                next_tick += dt
-                time_left = next_tick - _time.perf_counter()
-                if time_left > 0:
-                    _time.sleep(time_left)
-    el = sim.time - t0
-    why = "fault" if faults else ("estop" if stopped else "steps")
-    reason = f"e-stop engaged on {', '.join(r.id for r in stopped)}" if stopped else None
-    final = {r: r.observe(images=False) for r in bound}
-    return {
-        r.id: RunResult(n, el, 1.0 / dt, n / el if el else 0.0, why, None, final[r], faults.get(r.id, reason))  # type: ignore[arg-type]
-        for r in bound
-    }
+    realtime: bool = False,
+    record: str | Path | None = None,
+    push: bool = False,
+) -> Task:
+    """``run`` in a background thread (every ``run`` keyword but ``stop_event``); ``Task.stop()`` / ``.result``."""
+    if robot._task is not None and robot._task.running:
+        raise RuntimeError(f"robot {robot.id!r} already has a running task; call stop() first")
+    ctx = contextvars.copy_context()  # who commanded it (``source.from_agent``) travels to the task's thread
+    robot._task = Task(
+        lambda ev: ctx.run(
+            run,
+            robot,
+            policy,
+            instruction=instruction,
+            hz=hz,
+            seconds=seconds,
+            steps=steps,
+            stop_when=stop_when,
+            units=units,
+            realtime=realtime,
+            stop_event=ev,
+            record=record,
+            push=push,
+        )
+    )
+    return robot._task
