@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import sys
 import time
+import types
 import uuid
 
 import pytest
@@ -121,14 +123,14 @@ def test_a_targeted_estop_also_goes_out_on_the_tenant_estop_key():
 
 def test_a_stale_boto3_without_send_direct_message_fails_with_a_clear_floor_hint(monkeypatch):
     """A boto3 older than 1.43.17 has no iot-data SendDirectMessage; the transport must say so, not AttributeError."""
-    import boto3
-
     from strands_robots.mesh.transports.iot_link import AwsLink
 
     class _StaleIotData:  # an iot-data client from boto3 < 1.43.17: no send_direct_message
         pass
 
-    monkeypatch.setattr(boto3, "client", lambda *a, **k: _StaleIotData())
+    stale_boto3 = types.ModuleType("boto3")  # stands in for the installed boto3, present or not
+    stale_boto3.client = lambda *a, **k: _StaleIotData()  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "boto3", stale_boto3)
     link = object.__new__(AwsLink)  # skip the live MQTT connect in __init__
     link._boto = None
     link.region, link.endpoint = "us-east-1", "example-ats.iot.us-east-1.amazonaws.com"
