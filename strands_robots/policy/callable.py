@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import inspect
 from collections.abc import Callable
+from os import PathLike
 from typing import Any
 
 from ..types import Action, Observation
@@ -28,9 +29,13 @@ class CallablePolicy(Policy):
 
 
 def as_policy(p: Any) -> PolicyLike:
-    """Accept a Policy, anything with act/reset, or a bare callable."""
+    """Accept a Policy, anything with act/reset, a bare callable, or a policy spec string."""
     if isinstance(p, PolicyLike):
         return p
+    if isinstance(p, str | PathLike):  # a policy spec: the factory picks the provider from its form
+        from .factory import make
+
+        return as_policy(make(p))
     if callable(p):
         return CallablePolicy(p)
     raise TypeError(f"not a policy: {type(p).__name__} (need .act(obs) or a callable)")

@@ -22,3 +22,6 @@ site/
 
 # tool caches (playwright renders, scratch)
 .cache/
+
+# The standalone bundle (python -m strands_robots.dashboard.standalone): generated, never committed.
+strands_robots/dashboard/static/scenes/
