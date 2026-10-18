@@ -61,8 +61,8 @@ class Emitter:
         rate = (
             float(hz) if hz is not None else next(e.hz for e in self.robot.manifest.events if e.name == "state") or 10.0
         )
-        if rate <= 0:
-            raise ValueError(f"hz must be > 0, got {rate}")
+        if not 0 < rate < float("inf"):  # at an inf or nan hz the stream never waits between reads of the bus
+            raise ValueError(f"hz must be a finite number > 0, got {rate}")
         stop = threading.Event()
 
         def loop() -> None:

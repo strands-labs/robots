@@ -43,14 +43,24 @@ def ensure_gl() -> str:
     return cur
 
 
+def _glfw_on_macos() -> bool:
+    """Whether MuJoCo renders through GLFW on macOS, which makes windows on the main thread only (else SIGTRAP)."""
+    if platform.system() != "Darwin":
+        return False
+    import mujoco.gl_context  # only the MuJoCo backend gets here, so this import is already done
+
+    return getattr(getattr(mujoco.gl_context, "GLContext", None), "__module__", "") == "mujoco.glfw"
+
+
 def on_gl_thread(fn: Callable[..., T], *args: Any) -> T:
     """Run ``fn`` on the one thread that owns every GL context in the process.
 
     A context is bound to the thread that made it: on macOS (CGL) a render from any other thread
-    blocks forever, so a second ``run()`` from a background ``Task`` would hang. Every render goes here.
+    blocks forever, so a second ``run()`` from a background ``Task`` would hang. Every render goes here,
+    except with ``MUJOCO_GL=glfw`` on macOS: there ``fn`` runs on the thread that asks, the main thread.
     """
     global _pool
-    if threading.current_thread().name.startswith(_GL_THREAD):
+    if threading.current_thread().name.startswith(_GL_THREAD) or _glfw_on_macos():
         return fn(*args)
     with _pool_lock:
         if _pool is None:

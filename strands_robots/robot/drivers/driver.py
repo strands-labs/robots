@@ -8,6 +8,7 @@ read from ``description.hardware.driver`` (registry data), and drivers import th
 from __future__ import annotations
 
 import importlib
+import inspect
 from collections.abc import Mapping
 from typing import Any, Protocol, runtime_checkable
 
@@ -70,7 +71,9 @@ def make_driver(
     driver: str | Driver | None,
     cameras: Mapping[str, int | str] | None,
     calibration: Any = None,
+    robot_id: str | None = None,
 ) -> Driver:
+    """The driver for ``description``; ``robot_id`` (``Robot(id=)``) goes to a driver class that takes one."""
     if driver is not None and not isinstance(driver, str):
         if not isinstance(driver, Driver):
             raise TypeError(
@@ -95,9 +98,10 @@ def make_driver(
         raise ValueError(f"unknown driver {kind!r}; known drivers: {sorted(_DRIVERS)}")
     mod_name, cls_name = _DRIVERS[kind].split(":")
     cls = getattr(importlib.import_module(mod_name), cls_name)
-    return cls(
-        description, port=port, cameras=cameras or {}, **({} if calibration is None else {"calibration": calibration})
-    )
+    named: dict[str, Any] = {} if calibration is None else {"calibration": calibration}
+    if robot_id is not None and "robot_id" in inspect.signature(cls).parameters:  # feetech: LeRobot's --robot.id
+        named["robot_id"] = robot_id
+    return cls(description, port=port, cameras=cameras or {}, **named)
 
 
 __all__ = ["Driver", "Calibration", "make_driver", "driver_kind"]

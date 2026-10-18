@@ -47,8 +47,8 @@ def run(
     """
     if seconds is None and steps is None and stop_when is None:
         raise ValueError("run needs seconds=, steps= or stop_when=")
-    if hz is not None and hz <= 0:
-        raise ValueError(f"hz must be > 0, got {hz}")  # before bind: a bad hz loads no checkpoint
+    if hz is not None and not 0 < hz < float("inf"):  # at an inf or nan hz no tick sleeps: the bus free-runs
+        raise ValueError(f"hz must be a finite number > 0, got {hz}")  # before bind: a bad hz loads no checkpoint
     bound = bind(robot, policy, units)
     _emit(robot, "run.started", {"policy": repr(bound.policy)})
     try:
