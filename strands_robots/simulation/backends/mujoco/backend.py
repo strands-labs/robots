@@ -26,7 +26,7 @@ from ...backend import Backend
 from ...physics import Contact, Physics
 from ...scene import Scene, SceneRobot
 from . import build
-from .state import place, restore, snapshot
+from .state import Gains, place, restore, rewrite_gains, snapshot, write_gains
 
 
 @dataclass
@@ -49,6 +49,7 @@ class MuJoCoBackend(Backend):
         self.data: mujoco.MjData | None = None
         self.spec: mujoco.MjSpec | None = None
         self._scene: Scene = Scene()
+        self._gains: Gains = {}  # what set_gains wrote, per robot: load writes it again after every compile
         self._index: dict[str, _RobotIndex] = {}
         self._renderers: dict[tuple[int, int], mujoco.Renderer] = {}
         self._gl_failed: str | None = None
@@ -91,6 +92,7 @@ class MuJoCoBackend(Backend):
         if self._renderers:  # a context is freed on the thread that made it
             on_gl_thread(self._renderers.clear)
         build.apply_keyframes(model, data, scene, {rid: idx.joint_ids for rid, idx in self._index.items()})
+        self._gains = rewrite_gains(model, self._gains, {rid: idx.actuator_ids for rid, idx in self._index.items()})
         restore(model, data, carried)
         data.time = t  # a scene change is not a reset: world time carries over like joint state
         mujoco.mj_forward(model, data)
@@ -178,12 +180,13 @@ class MuJoCoBackend(Backend):
         kp, kd = np.asarray(kp, dtype=float).reshape(-1), np.asarray(kd, dtype=float).reshape(-1)
         if kp.shape != (len(ids),) or kd.shape != (len(ids),):
             raise ValueError(f"{body}: kp {kp.shape} / kd {kd.shape} for {len(ids)} actuators")
-        m = self.model
-        for i, p, dgain in zip(ids, kp, kd, strict=True):
-            m.actuator_gainprm[i, 0] = p
-            m.actuator_biasprm[i, 0] = 0.0
-            m.actuator_biasprm[i, 1] = -p
-            m.actuator_biasprm[i, 2] = -dgain
+        if not np.all(np.isfinite(np.r_[kp, kd]) & (np.r_[kp, kd] >= 0)):  # a NaN kp: MuJoCo resets the whole world
+            raise ValueError(f"{body}: kp and kd must be finite and >= 0, got kp {kp.tolist()} / kd {kd.tolist()}")
+        if -1 in ids:  # an actuator without a name: index -1 is the world's last actuator, another robot's
+            key = self._scene.robot(body).description.action_keys[ids.index(-1)]
+            raise KeyError(f"{body}: action key {key!r} has no named actuator in the compiled world; nothing was set")
+        write_gains(self.model, ids, kp, kd)
+        self._gains[body] = (kp.copy(), kd.copy())  # load writes these again after every compile
 
     def set_joints(self, body: str, positions: np.ndarray) -> None:
         assert self.model is not None and self.data is not None

@@ -1,4 +1,4 @@
-"""Carry joint positions, velocities and actuator targets across a recompile, by name."""
+"""Carry joint positions, velocities and actuator targets across a recompile, by name; and set_gains' PD gains."""
 
 from __future__ import annotations
 
@@ -54,3 +54,26 @@ def place(model: mujoco.MjModel, data: mujoco.MjData, qadr: list[int], dadr: lis
         if qa >= 0:
             data.qpos[qa], data.qvel[da] = q, 0.0
     mujoco.mj_forward(model, data)
+
+
+Gains = dict[str, tuple[np.ndarray, np.ndarray]]  # robot id -> the (kp, kd) set_gains wrote
+
+
+def write_gains(model: mujoco.MjModel, ids: list[int], kp: np.ndarray, kd: np.ndarray) -> None:
+    """Actuators ``ids`` as the PD law ``tau = kp·(target − q) − kd·q̇`` (no recompile)."""
+    for i, p, dgain in zip(ids, kp, kd, strict=True):
+        model.actuator_gainprm[i, 0] = p
+        model.actuator_biasprm[i, 0] = 0.0
+        model.actuator_biasprm[i, 1] = -p
+        model.actuator_biasprm[i, 2] = -dgain
+
+
+def rewrite_gains(model: mujoco.MjModel, kept: Gains, ids: dict[str, list[int]]) -> Gains:
+    """A compile starts from the MJCF's gains: write what ``set_gains`` wrote again, for each robot still in ``ids``.
+
+    A removed robot's gains go with it, so a new robot given its id starts from its own MJCF.
+    """
+    kept = {body: g for body, g in kept.items() if body in ids}
+    for body, (kp, kd) in kept.items():
+        write_gains(model, ids[body], kp, kd)
+    return kept
