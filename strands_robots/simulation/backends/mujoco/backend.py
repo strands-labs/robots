@@ -66,9 +66,10 @@ class MuJoCoBackend(Backend):
         spec.visual.headlight.diffuse = [0.6 * scene.light_scale] * 3
         spec.visual.headlight.ambient = [0.3 * scene.light_scale] * 3
         if scene.ground:
-            spec.worldbody.add_geom(
+            ground = spec.worldbody.add_geom(
                 name="ground", type=mujoco.mjtGeom.mjGEOM_PLANE, size=[0, 0, 0.05], rgba=[0.75, 0.78, 0.82, 1]
             )
+            ground.conaffinity = 1 | build._TWIN_BIT  # every robot and object touches the floor, and so does a twin
         spec.worldbody.add_light(pos=[0.5, -1.0, 3.0], dir=[-0.2, 0.4, -1.0], diffuse=[0.8 * scene.light_scale] * 3)
         for r in scene.robots:
             build.attach_robot(spec, r)

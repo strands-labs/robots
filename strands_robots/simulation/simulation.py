@@ -93,17 +93,17 @@ class Simulation(_SceneOps):
 
     def step(self, n: int = 1) -> None:
         """Advance ``n`` physics steps (``timestep`` each)."""
-        self._open()
         if n < 0:
             raise ValueError(f"n must be >= 0, got {n}")
         with self.lock:
+            self._open()  # under the lock close() takes: never a step on a model another thread just closed
             self.backend.step(int(n))
 
     def control_step(self) -> None:
         """Advance exactly one control step (``physics.substeps`` physics steps) unless time is manual."""
-        self._open()
-        if not self._manual:
-            with self.lock:
+        with self.lock:
+            self._open()
+            if not self._manual:
                 self.backend.step(self._substeps)
 
     @contextmanager
@@ -121,11 +121,13 @@ class Simulation(_SceneOps):
 
     def reset(self, *, keyframe: str | None = None) -> None:
         """Every body back to its spawn state, or to ``keyframe`` where a robot has one."""
-        self._open()
-        named = {k for r in self._robots.values() for k in r.description.keyframes}
-        if keyframe is not None and keyframe not in named:
-            raise ValueError(f"keyframe {keyframe!r} is not on any robot in this world; keyframes are {sorted(named)}")
-        with self.lock:
+        with self.lock:  # the keyframe check too: close() empties self._robots under this lock
+            self._open()
+            named = {k for r in self._robots.values() for k in r.description.keyframes}
+            if keyframe is not None and keyframe not in named:
+                raise ValueError(
+                    f"keyframe {keyframe!r} is not on any robot in this world; keyframes are {sorted(named)}"
+                )
             self.backend.reset(keyframe)
 
     @property
@@ -206,13 +208,14 @@ class Simulation(_SceneOps):
         return {"position": p.position.tolist(), "orientation": p.orientation.tolist()}
 
     def close(self) -> None:
-        if self._closed:
-            return
-        self._closed = True
-        for r in list(self._robots.values()):
-            r.detached()
-        self._robots.clear()
-        self.backend.close()
+        with self.lock:  # a step, a rebuild or a twin's mirror in another thread ends first; none starts after it
+            if self._closed:
+                return
+            self._closed = True
+            for r in list(self._robots.values()):
+                r.detached()
+            self._robots.clear()
+            self.backend.close()
         if Simulation._default is self:
             Simulation._default = None
 

@@ -68,6 +68,7 @@ class _SceneOps:
 
     def _reload(self) -> None:
         with self.lock:
+            self._open()  # camera(), randomize() and render() never rebuild a closed world
             self.backend.load(self.scene)
             self.revision += 1
 
