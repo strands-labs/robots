@@ -59,6 +59,11 @@ class Robot(DeviceVerbs):
         hw_only = [n for n, v in (("confirm", confirm), ("clock", clock)) if v is not None]
         if hw_only and not self.is_real:  # the operator gate and a bus clock are hardware's; a world owns its time
             raise TypeError(f"{', '.join(hw_only)}= are hardware Robot arguments; a simulated body takes none")
+        if clock is not None and (isinstance(clock, type) or not isinstance(clock, Clock)):  # before the bus opens
+            raise TypeError(
+                "clock= must be a Clock instance, an object with now() -> seconds and sleep(seconds) "
+                f"(leave clock= out for the monotonic clock), got {clock!r}"
+            )
         self.confirm = confirm
         self.sim: Simulation | None = None
         self.twin: Robot | None = None  # on a hardware Robot: the simulated body that mirrors it

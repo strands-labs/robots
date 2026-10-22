@@ -44,14 +44,19 @@ class Latch:
     def engaged(self) -> bool:
         return self._set.is_set()
 
-    def engage(self, reason: str, by: str | None = None) -> None:
+    def engage(self, reason: str, by: str | None = None) -> Exception | None:
+        """Latch; what the clock raised stamping ``engaged_at`` is returned, not raised (the stop holds, unstamped)."""
         with self._lock:  # two racing e-stops count once; the first keeps the latch
             if not self._set.is_set():  # latch first, stamp after: a clock that raises never un-latches a stop
                 self.engaged_at, self.engaged_wall = None, time.time()
                 self.reason, self.stopped_by = reason, by
                 self.count += 1
                 self._set.set()
-                self.engaged_at = self._now()
+                try:
+                    self.engaged_at = self._now()
+                except Exception as e:  # nor hides it: the caller reports the clock and still announces the stop
+                    return e
+        return None
 
     def release(self, by: str, *, stop: int | None = None) -> bool:
         """Clear the latch; with ``stop``, only while it is still engagement #``stop`` (compare-and-release).
@@ -75,10 +80,12 @@ class Latch:
             raise EStopped(f"{robot_id}: e-stop is engaged ({self.reason}); resume(approved_by=<operator>) first")
 
 
-def engage(robot: Robot, reason: str = "estop()", by: str | None = None) -> None:
-    """Latch first (so the next tick refuses), then the body's own stop, even if stamping the latch raised."""
+def engage(robot: Robot, reason: str = "estop()", by: str | None = None) -> Exception | None:
+    """Latch first (so the next tick refuses), then the body's own stop; returns what the clock raised stamping it.
+
+    A body whose own stop raises still raises: that stop may not have happened."""
     try:
-        robot.estop_latch.engage(reason, by)
+        return robot.estop_latch.engage(reason, by)
     finally:
         body = robot._body
         if body is not None:

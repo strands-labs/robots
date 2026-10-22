@@ -254,20 +254,43 @@ class BrokenClock(VirtualClock):
         raise OSError("ptp: no grandmaster")
 
 
-def test_k5_a_clock_that_raises_never_stops_the_estop_from_latching_and_reaching_the_body():
+def _announced(robot) -> list[tuple[str, dict]]:
+    got: list[tuple[str, dict]] = []
+    for event in ("estop", "fault"):
+        robot.subscribe(event, lambda payload, event=event: got.append((event, payload)))
+    return got
+
+
+def test_k5_a_clock_that_raises_never_stops_the_estop_from_latching_reaching_the_body_or_being_announced():
     drv = CountingDriver()
     stops = []
     drv.estop = lambda: stops.append(1)  # type: ignore[method-assign]
     robot = Robot("so101", driver=drv, twin=False, clock=BrokenClock())
-    with pytest.raises(OSError, match="grandmaster"):
-        robot.estop()
+    got = _announced(robot)
+    robot.estop(by="op")  # returns: the stop latched and reached the body, only its time stamp is missing
     assert robot.estopped and robot.estop_latch.count == 1 and robot.estop_latch.engaged_at is None and stops == [1]
+    assert got[0] == ("estop", {"device_id": "so101", "engaged": True, "by": "op"})
+    assert [e for e, _ in got] == ["estop", "fault"] and "OSError('ptp: no grandmaster')" in got[1][1]["reason"]
     sim = Simulation()
     arm = Robot("so101", sim=sim)
     sim.close()
-    with pytest.raises(AssertionError):  # a closed world has no time to read; the stop latches regardless
-        arm.estop()
+    got = _announced(arm)
+    arm.estop()  # a closed world has no time to read; the stop latches and is announced regardless
     assert arm.estopped and arm.estop_latch.engaged_at is None
+    assert [e for e, _ in got] == ["estop", "fault"] and "AssertionError" in got[1][1]["reason"]
+
+
+def test_k5_a_body_stop_that_raises_is_still_raised_when_the_clock_raises_too():
+    drv = CountingDriver()
+
+    def bus_down() -> None:
+        raise ConnectionError("the bus did not answer")
+
+    drv.estop = bus_down  # type: ignore[method-assign]
+    robot = Robot("so101", driver=drv, twin=False, clock=BrokenClock())
+    with pytest.raises(ConnectionError, match="did not answer"):  # the body may not have stopped: the caller hears it
+        robot.estop()
+    assert robot.estopped and robot.estop_latch.engaged_at is None
 
 
 def test_k5_a_world_robot_reads_world_time_and_refuses_a_clock():
@@ -278,6 +301,12 @@ def test_k5_a_world_robot_reads_world_time_and_refuses_a_clock():
     with pytest.raises(TypeError, match="clock="):
         Robot("so101", sim=sim, clock=MONOTONIC)
     sim.close()
+
+
+@pytest.mark.parametrize("clock", [time.monotonic, lambda: 1.0, type(MONOTONIC)], ids=["function", "lambda", "class"])
+def test_k5_a_hardware_robot_refuses_a_clock_that_is_not_a_clock_instance_and_says_what_to_pass(clock):
+    with pytest.raises(TypeError, match=r"clock= must be a Clock instance.*now\(\).*sleep\(seconds\).*leave clock="):
+        Robot("so101", driver=CountingDriver(), twin=False, clock=clock)  # taken before: act() wrote, then failed
 
 
 def test_a_faulted_hardware_run_still_puts_the_body_in_its_on_disconnect_state():

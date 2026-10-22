@@ -39,12 +39,17 @@ class DeviceVerbs:
     def estop(self, *, by: str | None = None) -> None:
         """Stop now: bypasses the safety chain, never waits for the world or the run loop; latches.
 
-        ``by`` names the operator who pressed it; it is recorded on the latch and the ``estop`` event.
+        ``by`` names the operator who pressed it; it is recorded on the latch and the ``estop`` event. A clock that
+        raises while the latch is stamped never hides the stop: ``estop`` goes out, then a ``fault`` naming the error.
         """
         from ..safety import engage
 
-        engage(self._robot, by=by)
-        self._robot.events.emit("estop", {"device_id": self._robot.id, "engaged": True, "by": by})
+        robot = self._robot
+        clock_error = engage(robot, by=by)
+        robot.events.emit("estop", {"device_id": robot.id, "engaged": True, "by": by})
+        if clock_error is not None:  # latched and stopped; only estop_latch.engaged_at is missing
+            why = f"estop: latched and stopped, but robot.clock raised {clock_error!r}; estop_latch.engaged_at is None"
+            robot.events.emit("fault", {"device_id": robot.id, "reason": why})
 
     def resume(self, *, approved_by: str | None = None, stop: int | None = None) -> None:
         """Release the e-stop latch; refused without the operator's name, or for a stop they did not see.
