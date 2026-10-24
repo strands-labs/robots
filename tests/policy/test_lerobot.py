@@ -5,10 +5,15 @@ import time
 
 import numpy as np
 import pytest
+from test_drivers import make_driver
 
 from strands_robots import Description, Policy, Robot
 from strands_robots.policy.chunked import ChunkedPolicy
 from strands_robots.policy.lerobot import LeRobotPolicy, ZenohPolicy, server_config
+from strands_robots.robot.drivers import feetech as ft
+
+DEG_NORM, DEG_LABEL = {"*": "degrees", "gripper": "range_0_100"}, "so101-degrees-gripper-percent-v1"
+RANGE_LABEL = "so101-range-gripper-percent-v1"
 
 
 def _arm(camera=True):
@@ -47,6 +52,24 @@ def test_a_local_checkpoint_drives_the_arm_through_run(tiny_act):
     r = arm.run(p, seconds=1)
     assert r.stopped_by == "steps" and r.steps == 30 and r.fault is None
     assert _inside_limits(arm, r.final.joints.positions)
+    assert p.inner.contract.semantics == RANGE_LABEL  # a simulated arm takes the registry's norm mode, as before
+
+
+def test_a_real_arm_runs_a_checkpoint_only_once_its_norm_mode_is_declared(tiny_act):
+    d, s = make_driver()  # the fake Feetech bus: no port is opened
+    d.images = lambda: {"front": np.zeros((48, 64, 3), np.uint8)}  # a synthetic frame; no camera is opened
+    real = Robot("so101", driver=d, twin=False)
+    p = Policy(tiny_act, device="cpu")
+    s.frames.clear()
+    with pytest.raises(ValueError, match="does not say which LeRobot norm mode its data was recorded in"):
+        real.run(p, steps=1)
+    assert s.frames == [] and p.inner.contract is None and p.inner._runner is None  # nothing written, nothing loaded
+    for declared, label in ((dict(norm=DEG_NORM), DEG_LABEL), (dict(semantics=RANGE_LABEL), RANGE_LABEL)):
+        p = Policy(tiny_act, device="cpu", **declared)
+        assert real.run(p, steps=1).steps == 1 and p.inner.contract.semantics == label
+        assert any(f[4] == ft.SYNC_WRITE and f[5] == ft.REG_GOAL_POSITION for f in s.frames)
+        s.frames.clear()
+    real.close()
 
 
 def test_a_missing_camera_is_refused_by_name_before_a_session(deployment):
