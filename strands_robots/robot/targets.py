@@ -30,7 +30,8 @@ def coerce(robot: Robot, action: Action, *, clip: bool = True, measured: np.ndar
 
     A joint a mapping does not name holds its measured position (``measured=``, the observation the caller
     already holds; else one read), clipped into its limits even when ``clip=False``: only the caller's own
-    values reach the safety chain unclipped. NaN/inf is refused (``NonFiniteTarget``).
+    values reach the safety chain unclipped. NaN/inf is refused (``NonFiniteTarget``), and so is an action
+    vector or a ``measured`` that is not one value per action key (``ValueError``).
     """
     desc = robot.description
     keys = desc.action_keys
@@ -43,7 +44,10 @@ def coerce(robot: Robot, action: Action, *, clip: bool = True, measured: np.ndar
         if measured is None:
             with robot._lock:
                 measured = np.array(robot.body.read().positions, dtype=float)
-        targets = clip_to_limits(desc, measured)
+        q = np.asarray(measured, dtype=float).reshape(-1)
+        if q.shape != (len(keys),):
+            raise ValueError(f"measured has {q.size} values; {robot.id} has {len(keys)} action keys {list(keys)}")
+        targets = clip_to_limits(desc, q)
         for k, v in action.items():
             targets[keys.index(k)] = float(v)
     else:

@@ -11,12 +11,15 @@ import time
 
 import numpy as np
 import pytest
+from test_drivers import make_driver, writes
 
 from strands_robots import JointState, Robot, Simulation
 from strands_robots.description import Description
 from strands_robots.robot.clock import MONOTONIC
+from strands_robots.robot.drivers import feetech as ft
 from strands_robots.robot.run import lockstep
 from strands_robots.robot.run.pace import Pacer
+from strands_robots.robot.safety import NonFiniteTarget
 
 
 class VirtualClock:
@@ -115,6 +118,56 @@ def test_k1_command_never_reads():
     robot, drv = _hw()
     robot.command(robot.coerce({"shoulder_pan": 0.1}, measured=np.zeros(6)))
     assert drv.reads == [] and len(drv.writes) == 1
+
+
+@pytest.mark.parametrize("bad", [np.nan, np.inf])
+def test_k1_command_refuses_a_non_finite_target_before_the_bus_as_act_does(bad):
+    d, s = make_driver()
+    real = Robot("so101", driver=d, twin=False)
+    with pytest.raises(NonFiniteTarget, match="shoulder_pan"):
+        real.command(np.array([bad, 0.0, 0.0, 0.0, 0.0, 0.0]))
+    assert writes(s) == []  # no torque, no goal (the driver used to refuse it after Torque_Enable)
+
+
+@pytest.mark.parametrize("n", [5, 7])
+def test_k1_command_refuses_a_target_that_is_not_one_value_per_action_key_before_the_bus(n):
+    d, s = make_driver()
+    real = Robot("so101", driver=d, twin=False)
+    with pytest.raises(ValueError, match=f"action has {n} values; so101 has 6 action keys"):
+        real.command(np.zeros(n))
+    assert writes(s) == []  # it used to fail in the driver's zip(), after Torque_Enable
+
+
+def test_k1_command_clips_every_joint_into_its_limits_and_still_never_reads():
+    d, s = make_driver(cal=None)  # uncalibrated: full-turn counts, so only the limits keep 3 rad off the servo
+    real = Robot("so101", driver=d, twin=False)
+    hi = real.description.limits["shoulder_lift"][1]
+    s.frames.clear()
+    real.command(np.array([0.0, 3.0, 0.0, 0.0, 0.0, 0.0]))
+    goal = int.from_bytes(s.regs[2][ft.REG_GOAL_POSITION : ft.REG_GOAL_POSITION + 2], "little")
+    assert goal == d.rad_to_counts("shoulder_lift", hi)  # 3186; 3.0 rad used to go out as 4004
+    assert [f for f in s.frames if f[4] in (ft.READ, ft.SYNC_READ)] == []
+
+
+def test_k1_command_never_puts_a_nan_or_an_out_of_limit_target_into_a_world():
+    sim = Simulation()
+    arm = Robot("so101", sim=sim)
+    t0 = sim.time
+    with pytest.raises(NonFiniteTarget, match="shoulder_pan"):
+        arm.command(np.array([np.nan, 0.0, 0.0, 0.0, 0.0, 0.0]))
+    # while one ctrl is NaN, MuJoCo drives every actuator in the world as if its ctrl were 0
+    assert np.isfinite(sim.backend.data.ctrl[:6]).all() and sim.time == t0
+    arm.command(np.array([0.0, 3.0, 0.0, 0.0, 0.0, 0.0]))
+    assert sim.backend.data.ctrl[1] == pytest.approx(arm.description.limits["shoulder_lift"][1])
+    sim.close()
+
+
+@pytest.mark.parametrize("n", [5, 7])
+def test_k1_coerce_refuses_a_measured_vector_that_is_not_one_value_per_action_key(n):
+    robot, drv = _hw()
+    with pytest.raises(ValueError, match=f"measured has {n} values; so101 has 6 action keys"):
+        robot.coerce({"gripper": 0.2}, measured=np.zeros(n))  # 5 used to raise IndexError, 7 to return 7 targets
+    assert drv.reads == [] and drv.writes == []
 
 
 def test_k3_no_catch_up_burst_after_a_stall():
