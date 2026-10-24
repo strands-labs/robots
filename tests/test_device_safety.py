@@ -7,10 +7,11 @@ import time
 
 import numpy as np
 import pytest
-from test_drivers import make_driver
+from test_drivers import CorruptingSerial, make_driver
 
 from strands_robots import Robot
 from strands_robots.robot.device import manifest_for
+from strands_robots.robot.drivers import feetech as ft
 from strands_robots.robot.safety import RequestRefused, Watchdog
 
 
@@ -236,6 +237,24 @@ def test_estop_from_another_thread_never_collides_on_the_half_duplex_wire():
     for t in threads:
         t.join()
     assert errors == [] and s.collisions == 0
+    real.close()
+
+
+def test_estop_holds_and_announces_itself_through_one_corrupted_status_packet():
+    from test_operator_gate import goal_writes
+
+    d, s = make_driver(serial=CorruptingSerial())
+    real = Robot("so101", driver=d, twin=False)
+    real.act({"shoulder_pan": 0.5})  # torque on, so estop() is a hold on the bus
+    s.actual[1] = 2400  # servo 1 is still on its way to its goal
+    heard: list[dict] = []
+    real.subscribe("estop", heard.append)
+    s.frames.clear()
+    s.corrupt = 1
+    real.estop()
+    goal = int.from_bytes(s.regs[1][ft.REG_GOAL_POSITION : ft.REG_GOAL_POSITION + 2], "little")
+    assert real.estopped and len(goal_writes(s)) == 1 and goal == 2400  # held where it was measured
+    assert [(h["device_id"], h["engaged"]) for h in heard] == [("so101", True)] and s.corrupt == 0
     real.close()
 
 
