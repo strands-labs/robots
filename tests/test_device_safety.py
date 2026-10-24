@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import threading
 import time
+from decimal import Decimal
 
 import numpy as np
 import pytest
@@ -255,6 +256,163 @@ def test_a_watchdog_refuses_a_real_body_with_no_declared_on_disconnect():
     so = Robot("so101", driver=d, twin=False)
     Watchdog(so, timeout_ms=200)  # feetech declares hold in the registry
     so.close()
+
+
+def _held_arm_whose_next_hold_fails(error: Exception | None = None, fails: list[int] | None = None):
+    """An SO-101 on the fake bus under torque, whose next ``fails[0]`` holds (default 1) raise ``error``.
+
+    ``error`` defaults to an ``OSError``; setting ``fails[0]`` again makes later holds fail too."""
+    d, s = make_driver()
+    real = Robot("so101", driver=d, twin=False)
+    real.act({"shoulder_pan": 0.3})  # torque on: a hold is one Goal_Position write
+    hold, left = d.hold, fails if fails is not None else [1]
+
+    def hold_failing():
+        if left[0] > 0:
+            left[0] -= 1
+            raise error if error is not None else OSError("the USB adapter re-enumerated")
+        hold()
+
+    d.hold = hold_failing  # type: ignore[method-assign]
+    return real, s
+
+
+def _holds_after(s, n):
+    """Goal writes on ``s`` past the first ``n``, once one lands (5 s at most)."""
+    from test_operator_gate import goal_writes
+
+    t0 = time.monotonic()
+    while len(goal_writes(s)) == n and time.monotonic() - t0 < 5.0:
+        time.sleep(0.005)
+    return len(goal_writes(s)) - n
+
+
+def _watch_until_it_holds(real, s, period_s=0.005):
+    """A watchdog thread on ``real`` until a hold lands (5 s at most), then closed: (holds, thread alive, watchdog)."""
+    from test_operator_gate import goal_writes
+
+    n = len(goal_writes(s))
+    dog = Watchdog(real, timeout_ms=30).start(period_s=period_s)
+    held, alive = _holds_after(s, n), dog._thread is not None and dog._thread.is_alive()
+    dog.stop()
+    real.close()
+    return held, alive, dog
+
+
+def test_a_watchdog_thread_outlives_a_failed_on_disconnect_and_retries_it_next_period():
+    real, s = _held_arm_whose_next_hold_fails()
+    faults: list[dict] = []
+    real.subscribe("fault", faults.append)
+    # Subscribed last: Emitter.emit stops at the first subscriber that raises, which would hide the event.
+    real.subscribe("fault", lambda f: 1 / 0)  # a subscriber's own bug does not end the watchdog either
+    held, alive, dog = _watch_until_it_holds(real, s)
+    assert held == 1 and alive and dog.lapsed  # the retry held, and the thread is still watching
+    assert dog.errors == 1 and len(faults) == 1 and faults[0]["device_id"] == "so101"
+    assert "watchdog" in faults[0]["reason"] and "OSError: the USB adapter re-enumerated" in faults[0]["reason"]
+
+
+def test_a_run_of_failed_watchdog_retries_is_one_fault_event_and_a_later_run_is_another():
+    from test_operator_gate import goal_writes
+
+    fails = [3]
+    real, s = _held_arm_whose_next_hold_fails(fails=fails)
+    faults: list[dict] = []
+    real.subscribe("fault", faults.append)
+    n = len(goal_writes(s))
+    dog = Watchdog(real, timeout_ms=30).start(period_s=0.005)
+    assert _holds_after(s, n) == 1 and dog.errors == 3 and len(faults) == 1  # three failed tries, one event
+    fails[0], n = 1, len(goal_writes(s))
+    dog.beat()  # the commander comes back once, then goes quiet: a new lapse whose first apply fails
+    assert _holds_after(s, n) == 1 and dog.errors == 4 and len(faults) == 2
+    dog.stop()
+    real.close()
+
+
+def test_a_poll_after_a_failed_on_disconnect_retries_it_in_the_same_lapse():
+    from test_operator_gate import goal_writes
+
+    real, s = _held_arm_whose_next_hold_fails()
+    now = {"t": 0.0}
+    dog = Watchdog(real, timeout_ms=50, clock=lambda: now["t"])
+    now["t"] = 0.1
+    with pytest.raises(OSError, match="re-enumerated"):
+        dog.poll()
+    n = len(goal_writes(s))
+    now["t"] = 0.2  # no beat since: the same lapse, still not applied
+    assert dog.poll() is True and len(goal_writes(s)) == n + 1
+    assert dog.poll() is False  # applied once per lapse
+    real.close()
+
+
+def test_a_beat_while_on_disconnect_is_applied_is_kept_so_the_next_lapse_applies_too():
+    d, _ = make_driver()
+    real = Robot("so101", driver=d, twin=False)
+    now = {"t": 0.0}
+    dog = Watchdog(real, timeout_ms=50, clock=lambda: now["t"])
+    hold = d.hold
+
+    def hold_as_the_commander_returns():
+        hold()
+        dog.beat()  # the commander's next command lands mid-apply (beat() takes no lock)
+
+    d.hold = hold_as_the_commander_returns  # type: ignore[method-assign]
+    now["t"] = 0.1
+    assert dog.poll() is True
+    d.hold = hold  # type: ignore[method-assign]
+    now["t"] = 0.3  # the commander went quiet again after that one command: a new lapse
+    assert dog.poll() is True
+    real.close()
+
+
+def test_closing_a_robot_ends_its_watchdog_thread_quietly():
+    d, _ = make_driver()
+    real = Robot("so101", driver=d, twin=False)
+    errors: list[BaseException] = []
+    old = threading.excepthook
+    threading.excepthook = lambda a: errors.append(a.exc_value)
+    try:
+        thread = Watchdog(real, timeout_ms=20).start(period_s=0.005)._thread
+        real.close()
+        assert thread is not None
+        thread.join(2.0)
+    finally:
+        threading.excepthook = old
+    assert errors == [] and not thread.is_alive()
+
+
+@pytest.mark.parametrize("period_s", [0.0, -0.01, float("nan"), float("inf"), 1e10])
+def test_a_watchdog_period_outside_zero_to_timeout_max_is_refused(period_s):
+    d, _ = make_driver()
+    real = Robot("so101", driver=d, twin=False)
+    with pytest.raises(ValueError, match="period_s must be"):
+        Watchdog(real, timeout_ms=100).start(period_s=period_s).stop()
+    real.close()
+
+
+@pytest.mark.parametrize("timeout_ms", [float("nan"), float("inf")])
+def test_a_watchdog_timeout_that_is_not_a_finite_number_is_refused(timeout_ms):
+    d, _ = make_driver()
+    real = Robot("so101", driver=d, twin=False)
+    with pytest.raises(ValueError, match="timeout_ms must be a finite number > 0"):
+        Watchdog(real, timeout_ms=timeout_ms)
+    real.close()
+
+
+@pytest.mark.parametrize("period_s", [np.float32(0.005), Decimal("0.005")], ids=["np.float32", "Decimal"])
+def test_a_watchdog_period_given_as_another_number_type_still_paces_its_retries(period_s):
+    real, s = _held_arm_whose_next_hold_fails()
+    held, alive, dog = _watch_until_it_holds(real, s, period_s)
+    assert held == 1 and alive and dog.errors == 1
+
+
+def test_an_error_that_cannot_print_itself_does_not_end_the_watchdog_thread():
+    class Unprintable(OSError):
+        def __str__(self) -> str:
+            raise RuntimeError("this error cannot format its own message")
+
+    real, s = _held_arm_whose_next_hold_fails(Unprintable())
+    held, alive, dog = _watch_until_it_holds(real, s)
+    assert held == 1 and alive and dog.errors == 1
 
 
 def test_workspace_bounds_validator_refuses_a_target_whose_tool_leaves_the_box():
