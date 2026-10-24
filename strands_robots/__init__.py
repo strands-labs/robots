@@ -30,6 +30,8 @@ from .robot.safety import RequestRefused
 from .simulation import Simulation
 from .types import Action, JointState, Observation, Pose
 
+# The one copy of the version: the wheel is built with it (pyproject [tool.hatch.version]), `hatch version X` sets
+# it, and the publish workflow refuses a release tag that is not v<this>.
 __version__ = "1.0.0.dev0"
 
 __all__ = [
