@@ -14,7 +14,7 @@ import numpy as np
 from ....types import JointState, Pose
 from ...backend import Backend
 from ...physics import Contact, Physics
-from ...scene import Scene, SceneRobot
+from ...scene import Scene, SceneObject, SceneRobot
 from . import app, build
 from .usd import convert_to_usd
 
@@ -81,21 +81,17 @@ class IsaacBackend(Backend):
                     self._apply_keyframe(r)
             self._scene = scene
         except BaseException:
-            self._undo(new_robots)  # drop what this load added (self._scene is the old world), restart the timeline
+            self._undo(new_robots, new_objects)  # drop what this load added (self._scene is the old world), restart
             raise
         finally:
             self._restore(carried)
             self._time_base = t - float(self.world.current_time)  # a scene change is not a reset: time carries over
 
-    def _undo(self, new_robots: list[SceneRobot]) -> None:
-        from isaacsim.core.utils.prims import delete_prim, is_prim_path_valid
-
+    def _undo(self, new_robots: list[SceneRobot], new_objects: list[SceneObject]) -> None:
         if self.world.is_playing():
             self.world.stop()
         self._remove_gone(self._scene)
-        for r in new_robots:  # an import that raised halfway leaves its reference prim behind
-            if r.id not in self._robots and is_prim_path_valid(f"/World/{r.id}"):
-                delete_prim(f"/World/{r.id}")
+        build.sweep(new_robots, new_objects, self._robots, self._objects)  # a reference an import left half-added
         self.world.reset()
 
     def _add_robot(self, r: SceneRobot) -> Any:
@@ -125,8 +121,8 @@ class IsaacBackend(Backend):
         for names, held, path in keep:
             for name in [n for n in held if n not in names]:
                 if self.world.scene.object_exists(name):
-                    self.world.scene.remove_object(name)  # deletes the prim and forgets the registry entry
-                elif is_prim_path_valid(path.format(name)):
+                    self.world.scene.remove_object(name)  # deletes the handle's prim and forgets the registry entry
+                if is_prim_path_valid(path.format(name)):  # a free file object's handle is a child: its root remains
                     delete_prim(path.format(name))
                 held.pop(name)
                 self._dofs.pop(name, None)

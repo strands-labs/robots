@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 import math
+from pathlib import Path
 from typing import Any
 
 import numpy as np
 
 from ...scene import Scene, SceneCamera, SceneObject, SceneRobot
-from .usd import demangle
+from .usd import convert_to_usd, demangle, object_model
 
 _KINDS = {"box": "Cuboid", "sphere": "Sphere", "cylinder": "Cylinder", "capsule": "Capsule"}
 
@@ -30,11 +31,6 @@ def refuse(scene: Scene, objects: Any, cameras: Any) -> None:
             "Simulation('isaac') cannot randomize friction, mass or cameras yet (PhysX materials / body masses are not "
             "wired); randomize(lighting=) works, and Simulation('mujoco') randomizes them all"
         )
-    for o in scene.objects:
-        if o.name not in objects and o.path is not None:
-            raise NotImplementedError(
-                f"Simulation('isaac'): object {o.name!r} from a file is not supported; use a shape"
-            )
     for c in scene.cameras:
         if c.name not in cameras and c.attach is not None:
             raise NotImplementedError(
@@ -49,6 +45,8 @@ def add_ground() -> Any:
 
 
 def add_object(world: Any, o: SceneObject) -> Any:
+    if o.path is not None:
+        return add_file_object(world, o)
     from isaacsim.core.api import objects
 
     kind = _KINDS[o.shape or "box"]
@@ -72,6 +70,42 @@ def add_object(world: Any, o: SceneObject) -> Any:
     prim = cls(**kw)
     world.scene.add(prim)
     return prim
+
+
+def add_file_object(world: Any, o: SceneObject) -> Any:
+    """A model file as one body under ``/World/objects/<name>``: a ``free=False`` file is scenery, placed by its root
+    xform; a ``free=True`` file is the rigid body Isaac's importer made of it (its root xform never moves)."""
+    from isaacsim.core.prims import SingleRigidPrim, SingleXFormPrim
+    from isaacsim.core.utils.stage import add_reference_to_stage
+    from pxr import Usd, UsdPhysics
+
+    assert o.path is not None
+    path = f"/World/objects/{o.name}"
+    model, fmt = object_model(Path(o.path).expanduser().resolve(), free=o.free)
+    add_reference_to_stage(usd_path=str(convert_to_usd(model, fmt, fix_base=not o.free)), prim_path=path)
+    pos, quat = np.asarray(o.position, dtype=float), np.asarray(o.orientation, dtype=float)
+    if not o.free:
+        prim = SingleXFormPrim(path, name=o.name, position=pos, orientation=quat)
+    else:
+        SingleXFormPrim(path, name=f"{o.name}_root", position=pos, orientation=quat)  # places the reference, once
+        root = world.stage.GetPrimAtPath(path)
+        body = next((p for p in Usd.PrimRange(root) if p.HasAPI(UsdPhysics.RigidBodyAPI)), None)
+        if body is None:
+            raise ValueError(f"{o.path}: Isaac's importer made no rigid body of it, so it cannot be a free object")
+        prim = SingleRigidPrim(str(body.GetPath()), name=o.name)
+    world.scene.add(prim)
+    return prim
+
+
+def sweep(new_robots: list[SceneRobot], new_objects: list[SceneObject], robots: Any, objects: Any) -> None:
+    """Delete the reference prim of every body a failed ``load`` left half-added (an import that raised)."""
+    from isaacsim.core.utils.prims import delete_prim, is_prim_path_valid
+
+    half = [(r.id, robots, f"/World/{r.id}") for r in new_robots]
+    half += [(o.name, objects, f"/World/objects/{o.name}") for o in new_objects]
+    for name, held, path in half:
+        if name not in held and is_prim_path_valid(path):
+            delete_prim(path)
 
 
 def add_camera(c: SceneCamera) -> Any:

@@ -134,8 +134,64 @@ def test_a_refused_scene_change_leaves_the_world_stepping(pair):
     sim = arm.sim
     sim.step(10)
     t0 = sim.time
-    with pytest.raises(NotImplementedError, match="from a file"):
-        sim.add_object("t", path="x.obj")
+    with pytest.raises(NotImplementedError, match="attach"):
+        sim.camera("wrist", attach=arm)
     sim.step(100)
     assert sim.backend.world.is_playing() and sim.time - t0 == pytest.approx(100 * sim.physics.timestep, rel=1e-3)
     assert arm.observe().joints.names == arm.description.action_keys
+
+
+ROOM = """<mujoco model="room"><worldbody>
+  <geom name="floor" type="box" size="1 1 0.01" pos="0 0 -0.01" rgba="0.8 0.7 0.5 1"/>
+  <body name="table" pos="0.35 0 0"><geom name="top" type="box" size="0.25 0.2 0.01" pos="0 0 0.09"/></body>
+</worldbody></mujoco>"""
+BLOCK = '<mujoco model="block"><worldbody><geom name="g" type="box" size="0.03 0.03 0.03"/></worldbody></mujoco>'
+CRATE = """<robot name="crate"><link name="base">
+  <inertial><mass value="0.5"/><inertia ixx="1e-3" iyy="1e-3" izz="1e-3" ixy="0" ixz="0" iyz="0"/></inertial>
+  <visual><geometry><box size="0.06 0.06 0.06"/></geometry></visual>
+  <collision><geometry><box size="0.06 0.06 0.06"/></geometry></collision>
+</link></robot>"""
+
+
+def test_a_scene_file_is_static_scenery_and_a_free_file_lands_on_it(pair, tmp_path):
+    arm, _ = pair
+    sim = arm.sim
+    (tmp_path / "room.xml").write_text(ROOM)
+    (tmp_path / "block.xml").write_text(BLOCK)
+    room = sim.add_object("room", path=str(tmp_path / "room.xml"), free=False)
+    block = sim.add_object("block", path=str(tmp_path / "block.xml"), position=[0.35, 0, 0.3])
+    assert [o["name"] for o in sim.describe()["objects"]] == ["room", "block"]
+    sim.set_pose("room", position=[0.1, 0, 0])
+    assert np.allclose(room.pose.position, [0.1, 0, 0], atol=1e-3)
+    sim.step(400)
+    assert np.allclose(room.pose.position, [0.1, 0, 0], atol=1e-3)  # scenery never moves
+    assert block.pose.position[2] == pytest.approx(0.13, abs=0.02)  # the table top (0.10) plus the block's half size
+    sim.set_pose("block", position=[0, 0.6, 0.3])
+    (tmp_path / "crate.urdf").write_text(CRATE)
+    crate = sim.add_object("crate", path=str(tmp_path / "crate.urdf"), position=[0.6, 0.6, 0.3])  # a URDF, free
+    sim.step(400)
+    assert block.pose.position[2] == pytest.approx(0.03, abs=0.02)  # the floor
+    assert crate.pose.position[2] == pytest.approx(0.03, abs=0.02)
+    assert arm.observe().joints.names == arm.description.action_keys
+    sim.remove("block")
+    sim.remove("crate")
+    sim.remove("room")
+    assert sim.describe()["objects"] == []
+    stage = sim.backend.world.stage
+    assert not stage.GetPrimAtPath("/World/objects/block").IsValid()  # the free body's reference root went with it
+    assert not stage.GetPrimAtPath("/World/objects/room").IsValid()
+    t = sim.time
+    sim.step(10)
+    assert sim.backend.world.is_playing() and sim.time == pytest.approx(t + 10 * sim.physics.timestep, rel=1e-3)
+
+
+def test_a_bare_mesh_file_is_refused_with_the_fix_and_the_world_keeps_stepping(pair, tmp_path):
+    arm, _ = pair
+    sim = arm.sim
+    sim.step(10)
+    t0 = sim.time
+    with pytest.raises(ValueError, match="MJCF"):
+        sim.add_object("tri", path=str(tmp_path / "tri.obj"))
+    assert "tri" not in [o["name"] for o in sim.describe()["objects"]]
+    sim.step(100)
+    assert sim.backend.world.is_playing() and sim.time - t0 == pytest.approx(100 * sim.physics.timestep, rel=1e-3)

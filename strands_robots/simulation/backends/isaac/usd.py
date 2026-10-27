@@ -11,6 +11,8 @@ import math
 import os
 from pathlib import Path
 
+from ...._extras import hint
+
 
 def usd_cache_dir() -> Path:
     return Path(os.environ.get("STRANDS_ROBOTS_USD_CACHE", "~/.cache/strands_robots/usd")).expanduser()
@@ -19,6 +21,49 @@ def usd_cache_dir() -> Path:
 def demangle(usd_name: str) -> str:
     """Isaac renames USD-invalid prim names (joints called "1".."6") as ``tn__1_``; undo that."""
     return usd_name[4:-1] if usd_name.startswith("tn__") and usd_name.endswith("_") else usd_name
+
+
+def model_format(path: Path) -> str:
+    """``"mjcf"`` for ``.xml`` / ``.mjcf``, ``"urdf"`` for ``.urdf``; anything else (a mesh) is refused with the fix."""
+    if path.suffix == ".urdf":
+        return "urdf"
+    if path.suffix in (".xml", ".mjcf"):
+        return "mjcf"
+    raise ValueError(
+        f"{path.name}: Simulation('isaac') imports a model file, MJCF (.xml) or URDF (.urdf); "
+        "a mesh goes inside an MJCF (<asset><mesh file=.../></asset> and a geom of type mesh)"
+    )
+
+
+def object_model(path: Path, *, free: bool) -> tuple[Path, str]:
+    """The file to convert for an ``add_object(path=)`` body, and its format.
+
+    A ``free=True`` MJCF is first wrapped in one body with a free joint, as the MuJoCo backend attaches it, so a file
+    of bare world geoms is one rigid body here too (Isaac's importer floats a root link, never a world geom). The
+    wrapped MJCF is written once into the USD cache, keyed on the file's path and bytes. A URDF has one root link.
+    """
+    fmt = model_format(path)
+    if not free or fmt != "mjcf":
+        return path, fmt
+    try:
+        import mujoco
+
+        from ..mujoco.build import robot_spec_xml
+    except ImportError as exc:
+        raise ImportError(
+            f"a free add_object(path=) on Simulation('isaac') wraps the MJCF with mujoco: {hint('mujoco')}"
+        ) from exc
+    digest = hashlib.sha256(str(path).encode() + path.read_bytes()).hexdigest()[:16]  # the wrap holds absolute paths
+    out = usd_cache_dir() / f"{path.stem}-free-{digest}.xml"
+    if not out.is_file():
+        spec = mujoco.MjSpec()
+        spec.modelname = path.stem
+        body = spec.worldbody.add_body(name="body")
+        body.add_freejoint(name="free")
+        spec.attach(mujoco.MjSpec.from_string(robot_spec_xml(str(path))), prefix="model/", frame=body.add_frame())
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_text(spec.to_xml())
+    return out, "mjcf"
 
 
 def convert_to_usd(model_path: Path, fmt: str, *, fix_base: bool) -> Path:
