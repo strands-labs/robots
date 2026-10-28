@@ -5,9 +5,11 @@ from __future__ import annotations
 import contextvars
 import threading
 import time as _time
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
+
+import numpy as np
 
 from ...recording import Episode, NotRecording, episode
 from ...types import Observation
@@ -60,7 +62,8 @@ def run(
         approve_run(robot, RunPlan(robot.id, repr(policy), instruction, hz, seconds, steps))  # before anything acquired
     bound = bind(robot, policy, units)
     try:
-        emit(robot, "run.started", {"policy": repr(bound.policy)})
+        if not start_pose(robot, bound):  # a policy that names where its episodes begin is taken there first
+            emit(robot, "run.started", {"policy": repr(bound.policy)})
         ep = episode(
             record,
             description=robot.description,
@@ -78,6 +81,36 @@ def run(
         release(bound)
     announce(robot, result)
     return result
+
+
+def start_pose(robot: Robot, bound: Bound) -> bool:
+    """Ramp to ``policy.start_pose`` (in the policy's units; a mapping or a full vector) over ``policy.start_seconds``.
+
+    A chunked policy trained from one rest pose plans its first chunk from there; starting a run anywhere else hands
+    it a jump it never saw. An agent's run passes every ramp target through the same chain as its steps.
+    """
+    pose = getattr(bound.policy, "start_pose", None)
+    if pose is None:
+        return False
+    seconds = float(getattr(bound.policy, "start_seconds", 3.0))
+    q = robot.observe(images=False).joints.positions
+    if isinstance(pose, Mapping):
+        keys = robot.description.action_keys
+        unknown = [k for k in pose if k.removesuffix(".pos") not in keys]
+        if unknown:
+            raise KeyError(f"{bound.policy!r}.start_pose names {unknown}; action_keys are {list(keys)}")
+        seen = np.array(q if bound.units is None else bound.units.from_rad(q), dtype=float)  # a writable copy
+        for k, v in pose.items():
+            seen[keys.index(k.removesuffix(".pos"))] = float(v)
+        pose = seen
+    pose = np.asarray(pose, dtype=float).reshape(-1)
+    targets = robot.coerce(pose if bound.units is None else bound.units.to_rad(pose), measured=q)
+    gate = (lambda t: robot.gate(t, approved_run=True, measured=q)) if is_agent() else None
+    emit(robot, "run.started", {"policy": repr(bound.policy), "start_pose": targets.tolist(), "seconds": seconds})
+    from ..reach import reach  # at call time: robot.reach is the layer above this loop (robot.py imports both)
+
+    reach(robot, targets, seconds, gate=gate)
+    return True
 
 
 def _loop(

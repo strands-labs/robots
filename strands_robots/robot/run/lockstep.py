@@ -12,6 +12,7 @@ from ..clock import MONOTONIC
 from ..safety import apply_on_disconnect
 from .bind import Bound, bind, looks, release
 from .common import announce, declared, emit
+from .loop import start_pose
 from .pace import Pacer
 from .result import RunResult, StoppedBy
 from .source import is_agent
@@ -48,7 +49,8 @@ def lockstep(
         for r, p in policies.items():
             bound[r] = bind(r, p, units)
         for r, b in bound.items():
-            emit(r, "run.started", {"policy": repr(b.policy)})
+            if not start_pose(r, b):  # a policy that names where its episodes begin is taken there first
+                emit(r, "run.started", {"policy": repr(b.policy)})
         results = _lockstep(sim, bound, hz, seconds, steps, instruction, stop_event)
     finally:
         for b in bound.values():

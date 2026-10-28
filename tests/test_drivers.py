@@ -86,10 +86,12 @@ CAL = {
 CAL["wrist_roll"]["drive_mode"] = 1
 
 
-def make_driver(cal=CAL, serial=None):
+def make_driver(cal=CAL, serial=None, max_speed=None):
+    """``max_speed=None``: these tests write goals and read them back at once; the speed cap has its own tests."""
     serial = serial or FakeSerial()
     bus = ft.FeetechBus("/dev/fake", serial=serial)
-    return ft.FeetechDriver(Description.load("so101"), port="/dev/fake", calibration=cal, bus=bus), serial
+    drv = ft.FeetechDriver(Description.load("so101"), port="/dev/fake", calibration=cal, bus=bus, max_speed=max_speed)
+    return drv, serial
 
 
 def test_protocol_codec():
@@ -548,6 +550,114 @@ def test_calibrate_with_no_human_at_a_terminal_moves_nothing(monkeypatch):
         d.calibrate(interactive=True)
     assert writes(s) == []  # no torque-off, no homing-offset write
     d.close()
+
+
+def _goal(s, mid):
+    return int.from_bytes(s.regs[mid][ft.REG_GOAL_POSITION : ft.REG_GOAL_POSITION + 2], "little")
+
+
+def test_a_far_goal_is_a_ramp_at_max_speed_by_default_and_trained_motion_is_untouched():
+    """The first write from a read ramps from the measured pose; each write continues from the last goal; a step the
+    cap allows passes as written. Default: 2 rad/s, well below the servo, well above a trained chunk."""
+    from strands_robots.robot.drivers.slew import MAX_SPEED
+
+    clock = [100.0]
+    d, s = make_driver(max_speed=MAX_SPEED)
+    d.slew._now = lambda: clock[0]
+    mid = d.read()["shoulder_pan"]  # 2048: the middle of the calibrated range
+    lo, hi = d.description.limits["shoulder_pan"]
+    far = np.array([hi, mid, mid, mid, mid, 0.5])
+    clock[0] += 1 / 30
+    d.write(far)  # one period after the read: the goal moved by at most 2 rad/s * 1/30 s
+    assert d.read()["shoulder_pan"] == pytest.approx(mid + MAX_SPEED / 30, abs=2e-3)
+    assert d.extras()["slewed"] == 1 and d.extras()["max_speed"] == MAX_SPEED
+    for _ in range(60):  # a run keeps asking for the far goal: it arrives at 2 rad/s, never in one write
+        clock[0] += 1 / 30
+        d.write(far)
+    assert d.read()["shoulder_pan"] == pytest.approx(hi, abs=2e-3)
+    q = d.read().positions.copy()
+    q[0] -= 0.01  # a trained-motion sized step (0.3 rad/s at 30 Hz): written as given, not counted
+    clock[0] += 1 / 30
+    n = d.extras()["slewed"]
+    d.write(q)
+    assert d.read()["shoulder_pan"] == pytest.approx(hi - 0.01, abs=2e-3) and d.extras()["slewed"] == n
+
+
+def test_the_cap_anchors_on_a_read_again_after_torque_goes_off_and_max_speed_none_opts_out():
+    clock = [100.0]
+    d, s = make_driver(max_speed=1.0)
+    d.slew._now = lambda: clock[0]
+    d.read()
+    lo, hi = d.description.limits["shoulder_pan"]
+    clock[0] += 2.0  # a long pause before the write still moves at most half a second's worth (DT_MAX)
+    d.write(np.array([hi, 0, 0, 0, 0, 0.5]))
+    assert d.read()["shoulder_pan"] == pytest.approx(d.counts_to_rad("shoulder_pan", 2048) + 0.5, abs=2e-3)
+    d.torque(False)  # the arm may be moved by hand now
+    s.actual[1] = 1024  # ... and is
+    assert d.read()["shoulder_pan"] == pytest.approx(lo, abs=1e-3)
+    clock[0] += 0.1
+    d.write(np.array([hi, 0, 0, 0, 0, 0.5]))
+    assert d.read()["shoulder_pan"] == pytest.approx(lo + 0.1, abs=2e-3)  # ramps from the NEW read, not the old goal
+    raw, s2 = make_driver(max_speed=None)
+    raw.read()
+    raw.write(np.array([hi, 0, 0, 0, 0, 0.5]))
+    assert raw.read()["shoulder_pan"] == pytest.approx(hi, abs=1e-3) and raw.extras()["max_speed"] is None
+    with pytest.raises(ValueError, match="max_speed must be > 0"):
+        make_driver(max_speed=0)
+
+
+@pytest.mark.parametrize("before", ["nothing", "torque_off_then_moved_by_hand"])
+def test_a_write_with_no_fresh_read_reads_first_so_the_cap_holds(before):
+    """The cap must not depend on the caller reading first: a fresh driver, or one whose torque went off (the arm
+    may have been moved by hand, ``calibrate()`` sweeps with raw reads), anchors on a read taken by the write."""
+    from strands_robots.robot.drivers.slew import MAX_SPEED
+
+    clock = [100.0]
+    d, s = make_driver(max_speed=MAX_SPEED)
+    d.slew._now = lambda: clock[0]
+    lo, hi = d.description.limits["shoulder_pan"]
+    if before != "nothing":
+        d.read()
+        d.torque(False)
+        s.actual[1] = 1024  # moved by hand to the low end; no read follows
+        clock[0] += 5.0
+    present = d.counts_to_rad("shoulder_pan", s.actual[1])
+    d.write(np.array([hi, 0, 0, 0, 0, 0.5]))
+    goal = d.counts_to_rad("shoulder_pan", _goal(s, 1))
+    assert abs(goal - present) <= MAX_SPEED * 0.5 + 2e-3, f"goal {goal:.3f} rad, body at {present:.3f}"
+    assert d.extras()["slewed"] == 1
+
+
+def test_a_hold_and_the_estop_write_the_measured_pose_through_no_cap_even_when_a_joint_is_blocked():
+    """A blocked servo never reaches its goal. Through the cap, ``hold()`` would have moved the goal toward the
+    present pose by only ``max_speed * dt`` and left the servo pushing; it must write Present_Position itself."""
+    from strands_robots.robot.drivers.slew import MAX_SPEED
+
+    class Blocked(FakeSerial):
+        def write(self, data):
+            keep = self.actual[1]
+            super().write(data)
+            self.actual[1] = keep  # servo 1 is held in place: the goal moves, the encoder does not
+
+    clock = [100.0]
+    d, s = make_driver(serial=Blocked(), max_speed=MAX_SPEED)
+    d.slew._now = lambda: clock[0]
+    present = d.read().positions.copy()
+    lo, hi = d.description.limits["shoulder_pan"]
+    far = present.copy()
+    far[0] = hi
+    for _ in range(30):  # one second of a run commanding a far goal: the goal ramps away, the joint stays
+        clock[0] += 1 / 30
+        d.write(far)
+    goal_rad = d.counts_to_rad("shoulder_pan", _goal(s, 1))
+    assert goal_rad - present[0] > 0.9 * MAX_SPEED, "the ramp should have carried the goal ~2 rad away"
+    clock[0] += 1 / 30
+    d.estop()  # -> hold(): Goal_Position := Present_Position, in ONE write
+    assert d.counts_to_rad("shoulder_pan", _goal(s, 1)) == pytest.approx(present[0], abs=2e-3)
+    assert abs(d.counts_to_rad("shoulder_pan", _goal(s, 1)) - d.read()["shoulder_pan"]) < 2e-3  # not pushing
+    clock[0] += 1 / 30
+    d.write(far)  # the cap continues from the held pose, not from the pre-hold goal
+    assert d.counts_to_rad("shoulder_pan", _goal(s, 1)) == pytest.approx(present[0] + MAX_SPEED / 30, abs=2e-3)
 
 
 def test_robot_id_names_the_lerobot_calibration_file_and_an_uncalibrated_arm_warns(tmp_path, monkeypatch):

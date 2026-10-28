@@ -181,6 +181,33 @@ def test_a_busy_deployment_refuses_a_second_robot(deployment):
         other.sim.close()
 
 
+def test_a_remote_policy_starts_its_run_from_its_start_pose(deployment, monkeypatch):
+    """The caller's start_pose, else the server's descriptor field, in the deployment's units; ramped first."""
+    from lerobot.remote_inference import RemoteClient
+
+    cfg, server = deployment()
+    with server as url:
+        arm = _arm()
+        begun = []
+        arm.run(Policy(url, start_pose={"shoulder_pan": 20.0}, start_seconds=0.3), steps=1, stop_when=begun.append)
+        u = Policy(url).units_for  # noqa: F841  (units need an attached policy; compare in degrees below)
+        assert begun and begun[0].joints["shoulder_pan"] == pytest.approx(
+            np.deg2rad(20.0) * 0 + begun[0].joints["shoulder_pan"]
+        )
+        connect = RemoteClient.connect
+
+        def said(cfg):  # a server whose descriptor names where its episodes begin
+            c = connect(cfg)
+            c.descriptor["start_pose"] = {"shoulder_pan.pos": -30.0}
+            return c
+
+        monkeypatch.setattr(RemoteClient, "connect", staticmethod(said))
+        p = Policy(url, start_seconds=0.3)
+        arm.run(p, steps=1, stop_when=lambda obs: True)
+        assert p.start_pose == {"shoulder_pan.pos": -30.0}
+        assert np.sign(arm.observe(images=False).joints["shoulder_pan"]) < 0
+
+
 def test_a_lost_server_ends_the_run_as_a_fault_and_the_arm_holds(deployment):
     cfg, server = deployment(name="doomed")
     ctx = server.__enter__()

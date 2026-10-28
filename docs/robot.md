@@ -33,7 +33,15 @@ its actuators, `describe()` is JSON-safe, `close()` removes it from its world (a
 `act(action, seconds=)` reaches a pose instead of taking one step toward it: the targets ramp from the
 measured pose to `action` at 30 Hz, settle there, and the returned `Observation` is the pose reached. Through
 an agent tool (`confirm_act`) the operator gate is asked once, for the target. To stand
-still, call `hold()`; there is no `"hold"` policy.
+still, call `hold()`; there is no `"hold"` policy. On a Feetech arm every write is also capped at `max_speed`
+(default 2 rad/s, `Robot(..., max_speed=None)` to opt out): a goal 50° away becomes a ramp, a trained chunk's
+steps pass as written, and `extras()["slewed"]` counts the writes the cap shortened. The first write after
+construction or after torque goes off reads the arm first, so the cap never depends on the caller having read.
+
+A policy that names where its episodes begin (`start_pose`, in its own units; `Policy("zenoh://…",
+start_pose={"shoulder_pan": 20.0})`, or the server's own word) is taken there first: `run()` ramps to it over
+`start_seconds` (default 3) before step one, so a chunked model plans its first chunk from the pose it was trained
+from instead of from wherever the arm was left.
 
 `run(policy, hz=, seconds=|steps=|stop_when=)` takes a `Policy` subclass, anything with `act(obs)` and
 `reset()`, or a bare callable (it receives `instruction=` when it declares it). In a world, `hz` sets how
