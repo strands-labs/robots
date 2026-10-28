@@ -19,7 +19,8 @@ OnMiss = Literal["skip", "fault"]
 
 
 class Pacer:
-    """``start()`` before observing, ``before_write()`` before the write, ``after_write()`` after it."""
+    """``start()`` before observing, ``before_write()`` before the write, ``after_write()`` after it — or ``hold()``
+    instead of both when the policy held (returned None): a deliberate hold is a tick, never a miss."""
 
     def __init__(
         self,
@@ -71,6 +72,15 @@ class Pacer:
             return self.on_miss != "fault"
         self._next = max(deadline, w)  # a held write past its deadline moves the grid too: lateness is measured
         return True  # from where the writes are, never from a grid they left behind one sleep overshoot at a time
+
+    def hold(self) -> None:
+        """This tick wrote nothing on purpose: the grid moves one period on, no write, no miss.
+
+        A hold that outlasted its period (the chunk took longer than a tick to land) re-phases the grid onto now:
+        the time a run spends deliberately waiting is not lateness, so the write that ends the wait is not late.
+        """
+        start = self._now() if self._start is None else self._start
+        self._next = max(start + self.dt, self._now())
 
     def span(self) -> float:
         """The time the body was commanded: first write to one period after the last (n * dt with no miss)."""

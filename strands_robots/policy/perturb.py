@@ -48,14 +48,17 @@ class Perturb(Policy):
         self._rng = np.random.default_rng(self.seed)
         self._queue: deque[Action] = deque()
 
-    def act(self, obs: Observation, *, instruction: str | None = None) -> Action:
+    def act(self, obs: Observation, *, instruction: str | None = None) -> Action | None:
         seen = obs
         if self.joint_noise:
             seen = seen.with_joints(seen.joints.positions + self._rng.normal(0.0, self.joint_noise, len(seen.joints)))
         if self.image_noise and seen.images:
             images = {k: self._noisy(v) for k, v in seen.images.items()}
             seen = Observation(seen.t, seen.joints, seen.pose, images, seen.extras)
-        self._queue.append(self.policy.act(seen, instruction=instruction))
+        action = self.policy.act(seen, instruction=instruction)
+        if action is None:  # the wrapped policy holds (waiting for its server): a hold is not an action to delay
+            return None
+        self._queue.append(action)
         if len(self._queue) > self.action_delay:
             return self._queue.popleft()
         return np.array(obs.joints.positions)  # a hold: the measured pose, in the units the loop hands the policy

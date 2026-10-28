@@ -147,3 +147,35 @@ carries no messaging charge and no subscriber ever sees.
 2. `setup_tenant` once per tenant, `register` (or `claim`) once per robot; the files land in `~/.strands/iot/<id>/`.
 3. Operators: attach `operator_policy(tenant, things=[...])` (the tenant's device ids) to their IAM identity; `iot:RetainPublish` is what lets a tenant e-stop be retained.
 4. Rules: one long-lived role with `iot:Publish` (republish), `sns:Publish`, `s3:PutObject`/`timestream:WriteRecords` as used.
+
+## At the edge: Greengrass v2 and Kinesis Video Streams
+
+{{drawing:d19_edge}}
+
+On a core device the mesh runs as a Greengrass v2 component. `greengrass.recipe()` turns the process that mounts
+robots into `com.strands.robots`; `greengrass.deployment()` targets the tenant's thing group (the fleet) and
+`greengrass.deploy()` is the fleet update. The component's `main()` mounts the configured robots on one `Mesh` and
+stays up until SIGTERM. Robot to robot traffic stays on zenoh, so the mesh does not depend on the cloud link
+(measured on an ec2 L40S box: invoke `act` p50 0.78 ms with the cloud link cut for 45 s; a local deployment reaches
+RUNNING in 11.4 s, a cloud deployment of five components in 48 s).
+
+```python
+<!-- test: skip, needs a provisioned Greengrass core and an S3 artifact -->
+from strands_robots.mesh.iot import greengrass
+
+r = greengrass.recipe(
+    "1.0.0",
+    "s3://bucket/strands_robots-1.0.0-py3-none-any.whl",
+    tenant="lab",
+    robots=[{"name": "so101", "device_id": "arm-1"}],
+)
+greengrass.deploy(gg, "arn:aws:iot:us-west-2:123456789012:thinggroup/strands-lab", "1.0.0")
+```
+
+Each camera sensor becomes one KVS stream and one WebRTC signaling channel named
+`strands-<tenant>-<device>-<camera>`. `kvs.camera_entries()` writes them into the manifest shadow so a dashboard
+finds the live view of a camera it has never met, and `kvs.publish_cameras()` feeds each camera into `kvssink` on
+its own thread through the measured GStreamer `pipeline()` (640 by 480 at 15 fps, `nvh264enc` fragment-head to
+consumer p50 36 ms). There is no `PutMedia` in boto3 and a hand-rolled chunked POST has no ACK or backpressure, so
+without the `kvssink` plugin `publish_cameras()` refuses by name rather than pretend. `import strands_robots.mesh`
+still loads no boto3, awsiot or gi.

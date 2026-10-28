@@ -2,7 +2,7 @@
 ``iot://``. ``Mesh.mount(robot, iot=IotOptions(...))`` turns it on per device. ``import strands_robots.mesh`` loads
 only stdlib modules from here; ``awsiot``, ``boto3``, and ``cryptography`` are imported inside the functions
 that need them (``pip install 'strands-robots[iot]'``). Modules: ``shadow``, ``rules``, ``policy``, ``provision``,
-``claim``, ``registry``, ``lifecycle``, ``direct``, ``options``."""
+``claim``, ``registry``, ``lifecycle``, ``direct``, ``greengrass``, ``kvs``, ``options``."""
 
 from __future__ import annotations
 

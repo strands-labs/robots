@@ -18,6 +18,8 @@ class RunResult:
     span (first write to one period after the last), so ``hz_achieved == hz_target`` exactly when
     ``deadline_misses == 0``. A miss is a paced write that landed after the next tick should have started
     (re-phased, never caught up); ``worst_late_s`` is the worst. ``wall_seconds`` is the host's time for the run.
+    A tick whose policy returned ``None`` is a ``hold``: the body kept its last target, nothing was written, the grid
+    moved on — a policy waiting for its server (``execution="sequential"``) holds on purpose, and that is not a miss.
     """
 
     steps: int
@@ -31,3 +33,5 @@ class RunResult:
     deadline_misses: int = 0
     worst_late_s: float = 0.0
     wall_seconds: float = 0.0
+    holds: int = 0  # ticks the policy chose to hold (``act`` returned None): no write, never a miss
+    held_seconds: float = 0.0  # those ticks' share of the commanded span (holds / hz_target)

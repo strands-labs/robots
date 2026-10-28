@@ -26,6 +26,7 @@ class Tick:
     targets: np.ndarray | None = None
     ended: Literal["stop_when", "fault", "estop"] | None = None
     fault: str | None = None
+    held: bool = False  # the policy returned None: the body kept its last target, nothing was written
 
 
 def tick(
@@ -41,6 +42,8 @@ def tick(
 ) -> Tick:
     """observe (the only body read) -> stop_when -> policy (joints it leaves out hold that read) -> write.
 
+    A policy that returns ``None`` holds: no gate, no write (``Tick.held``); a world steps its period anyway.
+
     ``gated`` (an agent's run) passes the targets through the safety chain and the operator gate first; under
     ``from_agent(confirmed=True)`` the operator step is pre-satisfied, every other step still runs.
     ``steps=None`` in lockstep: the world steps once for everyone after every robot wrote.
@@ -52,6 +55,9 @@ def tick(
         targets = decide(
             robot, bound, obs, instruction, clip=not gated
         )  # an agent run is refused out of range, not clipped
+        if targets is None:  # a hold: the body keeps its last target; a world still advances its period
+            idle(robot, steps)
+            return Tick(obs, held=True)
         if gated and is_confirmed():  # a dashboard run: the operator said yes once, for these targets
             targets = robot.gate(targets, confirmed=True)
         elif gated:  # an agent run the operator approved as a whole (K6): the chain every step, no per-tick ask
@@ -68,6 +74,18 @@ def tick(
             return Tick(obs, ended="fault", fault=str(e))
         raise  # a dashboard run (confirmed once) re-raises loudly, so the page sees the refusal as an error
     return Tick(obs, targets)
+
+
+def idle(robot: Robot, steps: int | None) -> None:
+    """Advance the world one period with NO write (a hold): simulated actuators keep their last target."""
+    if robot.sim is not None:
+        with robot._lock:
+            if steps is None:
+                robot.sim.control_step()
+            else:
+                robot.sim.step(steps)
+    elif robot.twin is not None and robot.twin.sim is not None:
+        robot.twin.sim.control_step()
 
 
 def stopped(robot: Robot, stops0: int) -> bool:

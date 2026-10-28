@@ -53,6 +53,8 @@ def run(
     ``push=True`` (an ``hf://`` target only) then uploads it. Nothing leaves the machine otherwise.
     A paced body (hardware, or ``realtime``) spaces its writes at least one period apart; a write past the next
     tick's start is a deadline miss, counted and re-phased (``on_miss="skip"``) or the end (``"fault"``).
+    A policy that returns ``None`` holds that tick: nothing is written, the body keeps its last target, the tick
+    counts (``RunResult.holds``) and is never a miss — how a sequential remote policy waits for its chunk.
     """
     if seconds is None and steps is None and stop_when is None:
         raise ValueError("run needs seconds=, steps= or stop_when=")
@@ -130,7 +132,8 @@ def _loop(
     dt = 1.0 / hz
     sim_steps = max(1, round(dt / robot.sim.physics.timestep)) if robot.sim is not None else None
     max_steps = steps if steps is not None else (int(round(seconds * hz)) if seconds is not None else None)
-    n, stops0, fault = 0, robot.estop_latch.count, None
+    n, holds, stops0, fault = 0, 0, robot.estop_latch.count, None
+    last: np.ndarray | None = None  # the latest written targets: what a held tick records as its action
     why: StoppedBy = "steps"
     always = robot.sim is None or stop_when is not None or ep.wants_images  # a recorded step keeps its cameras
     pacer = None
@@ -164,8 +167,14 @@ def _loop(
         if step.ended is not None:
             why, fault = step.ended, step.fault
             break
+        if step.held:  # the policy held: the body kept ``last``; the dataset keeps its frame rate; no miss
+            ep.add(step.obs, step.obs.joints.positions if last is None else last)
+            n, holds = n + 1, holds + 1
+            if pacer is not None:
+                pacer.hold()
+            continue
         ep.add(step.obs, step.targets)  # after the write: a step the body refused is not in the dataset
-        n += 1
+        n, last = n + 1, step.targets
         if pacer is not None and not pacer.after_write():
             why, fault = "deadline", f"tick {n} ended {pacer.worst_late * 1e3:.1f} ms past its deadline"
             break
@@ -175,11 +184,13 @@ def _loop(
         apply_on_disconnect(robot)
     final = robot.observe(images=False)
     span = final.t - t0 if robot.sim is not None else (pacer.span() if pacer is not None else 0.0)
+    if robot.sim is None and pacer is not None and holds and n > holds:  # held ticks are part of the commanded span
+        span = max(span, n * dt)
     recorded = ep.close(why)
     misses, late = (pacer.misses, pacer.worst_late) if pacer is not None else (0, 0.0)
     wall = _time.monotonic() - wall0
     achieved = n / span if span > 0 else 0.0
-    return RunResult(n, span, hz, achieved, why, recorded, final, fault, misses, late, wall)
+    return RunResult(n, span, hz, achieved, why, recorded, final, fault, misses, late, wall, holds, holds * dt)
 
 
 def start(

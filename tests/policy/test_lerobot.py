@@ -58,10 +58,11 @@ def test_a_missing_camera_is_refused_by_name_before_a_session(deployment):
         assert r.stopped_by == "steps"
 
 
-def test_a_server_drives_the_arm_and_matches_the_local_checkpoint(deployment, tiny_act):
+@pytest.mark.parametrize("execution", ["splice", "sequential"])
+def test_a_server_drives_the_arm_and_matches_the_local_checkpoint(deployment, tiny_act, execution):
     cfg, server = deployment()
     with server as url:
-        p = Policy(url, chunk_merge="append")  # append: the first served action is chunk[0] of its frame
+        p = Policy(url, execution=execution, chunk_merge="append")  # append: the first served action is chunk[0]
         assert isinstance(p, ZenohPolicy)
         assert p.describe()["semantics"] == cfg.semantics
         frames, actions = [], []
@@ -70,7 +71,7 @@ def test_a_server_drives_the_arm_and_matches_the_local_checkpoint(deployment, ti
         def spy(self, obs, *, instruction=None):
             frames.append(self.contract.frame(obs))
             out = act(self, obs, instruction=instruction)
-            actions.append(np.array(out))
+            actions.append(None if out is None else np.array(out))
             return out
 
         ZenohPolicy.act = spy
@@ -84,10 +85,19 @@ def test_a_server_drives_the_arm_and_matches_the_local_checkpoint(deployment, ti
         assert r.stopped_by == "steps" and r.steps == 60 and r.fault is None
         assert r.hz_target == 30.0 and 1.8 < wall < 4.0  # paced in wall time: LeRobot's clock
         assert _inside_limits(arm, r.final.joints.positions)
+        assert p.execution == execution and r.deadline_misses == 0
+        if execution == "sequential":  # the startup wait and every refill are holds, not misses
+            assert r.holds >= 1 and r.holds == sum(a is None for a in actions) and len(p.calls) >= 2
+            assert r.held_seconds == pytest.approx(r.holds / 30.0)
+        else:
+            assert r.holds == 0 and all(a is not None for a in actions)
         # parity: the first served action equals the local checkpoint's first action on one of the frames sent
         local = LeRobotPolicy(tiny_act, device="cpu")
         local.attach(arm)
-        first = next(i for i, a in enumerate(actions) if not np.allclose(a, actions[0]))  # past the startup hold
+        if execution == "sequential":  # the first row ever served follows the holds
+            first = next(i for i, a in enumerate(actions) if a is not None)
+        else:  # past the startup hold: the measured pose, returned until the engine has a row
+            first = next(i for i, a in enumerate(actions) if not np.allclose(a, actions[0]))
         best = min(
             np.abs(
                 local.contract.to_keys_chunk(local._runner.predict(_snap(f)).canonical_actions.numpy())[0]
@@ -112,12 +122,65 @@ def test_a_reused_zenoh_policy_sends_the_instruction_on_every_run(deployment, mo
     monkeypatch.setattr(RemoteInferenceEngine, "set_task", lambda self, t: sent.append(t) or set_task(self, t))
     cfg, server = deployment()
     with server as url:
-        arm, p = _arm(), Policy(url)
+        arm, p = _arm(), Policy(url, execution="splice")
         for _ in range(2):
             arm.run(p, steps=3, instruction="pick the cube")
         assert sent == ["pick the cube", "pick the cube"]
         with pytest.raises(ValueError, match="refused the instruction"):
             arm.run(p, steps=3, instruction="x" * 100_000)
+
+
+def test_a_sequential_session_sends_the_instruction_with_every_chunk(deployment, monkeypatch):
+    from lerobot.remote_inference import RemoteClient
+
+    tasks = []
+    infer = RemoteClient.infer
+    monkeypatch.setattr(
+        RemoteClient, "infer", lambda self, req, **kw: tasks.append(req.observation.task) or infer(self, req, **kw)
+    )
+    cfg, server = deployment()
+    with server as url:
+        arm, p = _arm(), Policy(url)  # auto: a chunk-only deployment with no RTC contract runs sequentially
+        for _ in range(2):
+            r = arm.run(p, seconds=0.5, instruction="pick the cube")
+            assert r.holds >= 1  # it waited for its chunk; that a hold is never a miss is pinned in tests/test_kernel
+        assert p.execution == "sequential" and tasks and set(tasks) == {"pick the cube"}
+        assert all(c["instruction"] == "pick the cube" and c["rows"] >= 1 for c in p.calls)
+        with pytest.raises(ValueError, match="refused the instruction"):
+            arm.run(p, steps=3, instruction="x" * 100_000)
+
+
+def test_a_sequential_session_asks_only_when_its_queue_is_empty(deployment, monkeypatch):
+    from lerobot.remote_inference import RemoteClient
+
+    requests = []
+    infer = RemoteClient.infer
+    monkeypatch.setattr(RemoteClient, "infer", lambda self, req, **kw: requests.append(req) or infer(self, req, **kw))
+    cfg, server = deployment()
+    with server as url:
+        arm, p = _arm(), Policy(url, execution="sequential")
+        r = arm.run(p, steps=45)  # tiny ACT serves 10-row chunks at 30 Hz
+        played = 45 - r.holds  # the tick that sends the frame holds, and so does every tick until its reply lands
+        assert r.steps == 45 and r.holds >= len(requests) and len(p.calls) == -(-played // 10)
+        # That a hold is never booked as a miss is pinned on a virtual clock in tests/test_kernel.py (k3): this
+        # server runs IN THIS PROCESS, so its inference competes with the loop for the GIL and the ticks here are
+        # genuinely late on a loaded host — a miss count would measure the machine, not the queue discipline.
+        assert len(requests) - len(p.calls) <= 1 and all(c["rows"] == 10 for c in p.calls)  # the last may be in flight
+        assert all(req.continuation.canonical_actions is None for req in requests)  # never a splice: empty queue
+        assert all(req.delay == 0 for req in requests)
+
+
+def test_execution_is_the_servers_word_then_the_contracts():
+    from strands_robots.policy.lerobot.remote import execution_of
+
+    plain = {"capabilities": {"rtc_horizon": 0}, "execution_contracts": ["chunk_v1"]}
+    assert execution_of(plain, "auto") == "sequential"
+    assert execution_of({**plain, "execution": "splice"}, "auto") == "splice"
+    assert execution_of({"capabilities": {"rtc_horizon": 8}}, "auto") == "splice"
+    assert execution_of({"execution_contracts": ["rtc_model_space_v1"]}, "auto") == "splice"
+    assert execution_of({**plain, "execution": "splice"}, "sequential") == "sequential"
+    with pytest.raises(ValueError, match="execution must be one of"):
+        ZenohPolicy(endpoint="tcp/h:1", deployment="d", execution="rtc")
 
 
 def test_an_untrained_instruction_is_refused_naming_the_trained_ones(deployment, monkeypatch):

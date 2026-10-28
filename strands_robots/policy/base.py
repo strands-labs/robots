@@ -11,7 +11,7 @@ from .requirements import Requirements
 
 @runtime_checkable
 class PolicyLike(Protocol):
-    def act(self, obs: Observation, *, instruction: str | None = None) -> Action: ...
+    def act(self, obs: Observation, *, instruction: str | None = None) -> Action | None: ...
 
     def reset(self) -> None: ...
 
@@ -50,7 +50,9 @@ class Policy(metaclass=_Factory):
         if declared is not None and declared not in SCHEMES:
             raise ValueError(f"policy {cls.__name__} declares units {declared!r}; known: {', '.join(sorted(SCHEMES))}")
 
-    def act(self, obs: Observation, *, instruction: str | None = None) -> Action:
+    def act(self, obs: Observation, *, instruction: str | None = None) -> Action | None:
+        """The action for this observation, or ``None`` to hold: the run loop writes nothing that tick, the body
+        keeps its last target, and the tick is a ``RunResult.holds`` entry — never a deadline miss."""
         raise NotImplementedError
 
     def reset(self) -> None:
