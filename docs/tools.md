@@ -28,6 +28,12 @@ Nobody writes these by hand. They're generated from the robot's manifest and met
 new joint shows up in the tool automatically. A `policy` argument lists the shipped presets (`holosoma`,
 `microduck`) and every spec form an agent can send, so its first `run` names a real policy.
 
+A policy the developer built — a remote one included — is handed to the agent as a **handle**:
+`arm.tool(policies=[ttt])` is the same tool with `run(policy="ttt", instruction=..., seconds=...)` resolving to that
+object (named by `.name`, a remote policy's deployment, or the keys of a dict; with exactly one handle, `policy` may be
+left out). The model never types a network address — `policy="zenoh://..."` from a model stays refused — and on a real
+arm the run still goes through `approve=` once and the safety chain every step.
+
 What an agent **can't** do: approve its own run on a real robot (the operator says yes once, to the whole plan),
 resume after an e-stop, calibrate (that turns the torque off), or plug in hardware through `sim.tool`. It *can* hit
 e-stop. That one's always allowed.

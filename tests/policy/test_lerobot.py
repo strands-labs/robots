@@ -120,11 +120,43 @@ def test_a_reused_zenoh_policy_sends_the_instruction_on_every_run(deployment, mo
             arm.run(p, steps=3, instruction="x" * 100_000)
 
 
-def test_unknown_semantics_are_refused_naming_the_table(deployment):
+def test_an_untrained_instruction_is_refused_naming_the_trained_ones(deployment, monkeypatch):
+    """The caller's ``tasks``, else the server's descriptor ``tasks``; nothing is sent for a string never trained."""
+    from lerobot.remote_inference import RemoteClient
+
+    cfg, server = deployment()
+    with server as url:
+        arm = _arm()
+        p = Policy(url, tasks=["pick up the x piece and place it on the center cell", "clean up the board"])
+        assert p.tasks == ("pick up the x piece and place it on the center cell", "clean up the board")
+        with pytest.raises(ValueError, match=r"refused the instruction 'juggle'.*2 it was trained on: 'pick up the x"):
+            arm.run(p, steps=3, instruction="juggle")
+        assert arm.run(p, steps=3, instruction="clean up the board").steps == 3
+        assert arm.run(p, steps=3).steps == 3  # no instruction: nothing to refuse
+        connect = RemoteClient.connect
+
+        def said(cfg):  # a server whose descriptor names its tasks
+            c = connect(cfg)
+            c.descriptor["tasks"] = ["wave"]
+            return c
+
+        monkeypatch.setattr(RemoteClient, "connect", staticmethod(said))
+        q = Policy(url)
+        with pytest.raises(ValueError, match=r"not one of the 1 it was trained on: 'wave'"):
+            arm.run(q, steps=3, instruction="bow")
+        assert q.tasks == ("wave",) and arm.run(q, steps=3, instruction="wave").steps == 3
+        assert Policy(url, tasks=[]).tasks == () and arm.run(Policy(url, tasks=[]), steps=1, instruction="x").steps == 1
+
+
+def test_unknown_semantics_are_derived_from_the_robots_convention_with_a_warning(deployment):
+    """A server labels its units as it likes; the deployment already matched this robot joint by joint, so an
+    unknown label is read as the robot's own LeRobot convention (and what the label's words say), not refused."""
     cfg, server = deployment(semantics="furlongs-v1")
     with server as url:
-        with pytest.raises(ValueError, match=r"unknown LeRobot semantics 'furlongs-v1'.*semantics.json"):
-            _arm().run(Policy(url), seconds=1)
+        p = Policy(url)
+        with pytest.warns(UserWarning, match=r"'furlongs-v1' is not in strands_robots/units/semantics.json; read as"):
+            r = _arm().run(p, steps=3)
+        assert r.steps == 3 and r.fault is None and p.describe()["semantics"] == "furlongs-v1"  # the label is theirs
 
 
 def test_a_lerobot_normalized_deployment_attaches_and_runs(deployment):

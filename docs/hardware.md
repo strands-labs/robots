@@ -41,7 +41,11 @@ no public path fails the pass-through test. A robot in a world has no bus, so it
 `Robot("so101", baud=...)` with no `port=` is refused the same way. Hardware camera specs are
 `cameras={"wrist": {"index": 1, "width": 640, "height": 480, "fps": 30}}` (LeRobot's `OpenCVCameraConfig`
 field names); a bare index takes the device default, and a camera that delivers another size than asked is
-refused at the first frame, because every checkpoint is trained at one size.
+refused at the first frame, because every checkpoint is trained at one size. Better than an index — which shifts
+whenever a phone or a screen capture joins the machine — is the device's own name: `cameras={"front": "Logi 4K",
+"wrist": "USB2.0_CAM1"}` resolves against what the OS lists (AVFoundation on macOS, V4L2 on Linux; a name that
+matches nothing or two devices is refused listing them), and a camera with no declared size takes the policy's
+own at `run()`. The dict's keys are the policy's image keys; there is nothing to rename.
 
 {{drawing:d17_driver_options}}
 

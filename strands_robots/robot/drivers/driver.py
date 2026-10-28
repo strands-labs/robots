@@ -71,7 +71,11 @@ def make_driver(
     cameras: Mapping[str, Any] | None,
     calibration: Any = None,
     options: Mapping[str, Any] | None = None,
+    id: str | None = None,
 ) -> Driver:
+    """``id`` is the Robot's id; a driver that takes ``robot_id`` (LeRobot's ``--robot.id``, the calibration file's
+    name) gets it unless the caller named one, so ``Robot("so101", port=…, id="blue_follower")`` reads
+    ``so_follower/blue_follower.json`` instead of silently running uncalibrated."""
     if driver is not None and not isinstance(driver, str):
         if not isinstance(driver, Driver):
             raise TypeError(
@@ -98,6 +102,8 @@ def make_driver(
     cls = getattr(importlib.import_module(mod_name), cls_name)
     kw = {**(options or {}), **({} if calibration is None else {"calibration": calibration})}
     accepted = driver_parameters(cls)
+    if id is not None and id != description.name and "robot_id" in accepted:
+        kw.setdefault("robot_id", id)
     unknown = sorted(set(kw) - set(accepted))
     if unknown:  # D3/D4: a misspelt option is an error naming what the driver takes, never silently dropped
         raise TypeError(f"the {kind} driver takes no {unknown}; it takes {sorted(accepted)}")

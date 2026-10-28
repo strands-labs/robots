@@ -6,6 +6,7 @@ import json
 import math
 import sys
 import time
+import warnings
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
@@ -61,6 +62,14 @@ class FeetechDriver:
         self.calibration_source: str | None = None
         self.calibration_looked: list[str] = []
         self._load_calibration(calibration, robot_id)
+        if self.calibration is None:
+            warnings.warn(
+                f"{description.name} on {self.bus.port}: no calibration found (looked at "
+                f"{', '.join(self.calibration_looked) or 'nothing'}); joints read as a full uncalibrated turn and "
+                f"LeRobot degrees will not match the arm's own. Pass calibration=, robot_id= (Robot(id=)) or run "
+                f"calibrate().",
+                stacklevel=3,
+            )
         missing = [i for i in self.ids if not self.bus.ping(i)]
         if missing:
             raise ConnectionError(f"{description.name} on {self.bus.port}: no reply from servo id(s) {missing}")

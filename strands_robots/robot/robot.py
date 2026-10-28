@@ -83,7 +83,7 @@ class Robot(DeviceVerbs):
 
             self.id = id or self.name
             hw = {"port": port, "driver": driver, "cameras": cameras, "calibration": calibration}
-            self._body = make_driver(self.description, **hw, options=driver_options)
+            self._body = make_driver(self.description, **hw, options=driver_options, id=self.id)
             self.supports_position_hold = position_hold_of(self.description, self._body)
             if twin:
                 self.twin = Robot(

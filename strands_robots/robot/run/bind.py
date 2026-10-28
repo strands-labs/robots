@@ -89,6 +89,9 @@ def _ready(robot: Robot, pol: Any, units: str | None) -> Bound:
         need = req()
         if not isinstance(need, Requirements):
             raise TypeError(f"{pol!r}.requirements() must return Requirements, got {need!r}")
+        cameras = getattr(robot.body, "cameras", None)
+        if cameras is not None and need.images:  # a hardware camera that declared no size takes the policy's
+            cameras.fit(need.images)
         need.check(robot.observe(), who=repr(pol))
     pol.reset()
     return Bound(pol, conv, None if hz is None else float(hz), bool(realtime))

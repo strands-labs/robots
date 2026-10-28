@@ -5,19 +5,41 @@ from __future__ import annotations
 import re
 from pathlib import Path
 from typing import Any
-from urllib.parse import parse_qsl, urlparse
+from urllib.parse import parse_qsl
 
 _REPO = re.compile(r"^[A-Za-z0-9][\w.-]*/[\w.-]+$")
 _PRESET = re.compile(r"^[a-z][a-z0-9_]*(\?[^\s/]*)?$")
 FORMS = (
     "<preset>[?k=v&k2=v2]            a named ONNX preset, run in-process",
-    "zenoh://host:port/<deployment>   a lerobot-policy-server",
+    "zenoh://host:port/<deployment>   a lerobot-policy-server (tcp); zenoh://tls/host:port/<deployment> any zenoh link",
     "<owner>/<repo>                   a LeRobot checkpoint on the Hugging Face Hub, run in-process",
     "<dir with config.json>           a local LeRobot checkpoint, run in-process",
     "<dir with meta/info.json>[?episode=n]   a recorded LeRobot dataset, one episode replayed",
     "<callable>                       f(obs) -> action",
 )
 HOLD_HINT = "use robot.hold() to stand still, robot.act(..., seconds=) to reach a pose"
+LINKS = ("tcp", "tls", "quic", "ws", "wss", "udp")  # zenoh locator protocols a lerobot-policy-server may listen on
+ZENOH_FORM = "zenoh://[<link>/]host:port/<deployment>, link one of " + ", ".join(LINKS) + " (default tcp)"
+
+
+def zenoh_locator(spec: str) -> tuple[str, str]:
+    """``zenoh://host:7447/d`` -> (``tcp/host:7447``, ``d``); ``zenoh://tls/host:7447/d`` -> (``tls/host:7447``, ``d``).
+
+    The endpoint is LeRobot's own zenoh locator (``<link>/host:port``), so a lease that says ``tls/…`` (a TLS
+    router on the internet) is written as it was given; ``zenoh+tls://host:7447/d`` spells the same thing.
+    """
+    scheme, _, rest = spec.partition("://")
+    link = scheme.removeprefix("zenoh").removeprefix("+") or "tcp"
+    parts = rest.split("/")
+    if parts and parts[0] in LINKS and ":" not in parts[0]:  # zenoh://tls/host:port/<deployment>
+        link, parts = parts[0], parts[1:]
+    if link not in LINKS or len(parts) != 2 or not all(parts):
+        raise ValueError(f"{spec!r}: expected {ZENOH_FORM}")
+    hostport, deployment = parts
+    host, _, port = hostport.rpartition(":")
+    if not host or not port.isdigit():
+        raise ValueError(f"{spec!r}: expected {ZENOH_FORM}")
+    return f"{link}/{hostport}", deployment
 
 
 def make(spec: Any, **kw: Any) -> Any:
@@ -28,14 +50,11 @@ def make(spec: Any, **kw: Any) -> Any:
             return CallablePolicy(spec)
         raise TypeError(f"Policy({type(spec).__name__}) is not a policy spec; forms:\n  " + "\n  ".join(FORMS))
     s = str(spec)
-    if s.startswith("zenoh://"):
+    if s.startswith("zenoh://") or s.startswith("zenoh+"):
         from .lerobot import ZenohPolicy
 
-        u = urlparse(s)
-        deployment = u.path.strip("/")
-        if not u.hostname or not u.port or not deployment or "/" in deployment:
-            raise ValueError(f"{s!r}: expected zenoh://host:port/<deployment>")
-        return ZenohPolicy(endpoint=f"tcp/{u.hostname}:{u.port}", deployment=deployment, **kw)
+        endpoint, deployment = zenoh_locator(s)
+        return ZenohPolicy(endpoint=endpoint, deployment=deployment, **kw)
     if s == "hold":  # a run of it moved nothing, yet an agent read the word as "reach a pose": no such spec
         raise ValueError(f"Policy({s!r}): not a policy; {HOLD_HINT}")
     path, _, query = s.partition("?")

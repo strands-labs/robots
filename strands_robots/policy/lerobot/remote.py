@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import time
+from collections.abc import Sequence
 from typing import TYPE_CHECKING, Any
 
 import numpy as np
@@ -12,6 +13,7 @@ from ...units import Units
 from ..base import PolicyFault
 from ..requirements import Requirements
 from .contract import Contract, lerobot
+from .link import wan_defaults
 
 if TYPE_CHECKING:
     from ...description import Description
@@ -30,8 +32,13 @@ class ZenohPolicy:
     realtime = True  # LeRobot ages observations and paces chunks on time.monotonic()
     requires_position_hold = True  # LeRobot admits only a robot that holds between motor ticks
 
-    def __init__(self, *, endpoint: str, deployment: str, **settings: Any) -> None:
+    def __init__(self, *, endpoint: str, deployment: str, tasks: Sequence[str] | None = None, **settings: Any) -> None:
+        """``tasks``: the instructions the deployment was trained on; ``run(instruction=)`` with any other string is
+        refused naming them, before the first frame goes out. Left out, the server's descriptor may say (``tasks``);
+        else any instruction is sent."""
         self.endpoint, self.deployment, self.settings = endpoint, deployment, settings
+        self._tasks = None if tasks is None else tuple(str(t) for t in tasks)
+        self.tasks: tuple[str, ...] = self._tasks or ()
         self.contract: Contract | None = None
         self.hz: float | None = None
         self._engine: Any = None
@@ -47,11 +54,12 @@ class ZenohPolicy:
         finally:
             client.close()
 
-    def _config(self, semantics: str = "?") -> Any:
+    def _config(self, semantics: str = "?", descriptor: dict[str, Any] | None = None) -> Any:
         from lerobot.inference import RemoteInferenceConfig
 
-        blend = self.settings.get("blend_components")
-        kw = dict(self.settings, blend_components=[f"{k}.pos" if "." not in k else k for k in blend or []])
+        kw = wan_defaults(self.endpoint, self.settings, descriptor)
+        blend = kw.get("blend_components")
+        kw["blend_components"] = [f"{k}.pos" if "." not in k else k for k in blend or []]
         return RemoteInferenceConfig(endpoint=self.endpoint, deployment=self.deployment, semantics=semantics, **kw)
 
     def _connect(self) -> Any:
@@ -69,7 +77,7 @@ class ZenohPolicy:
             contract.check()
             contract.units()  # unknown semantics -> refused by name, before a session exists
             contract.requirements().check(robot.observe(), who=repr(self))
-            config = self._config(sem)
+            config = self._config(sem, client.descriptor)  # the hello's limits widen the action timeout
             client.config = config
             client.admit(
                 features=caps.features,
@@ -85,6 +93,9 @@ class ZenohPolicy:
         from lerobot.utils.action_interpolator import ActionInterpolator
 
         self.contract, self._client, self.hz = contract, client, 1.0 / caps.action_interval
+        if self._tasks is None:  # the server's word on what it was trained to do, when it has one
+            said = client.descriptor.get("tasks")
+            self.tasks = tuple(str(t) for t in said) if isinstance(said, list | tuple) else ()
         self._engine = RemoteInferenceEngine(client, config, task="")
         self._interp = ActionInterpolator(multiplier=1)
         self._engine.start()
@@ -109,6 +120,15 @@ class ZenohPolicy:
     def requirements(self) -> Requirements:
         return self.contract.requirements() if self.contract is not None else Requirements()
 
+    def check_task(self, instruction: str) -> None:
+        """An instruction outside ``tasks`` (when known) is refused by name: the model never saw it."""
+        if self.tasks and instruction.strip() not in self.tasks:
+            shown = ", ".join(repr(t) for t in self.tasks[:20]) + (", …" if len(self.tasks) > 20 else "")
+            raise ValueError(
+                f"{self!r} refused the instruction {instruction!r}: not one of the {len(self.tasks)} it was trained on:"
+                f" {shown}"
+            )
+
     def reset(self) -> None:
         if self._engine is not None and self._last is not None:  # a fresh session needs no reset
             self._engine.reset()
@@ -120,6 +140,7 @@ class ZenohPolicy:
 
         c, engine = self._need(), self._engine
         if instruction is not None and instruction != self._task:
+            self.check_task(instruction)
             if error := engine.text_input_error(instruction, instruction=True):
                 raise ValueError(f"{self!r} refused the instruction: {error}")
             engine.set_task(instruction)
@@ -136,4 +157,4 @@ class ZenohPolicy:
         return self._last
 
     def __repr__(self) -> str:
-        return f"Policy('zenoh://{self.endpoint.removeprefix('tcp/')}/{self.deployment}')"
+        return f"Policy('zenoh://{self.endpoint.removeprefix('tcp/')}/{self.deployment}')"  # tls/… stays visible

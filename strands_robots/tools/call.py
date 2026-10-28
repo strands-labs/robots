@@ -44,7 +44,21 @@ def _run_as_the_task(device: Any) -> Callable[..., Any]:
     return run
 
 
-def dispatch(device: Any, tool_input: Mapping[str, Any]) -> Any:
+def resolve_policy(args: Mapping[str, Any], policies: Mapping[str, Any]) -> dict[str, Any]:
+    """``policy="ttt"`` -> the registered handle; left out with exactly one handle -> that one; a string that is not
+    a handle stays a spec for ``run`` (a preset, a Hub repo; a network address was refused before this)."""
+    out = dict(args)
+    spec = out.get("policy")
+    if isinstance(spec, str) and spec in policies:
+        out["policy"] = policies[spec]
+    elif spec is None and "policy" not in out and len(policies) == 1:
+        out["policy"] = next(iter(policies.values()))
+    elif spec is None and "policy" not in out and policies:
+        raise ValueError(f"policy is required: one of the registered {sorted(policies)}")
+    return out
+
+
+def dispatch(device: Any, tool_input: Mapping[str, Any], *, policies: Mapping[str, Any] | None = None) -> Any:
     rpc = tool_input.get("rpc")
     if not isinstance(rpc, str):
         raise ValueError(f"rpc is required; one of {list(rpc_names(device))}")
@@ -57,12 +71,16 @@ def dispatch(device: Any, tool_input: Mapping[str, Any]) -> Any:
     kept = sorted(set(args) & DEVELOPER_ONLY_ARGS)
     if kept:
         raise PermissionError(f"{kept} of {rpc!r} are the developer's to pass, not an agent's")
+    policies = policies or {}
     many = args.get("policies")  # a world's run takes {robot id: spec}; a robot's run takes policy=
     for spec in [args.get("policy"), *(many.values() if isinstance(many, Mapping) else ())]:
-        if (
-            isinstance(spec, str) and REMOTE_SPEC in spec
-        ):  # the cameras would stream there, before the gate sees an action
-            raise PermissionError(f"a policy at a network address is the developer's to pass, not an agent's: {spec}")
+        if isinstance(spec, str) and REMOTE_SPEC in spec and spec not in policies:  # the cameras would stream there,
+            hint = f"; registered: {sorted(policies)}" if policies else ""  # before the gate sees an action
+            raise PermissionError(
+                f"a policy at a network address is the developer's to pass, not an agent's: {spec}{hint}"
+            )
+    if rpc == "run":
+        args = resolve_policy(args, policies)
     fn = target(device, rpc)
     decode(handler(device, rpc), args)  # refuse what the declared rpc does not take, before anything moves
     return fn(**decode(fn, args))

@@ -42,8 +42,9 @@ def tool_name(prefix: str, ident: str) -> str:
     return f"{name[:55]}_{hashlib.sha1(ident.encode()).hexdigest()[:8]}"
 
 
-def tool_spec(device: Any, *, prefix: str = "robot") -> dict[str, Any]:
-    """The JSON-safe tool spec of ``device``, generated from its rpcs and their signatures."""
+def tool_spec(device: Any, *, prefix: str = "robot", policies: tuple[str, ...] = ()) -> dict[str, Any]:
+    """The JSON-safe tool spec of ``device``, generated from its rpcs and their signatures; ``policies`` are the
+    registered handles ``run`` takes by name (with exactly one, ``policy`` is optional)."""
     joints = tuple(getattr(device, "action_keys", ()))
     names = rpc_names(device)
     fns = {n: handler(device, n) for n in names}
@@ -56,6 +57,14 @@ def tool_spec(device: Any, *, prefix: str = "robot") -> dict[str, Any]:
     }
     for n, f in fns.items():
         params = parameters(f, joints=joints, exclude=DEVELOPER_ONLY_ARGS)
+        if n == "run" and policies and "policy" in params["properties"]:
+            pol = params["properties"]["policy"]
+            pol["description"] = (pol.get("description") or "").rstrip(". ") + (
+                f". Registered policies, by name: {', '.join(policies)}"
+                + (" (the only one: may be left out)" if len(policies) == 1 else "")
+            )
+            if len(policies) == 1:
+                params["required"] = [r for r in params.get("required", []) if r != "policy"]
         if params["properties"]:
             props[n] = params
     about = f"{device.id}: call one rpc; its arguments go under the property named after it."

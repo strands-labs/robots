@@ -14,11 +14,40 @@ def test_a_callable_is_a_policy_and_a_subclass_is_a_plain_constructor():
 
 
 @pytest.mark.parametrize(
-    "spec", ["Not-A-Preset?", "act", "pi0", "not a spec", "zenoh://host-without-port/x", "zenoh://h:7447/"]
+    "spec",
+    [
+        "Not-A-Preset?",
+        "act",
+        "pi0",
+        "not a spec",
+        "zenoh://host-without-port/x",
+        "zenoh://h:7447/",
+        "zenoh://h:7447/a/b",
+        "zenoh://ftp/h:7447/d",
+        "zenoh+carrier-pigeon://h:7447/d",
+        "zenoh://tls/h:port/d",
+    ],
 )
 def test_an_unknown_form_is_refused_listing_the_forms(spec):
     with pytest.raises(ValueError, match=r"zenoh://"):
         Policy(spec)
+
+
+@pytest.mark.parametrize(
+    ("spec", "endpoint", "deployment"),
+    [
+        ("zenoh://10.0.0.5:7447/manipulation", "tcp/10.0.0.5:7447", "manipulation"),
+        ("zenoh://tls/zenoh.api.agi.diy:7447/d_abc", "tls/zenoh.api.agi.diy:7447", "d_abc"),
+        ("zenoh+tls://zenoh.api.agi.diy:7447/d_abc", "tls/zenoh.api.agi.diy:7447", "d_abc"),
+        ("zenoh://quic/[2001:db8::1]:7447/d", "quic/[2001:db8::1]:7447", "d"),
+        ("zenoh://tcp/127.0.0.1:17449/d_wfm_ttt_ec2", "tcp/127.0.0.1:17449", "d_wfm_ttt_ec2"),
+    ],
+)
+def test_a_zenoh_url_names_the_link_a_lease_gave(spec, endpoint, deployment):
+    """A lease says ``tls/host:port``; written straight into the URL it is the locator LeRobot connects to."""
+    from strands_robots.policy.factory import zenoh_locator
+
+    assert zenoh_locator(spec) == (endpoint, deployment)
 
 
 def test_zenoh_url_and_hub_repo_need_no_network_to_construct():
@@ -26,6 +55,11 @@ def test_zenoh_url_and_hub_repo_need_no_network_to_construct():
     p = Policy("zenoh://10.0.0.5:7447/manipulation", chunk_merge="aligned")
     assert repr(p) == "Policy('zenoh://10.0.0.5:7447/manipulation')"
     assert p.endpoint == "tcp/10.0.0.5:7447" and p.deployment == "manipulation"
+    far = Policy("zenoh://tls/zenoh.api.agi.diy:7447/d_abc")
+    assert (
+        repr(far) == "Policy('zenoh://tls/zenoh.api.agi.diy:7447/d_abc')"
+        and far.endpoint == "tls/zenoh.api.agi.diy:7447"
+    )
     hub = Policy("lerobot/smolvla_base", device="cpu")
     assert isinstance(hub, ChunkedPolicy) and repr(hub.inner) == "Policy('lerobot/smolvla_base')"
 

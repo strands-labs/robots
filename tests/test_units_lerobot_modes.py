@@ -40,12 +40,48 @@ def test_semantics_labels_are_data():
     assert semantics_for(d, DEG) == "so101-degrees-gripper-percent-v1"
 
 
-def test_an_unknown_mode_or_label_is_refused_by_name():
+def test_an_unknown_mode_is_refused_by_name():
     d = Description.load("so101")
     with pytest.raises(ValueError, match=r"unknown lerobot_norm mode 'furlongs'"):
         lerobot_units(d, {"*": "furlongs"})
-    with pytest.raises(ValueError, match=r"unknown LeRobot semantics 'x-v9'.*semantics.json"):
+
+
+@pytest.mark.parametrize(
+    ("label", "norm"),
+    [
+        ("so101-v2", {"*": "range_m100_100", "gripper": "range_0_100"}),  # says nothing: the robot's own convention
+        ("x-v9", {"*": "range_m100_100", "gripper": "range_0_100"}),  # names another thing: still this robot's joints
+        ("so101-degrees-v3", {"*": "degrees", "gripper": "range_0_100"}),  # the body's mode, the gripper as calibrated
+        ("so101_normalized", {"*": "range_m100_100", "gripper": "range_0_100"}),
+        ("lab.so101.deg.gripper-percent", {"*": "degrees", "gripper": "range_0_100"}),
+    ],
+)
+def test_an_unknown_label_is_derived_from_its_words_and_the_robots_convention(label, norm):
+    d = Description.load("so101")
+    with pytest.warns(
+        UserWarning, match=rf"{label!r} is not in strands_robots/units/semantics.json; read as LeRobot modes"
+    ):
+        got = units_for_semantics(label, d)
+    want = lerobot_units(d, norm)
+    np.testing.assert_allclose(got.lo_u, want.lo_u)
+    np.testing.assert_allclose(got.hi_u, want.hi_u)
+    assert got.modes == want.modes
+
+
+def test_an_unknown_label_that_says_radians_is_radians():
+    d = Description.load("so101")
+    with pytest.warns(UserWarning, match="read as radians"):
+        assert units_for_semantics("lab-radians-v2", d) is None
+
+
+def test_an_unknown_label_on_a_robot_with_no_convention_is_refused_naming_both():
+    d = Description.load("ur5e")  # no hardware.lerobot_norm in the registry
+    with pytest.raises(
+        ValueError, match=r"unknown LeRobot semantics 'x-v9', and ur5e declares no hardware.lerobot_norm"
+    ):
         units_for_semantics("x-v9", d)
+    with pytest.warns(UserWarning):  # the label itself says degrees: derivable without a convention
+        assert units_for_semantics("ur5e-degrees-v1", d).modes == ("degrees",) * len(d.action_keys)
 
 
 @pytest.mark.parametrize(
