@@ -64,12 +64,22 @@ class SceneCamera:
 
 
 @dataclass
+class SceneLight:
+    name: str
+    position: tuple[float, float, float] = (0.0, 0.0, 2.0)
+    direction: tuple[float, float, float] = (0.0, 0.0, -1.0)
+    color: tuple[float, float, float] = (1.0, 1.0, 1.0)  # diffuse RGB 0-1, scaled by randomize(lighting=)
+    directional: bool = False  # True: a sun (parallel rays along direction); False: a spot at position
+
+
+@dataclass
 class Scene:
     """Everything a backend needs to build the world. No engine objects inside."""
 
     robots: list[SceneRobot] = field(default_factory=list)
     objects: list[SceneObject] = field(default_factory=list)
     cameras: list[SceneCamera] = field(default_factory=list)
+    lights: list[SceneLight] = field(default_factory=list)
     gravity: tuple[float, float, float] = (0.0, 0.0, -9.81)
     timestep: float = 0.002
     ground: bool | str = True  # True/"checker" textured, "plain" flat grey, False none
@@ -103,6 +113,7 @@ class Scene:
             robots=[replace(r) for r in self.robots],
             objects=[replace(o) for o in self.objects],
             cameras=[replace(c) for c in self.cameras],
+            lights=[replace(li) for li in self.lights],
             scales=dict(self.scales),
             camera_jitter=dict(self.camera_jitter),
         )

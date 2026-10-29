@@ -9,7 +9,7 @@ from __future__ import annotations
 from .backend import Backend
 from .object import Object
 from .physics import Contact, Physics
-from .scene import Scene, SceneCamera, SceneObject, SceneRobot
+from .scene import Scene, SceneCamera, SceneLight, SceneObject, SceneRobot
 from .simulation import Simulation
 
 __all__ = [
@@ -18,6 +18,7 @@ __all__ = [
     "SceneRobot",
     "SceneObject",
     "SceneCamera",
+    "SceneLight",
     "Object",
     "Backend",
     "Physics",

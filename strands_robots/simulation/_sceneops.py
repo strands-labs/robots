@@ -1,5 +1,5 @@
 """Scene-editing verbs of a Simulation (its private base): add/remove a body, add an object, teleport, cameras,
-randomize. Every verb takes the world lock, so scene, backend and registry change together and a locked reader
+lights, randomize. Every verb takes the world lock, so scene, backend and registry change together and a locked reader
 never sees them disagree; ``simulation.py`` keeps the world's lifecycle and time."""
 
 from __future__ import annotations
@@ -11,13 +11,13 @@ import numpy as np
 
 from ..geometry import vec
 from ..types import Pose
-from . import _randomize, _teleport
+from . import _randomize, _teleport, _view
 from .backend import Backend
 from .lock import WorldLock
 from .member import Member
 from .object import Object
 from .physics import Contact
-from .scene import _IDENTITY_QUAT, Scene, SceneCamera, SceneObject, SceneRobot
+from .scene import _IDENTITY_QUAT, Scene, SceneCamera, SceneLight, SceneObject, SceneRobot
 
 
 class _SceneOps:
@@ -81,15 +81,15 @@ class _SceneOps:
                 raise
 
     def remove(self, robot: Member | str) -> None:
-        """Take a robot, object or camera out of this world, by name (to move a camera: remove it, add it again)."""
+        """Take a robot, object, camera or light out of this world, by name (``camera(name, ...)`` moves a camera)."""
         rid = robot if isinstance(robot, str) else robot.id
         if rid not in self._robots:
             with self.lock:
-                objs = [o for o in self.scene.objects if o.name != rid]
-                cams = [c for c in self.scene.cameras if c.name != rid]
-                if (objs, cams) == (self.scene.objects, self.scene.cameras):
+                s = self.scene
+                kept = [[x for x in xs if x.name != rid] for xs in (s.objects, s.cameras, s.lights)]
+                if kept == [s.objects, s.cameras, s.lights]:
                     raise KeyError(f"nothing named {rid!r} in this world; robots are {list(self._robots)}")
-                self.scene.objects, self.scene.cameras = objs, cams
+                s.objects, s.cameras, s.lights = kept  # type: ignore[assignment]
                 self.scene.scales.pop(rid, None)  # a body re-added under this name inherits no draw
                 self.scene.camera_jitter.pop(rid, None)
                 self._reload()
@@ -169,10 +169,10 @@ class _SceneOps:
         size: tuple[int, int] | None = None,
         attach: Member | str | None = None,
     ) -> SceneCamera:
-        """Add a camera at position (m) looking at target, or along orientation (quaternion w,x,y,z); size W,H."""
-        with self.lock:  # the name check and the add are one step: two callers never both pass the check
-            if any(c.name == name for c in self.scene.cameras):
-                raise ValueError(f"camera {name!r} already exists")
+        """Add a camera at position (m) looking at target, or along orientation (quaternion w,x,y,z); size W,H.
+        Naming an existing camera re-aims it to these arguments, size kept unless given (on MuJoCo: no rebuild)."""
+        with self.lock:  # the name lookup and the add (or re-aim) are one step under concurrent callers
+            old = next((c for c in self.scene.cameras if c.name == name), None)
             att = attach if (attach is None or isinstance(attach, str)) else attach.id
             if att is not None and att.split("/")[0] not in self._robots:  # "<robot>" (its base) or "<robot>/<link>"
                 raise KeyError(f"attach={att!r} is not a robot in this world (or '<robot>/<link>')")
@@ -182,11 +182,25 @@ class _SceneOps:
                 target=None if orientation is not None else vec(target, 3, "target"),  # type: ignore[arg-type]
                 orientation=None if orientation is None else vec(orientation, 4, "orientation (w, x, y, z)"),  # type: ignore[arg-type]
                 fov=float(fov),
-                size=tuple(size) if size else self.render_size,  # type: ignore[arg-type]
+                size=tuple(size) if size else (old.size if old else self.render_size),  # type: ignore[arg-type]
                 attach=att,
             )
-            self._commit(self.scene.cameras, cam)
+            _view.put_camera(self, old, cam)  # a new name is added; a known one is re-aimed
             return cam
+
+    def light(
+        self,
+        name: str,
+        *,
+        position: tuple[float, float, float] = (0.0, 0.0, 2.0),
+        direction: tuple[float, float, float] = (0.0, 0.0, -1.0),
+        color: tuple[float, float, float] = (1.0, 1.0, 1.0),
+        directional: bool = False,
+    ) -> SceneLight:
+        """Add a light: a spot at position (m) shining along direction, or a sun (directional=True); color RGB 0-1.
+        Naming a light that exists moves or recolors it; ``remove(name)`` takes it out."""
+        self._open()
+        return _view.light(self, SceneLight(name, *_view.light_vectors(position, direction, color), directional))
 
     def render(self, camera: str | SceneCamera | None = None) -> np.ndarray:
         """HxWx3 uint8 from a named camera, or from an auto-framed overview camera when none is given."""

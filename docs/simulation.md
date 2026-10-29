@@ -19,15 +19,17 @@ with sim.manual_time():           # inside, act() only writes targets; the calle
 sim.set_pose("g1", position=[2, 0, 0.8])   # teleport; velocities zeroed, time does not advance
 sim.add_object("box", shape="box", position=[0.3, 0, 0.1], size=[0.03, 0.03, 0.03])
 sim.camera("wrist", position=[0.035, 0, -0.02], target=[-0.2, 0, -0.09], attach="so101/gripper")  # link frame
+sim.camera("wrist", position=[0.05, 0, -0.02], target=[-0.2, 0, -0.09], attach="so101/gripper")  # same name: re-aimed
+sim.light("lamp", position=[0, 0, 1.5], color=[0.2, 0.2, 1.0])   # a spot; directional=True is a sun; same name recolors
 sim.render()                      # HxWx3 uint8 from the overview camera, fitted to every robot's geometry
 sim.pose("box")                   # where it is now: position (m), quaternion (w, x, y, z)
 sim.pose("so101/gripper")         # a link too (any name in describe()["robots"]["so101"]["links"]): the end effector
-sim.remove("wrist")               # a robot, an object or a camera, by name
-sim.describe()                    # robots, objects where they are now, cameras, physics, time; JSON-safe
+sim.remove("wrist")               # a robot, an object, a camera or a light, by name
+sim.describe()                    # robots (with their reach), objects where they are now, cameras, lights, physics, time; JSON-safe
 ```
 
 A `Simulation` owns the `Scene` (plain data: robots, objects, cameras, gravity, timestep), the robots
-in it and the time. Every scene change (`add`, `remove`, `add_object`, `camera`, `set_pose`,
+in it and the time. Every scene change (`add`, `remove`, `add_object`, `camera`, `light`, `set_pose`,
 `randomize`) bumps `revision`; motion does not. Adding a robot appends to the scene and rebuilds the
 world, and every body that survives keeps its joint state. `sim.lock` is one re-entrant lock around
 the world, so a reader and a stepping loop never see a half-built world. It is fair: a release hands it to
@@ -36,6 +38,16 @@ the oldest waiter, so a reader looping on `with sim.lock:` never starves an `act
 `set_pose` moves a fixed base by moving its spawn frame in the scene and rebuilding, the path every
 scene change takes: joint state, time and randomised physics carry over. A floating base is teleported in place and keeps its spawn frame, so `reset()` stands it back
 on its keyframe at the spawn position.
+
+Naming a camera that exists re-aims it to the new arguments and keeps its size unless one is given. On MuJoCo
+that writes the compiled camera, so an orbit is one call per frame and no rebuild (0.5 ms, the frame identical to
+a fresh camera's); a new parent (`attach=`) or size rebuilds. `light()` adds a spot or a sun that
+`randomize(lighting=)` scales with the rest; Isaac refuses it by name.
+
+`describe()["robots"][<id>]["reach"]` says which way a body faces and which sign does what: `link` is the
+farthest link, `position` where it is now (m) and `per_rad[<joint>]` how it moves (world m) per +1 rad of that
+joint at the current pose. An SO-101 at zero reaches along -y, and `per_rad["shoulder_lift"]` has a negative z:
+a negative `shoulder_lift` raises the arm. `robot.describe()` carries the same `reach`.
 
 `attach="so101"` puts a camera on the robot's base; `attach="so101/gripper"` on one of its links (the
 wrist view a VLA dataset expects). `describe()["robots"]["so101"]["links"]` lists the link names.

@@ -12,8 +12,10 @@ import numpy as np
 from ..._extras import hint
 from ...description import Description
 from ...types import Observation
-from ...units import Units, semantics_for, units_for_semantics
+from ...units import Units, lerobot_units, semantics_for, units_for_semantics
+from ...units.semantics import table
 from ..requirements import Requirements
+from .quiet import quiet_load
 
 if TYPE_CHECKING:
     from lerobot.remote_inference.configs import ServerConfig
@@ -107,6 +109,54 @@ class Contract:
         return out
 
 
+# What LeRobot's ``_normalize`` can emit per mode: range modes are clamped (exact), degrees is one motor turn.
+_CAN_EMIT = {"range_m100_100": (-100.0, 100.0), "range_0_100": (0.0, 100.0), "degrees": (-180.0, 180.0)}
+
+
+def _misfit(units: Units, stats: Mapping[str, np.ndarray], graded: set[str]) -> str | None:
+    """The first saved min/max of a ``graded`` joint that LeRobot's normalizer cannot emit in its mode, or None."""
+    for feat in (STATE, ACTION):
+        mn, mx = stats.get(f"{feat}.min"), stats.get(f"{feat}.max")
+        if mn is None or mx is None or len(mn) != len(units.keys):
+            continue
+        for i, (k, mode) in enumerate(zip(units.keys, units.modes, strict=False)):
+            if k not in graded:
+                continue
+            lo, hi = _CAN_EMIT.get(mode, (-np.inf, np.inf))
+            if mn[i] < lo - 1e-3 or mx[i] > hi + 1e-3:
+                return f"{feat} {k} spans {mn[i]:.1f}..{mx[i]:.1f}, impossible in {mode} ({lo:.0f}..{hi:.0f})"
+    return None
+
+
+def check_units(description: Description, artifact: Path, checkpoint: str, semantics: str) -> None:
+    """Refuse a checkpoint whose own normalizer stats cannot be in ``semantics``: units are checked, not assumed.
+
+    A LeRobot checkpoint saves its dataset's per-joint min/max (``policy_preprocessor_*normalizer*.safetensors``).
+    A degrees dataset read as ``range_m100_100`` drives a joint toward its limit; this names the joint and the
+    labels its numbers do fit. Only a joint some row of this robot reads in another mode is graded: a misfit no
+    label can change (the gripper, a pre-clamp or sim-recorded excursion) is no evidence. No min/max: not checked.
+    """
+    files = sorted(artifact.glob("policy_preprocessor*normalizer*.safetensors"))
+    units = units_for_semantics(semantics, description)
+    if not files or units is None:
+        return
+    from safetensors.numpy import load_file
+
+    stats = load_file(str(files[0]))
+    mine = {k: v["lerobot_norm"] for k, v in table().items() if "lerobot_norm" in v and k != semantics}
+    rows = [n for k, n in mine.items() if k.startswith(f"{description.name}-")]
+    modes = [dict(zip(u.keys, u.modes, strict=False)) for u in [units, *(lerobot_units(description, n) for n in rows)]]
+    graded = {k for k in units.keys if len({m.get(k) for m in modes}) > 1}
+    why = _misfit(units, stats, graded)
+    if why is None:
+        return
+    fits = [f"norm={n}" for n in rows if _misfit(lerobot_units(description, n), stats, graded) is None]
+    raise ValueError(
+        f"{checkpoint} was not trained in {semantics}: its saved stats say {why}. "
+        f"Pass the units its data was recorded in ({' or '.join(fits) or 'semantics=<label>'})"
+    )
+
+
 def server_config(
     description: Description,
     checkpoint: str,
@@ -125,7 +175,8 @@ def server_config(
 
     State/action names are ``<action key>.pos`` in the robot's order, cameras are the checkpoint's own
     ``observation.images.*`` at its trained size (HWC), the semantics label comes from ``norm`` (default:
-    the registry's ``hardware.lerobot_norm``) through ``units/semantics.json``.
+    the registry's ``hardware.lerobot_norm``) through ``units/semantics.json``, and checked against the
+    checkpoint's own saved min/max (``check_units``): a checkpoint whose numbers cannot be in those units is refused.
     """
     lerobot()
     from lerobot.configs.policies import PreTrainedConfig
@@ -134,8 +185,11 @@ def server_config(
     from lerobot.remote_inference.deployment import resolve_artifact
     from lerobot.transport import ZenohConfig
 
-    cfg = PreTrainedConfig.from_pretrained(resolve_artifact(checkpoint, revision))
+    artifact = resolve_artifact(checkpoint, revision)
+    with quiet_load():  # only its features are read here; ModelConfig below carries the device
+        cfg = PreTrainedConfig.from_pretrained(artifact)
     sem = semantics or semantics_for(description, dict(norm) if norm is not None else None)
+    check_units(description, artifact, checkpoint, sem)
     names = tuple(f"{k}.pos" for k in description.action_keys)
     feats = []
     for key, ft in cfg.input_features.items():

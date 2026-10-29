@@ -71,9 +71,8 @@ class IsaacBackend(Backend):
                 self._robots[r.id] = self._add_robot(r)
             for o in new_objects:
                 self._objects[o.name] = build.add_object(self.world, o)
-            for c in scene.cameras:
-                if c.name not in self._cameras:
-                    self._cameras[c.name] = build.add_camera(c)
+            for c in scene.cameras:  # a camera already on the stage is re-aimed: camera() moved it
+                self._cameras[c.name] = build.add_camera(c, self._cameras.get(c.name))
             if rebuild or not self.world.is_playing():
                 self.world.reset()  # initialises the physics views (and zeroes state; restored below)
                 for r in new_robots:

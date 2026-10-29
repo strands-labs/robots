@@ -7,7 +7,7 @@ import time
 import numpy as np
 import pytest
 from checks import cached_checkpoint, free_endpoint, needs_module
-from test_03_a_lerobot_checkpoint_drives_the_sim_arm import CHECKPOINT, arm_with_wrist_camera, inside_limits
+from test_03_a_lerobot_checkpoint_drives_the_sim_arm import CHECKPOINT, TRAINED_IN, arm_with_wrist_camera, inside_limits
 
 pytest.importorskip("mujoco")
 pytest.importorskip("zenoh")
@@ -20,7 +20,12 @@ def test_the_same_checkpoint_drives_the_arm_over_zenoh():
 
     path = cached_checkpoint(CHECKPOINT)
     cfg = server_config(
-        Description.load("so101"), path, deployment="acceptance", endpoint=free_endpoint(), device="cpu"
+        Description.load("so101"),
+        path,
+        deployment="acceptance",
+        endpoint=free_endpoint(),
+        device="cpu",
+        norm=TRAINED_IN,
     )
     with serve(cfg) as url:
         p = Policy(url)

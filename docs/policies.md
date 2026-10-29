@@ -77,6 +77,10 @@ descriptor — and `run(instruction=)` with any other string is refused naming t
 We don't wrap LeRobot, we speak it: LeRobot loads the model and runs its own client. strands-robots just lines up
 joint names, cameras and units, and refuses (by name) anything that doesn't match, before the robot moves.
 Need the server config? `server_config(robot.description, "lerobot/smolvla_base")` writes it for you.
+Units are checked, not assumed: a checkpoint's units default to the robot's LeRobot convention (the so101 is
+range mode), and the checkpoint's own saved min/max must fit them. An SO-101 ACT trained in degrees (a
+`wrist_roll` reaching -155) read as range mode is refused naming the joint and the fix,
+`Policy(repo, norm={"*": "degrees", "gripper": "range_0_100"})`.
 
 We tried every LeRobot family on an L40S: **13 drive our robots** (ACT, SmolVLA, π0, π0.5, GR00T, XVLA, EVO1, LaWAM,
 VLA-JEPA, FineART, MolmoAct2, DM05, and SmolVLA in RTC mode). The rest are turned away by LeRobot itself, politely

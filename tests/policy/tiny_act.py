@@ -7,7 +7,15 @@ from pathlib import Path
 import numpy as np
 
 
-def save_tiny_act(path: Path, n: int, *, camera: str | None = "front", size: tuple[int, int] = (64, 48)) -> Path:
+def save_tiny_act(
+    path: Path,
+    n: int,
+    *,
+    camera: str | None = "front",
+    size: tuple[int, int] = (64, 48),
+    span: tuple[list[float], list[float]] | None = None,
+) -> Path:
+    """``span`` = the per-joint (min, max) its "dataset" saved, in its recorded units (None: mean/std only)."""
     import torch
     from lerobot.configs.types import FeatureType, NormalizationMode, PolicyFeature
     from lerobot.policies.act.configuration_act import ACTConfig
@@ -43,6 +51,9 @@ def save_tiny_act(path: Path, n: int, *, camera: str | None = "front", size: tup
         "observation.state": {"mean": np.zeros(n, np.float32), "std": np.full(n, 10.0, np.float32)},
         "action": {"mean": np.zeros(n, np.float32), "std": np.full(n, 5.0, np.float32)},
     }
+    if span is not None:
+        for feat in stats.values():
+            feat["min"], feat["max"] = np.array(span[0], np.float32), np.array(span[1], np.float32)
     pre, post = make_pre_post_processors(cfg, dataset_stats=stats)
     path.mkdir(parents=True, exist_ok=True)
     policy.save_pretrained(path)

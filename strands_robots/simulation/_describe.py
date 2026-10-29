@@ -23,11 +23,12 @@ def describe(sim: Any) -> dict[str, Any]:
         "robots": {
             rid: r.description.describe()
             | {"position": list(sim.scene.robot(rid).position), "pose": where(sim, rid)}
-            | {"links": sim.backend.links(rid)}
+            | {"links": sim.backend.links(rid), "reach": sim.backend.reach(rid)}
             for rid, r in sim._robots.items()
         },
         "objects": [{"name": o.name, "shape": o.shape or o.path} | where(sim, o.name) for o in sim.scene.objects],
         "cameras": [{"name": c.name, "size": list(c.size), "attach": c.attach} for c in sim.scene.cameras],
+        "lights": [{"name": x.name, "position": list(x.position), "sun": x.directional} for x in sim.scene.lights],
     }
 
 

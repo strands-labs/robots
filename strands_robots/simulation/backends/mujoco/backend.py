@@ -27,6 +27,7 @@ from ...physics import Contact, Physics
 from ...scene import Scene, SceneRobot
 from . import build
 from .state import place, restore, snapshot
+from .view import View, add_lights
 
 
 @dataclass
@@ -40,7 +41,7 @@ class _RobotIndex:
     root_body: int  # the robot's root body id
 
 
-class MuJoCoBackend(Backend):
+class MuJoCoBackend(View, Backend):
     """Builds the world from a Scene; every ``load`` recompiles and carries joint state by name."""
 
     def __init__(self, **cfg: Any) -> None:
@@ -63,10 +64,8 @@ class MuJoCoBackend(Backend):
         spec.nkey = sum(len(r.description.keyframes) for r in scene.robots)  # else attach warns "nkey conflict"
         spec.visual.global_.offwidth = max(self.render_size[0], *(c.size[0] for c in scene.cameras), 640)
         spec.visual.global_.offheight = max(self.render_size[1], *(c.size[1] for c in scene.cameras), 480)
-        spec.visual.headlight.diffuse = [0.5 * scene.light_scale] * 3
-        spec.visual.headlight.ambient = [0.15 * scene.light_scale] * 3
         build.add_ground(spec, scene.ground)
-        spec.worldbody.add_light(pos=[0.5, -1.0, 3.0], dir=[-0.2, 0.4, -1.0], diffuse=[0.8 * scene.light_scale] * 3)
+        add_lights(spec, scene)
         for r in scene.robots:
             build.attach_robot(spec, r)
         for o in scene.objects:

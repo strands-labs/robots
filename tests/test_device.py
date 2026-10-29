@@ -19,8 +19,8 @@ def test_manifest_round_trips_and_describe_is_the_manifest():
     assert m is arm.manifest and m.device_id == "so101" and m.tenant == "default" and not m.real
     assert Manifest.from_dict(json.loads(json.dumps(m.to_dict()))) == m
     d = arm.describe()
-    assert {k: v for k, v in d.items() if k not in ("task", "estop")} == m.to_dict()
-    assert d["task"] is None and d["estop"] is False
+    assert {k: v for k, v in d.items() if k not in ("task", "estop", "reach")} == m.to_dict()
+    assert d["task"] is None and d["estop"] is False and d["reach"]["link"]
     assert {r.name for r in m.rpcs} >= {"describe", "observe", "act", "run", "stop", "hold", "estop", "resume"}
     assert {e.name for e in m.events} == {"state", "fault", "estop", "run.started", "run.stopped"}
 

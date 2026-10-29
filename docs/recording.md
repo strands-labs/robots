@@ -21,3 +21,5 @@ never have to guess later.
 
 A run that crashes leaves nothing behind. A run you stop (or e-stop) keeps what it got. Use
 `record="hf://you/so101-wave"` to record under a Hub name; nothing uploads unless you also pass `push=True`.
+
+Recording is quiet: the video encoder reports errors only. Set `SVT_LOG=3` to see its full banner again.

@@ -62,9 +62,10 @@ class Episode:
 
     def add(self, obs: Observation, action: Any) -> None:
         if self._writer is None:
-            from .lerobot_v3 import open_dataset
+            from .lerobot_v3 import open_dataset, quiet
 
-            self._writer, self._created = open_dataset(self, obs)
+            with quiet():
+                self._writer, self._created = open_dataset(self, obs)
         frame: dict[str, Any] = {
             STATE: self._in_units(obs.joints.positions),
             ACTION: self._in_units(action),
@@ -79,9 +80,12 @@ class Episode:
         """Save the episode (if any frame was added) and finalize; returns the dataset directory."""
         if self._writer is None:
             return None
-        if self.frames:
-            self._writer.save_episode(parallel_encoding=False)  # no process pool: a plain script must not re-import
-        self._writer.finalize()
+        from .lerobot_v3 import quiet
+
+        with quiet():
+            if self.frames:
+                self._writer.save_episode(parallel_encoding=False)  # no process pool: a script must not re-import
+            self._writer.finalize()
         if self.push and self.frames:
             self._writer.push_to_hub()
         return str(self._writer.root)

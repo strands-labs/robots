@@ -38,10 +38,15 @@ class DeviceVerbs:
         return self._robot.estop_latch.engaged
 
     def describe(self) -> dict[str, Any]:
-        """The manifest as JSON, plus the live ``task`` and ``estop`` status."""
+        """The manifest as JSON, plus the live ``task`` and ``estop`` status, and in a world (its own or its twin's)
+        the ``reach``: where the farthest link is and how it moves per +1 rad of each joint."""
         d = self.manifest.to_dict()
         d["task"] = None if self._robot._task is None else self._robot._task.status
         d["estop"] = self._robot.estopped
+        body = self._robot if self._robot.sim is not None else self._robot.twin
+        if body is not None and body.sim is not None:
+            with body.sim.lock:
+                d["reach"] = body.sim.backend.reach(body.id)
         return d
 
     def estop(self, *, by: str | None = None) -> None:

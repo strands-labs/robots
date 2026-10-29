@@ -4,12 +4,13 @@ from __future__ import annotations
 
 import importlib
 from abc import ABC, abstractmethod
+from typing import Any
 
 import numpy as np
 
 from ..types import JointState, Pose
 from .physics import Contact, Physics
-from .scene import Scene
+from .scene import Scene, SceneCamera
 
 _BACKENDS: dict[str, str] = {
     "mujoco": "strands_robots.simulation.backends.mujoco:MuJoCoBackend",
@@ -20,7 +21,8 @@ _BACKENDS: dict[str, str] = {
 
 class Backend(ABC):
     """The twelve abstract methods a physics world implements, plus two it may refuse with
-    ``NotImplementedError``: ``set_gains`` and ``set_joints``. Nothing else is engine-specific."""
+    ``NotImplementedError``: ``set_gains`` and ``set_joints``, and three with an honest default: ``move_camera``,
+    ``reach`` and ``links``. Nothing else is engine-specific."""
 
     deterministic = True  # the same scene and actions give a bit-identical trajectory, run to run
 
@@ -80,6 +82,14 @@ class Backend(ABC):
 
     @abstractmethod
     def physics(self) -> Physics: ...
+
+    def move_camera(self, old: SceneCamera, cam: SceneCamera) -> bool:
+        """Re-aim a built camera in place; False tells the world to rebuild instead (the default)."""
+        return False
+
+    def reach(self, body: str) -> dict[str, Any]:
+        """A robot's farthest link and its motion per +1 rad of each joint (world m); empty if the engine cannot say."""
+        return {}
 
     def links(self, body: str) -> list[str]:
         """The link (body) names of a robot, for ``camera(attach="<robot>/<link>")``; empty if the engine cannot say."""

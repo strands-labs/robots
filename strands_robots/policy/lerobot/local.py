@@ -12,6 +12,7 @@ from ...types import Observation
 from ...units import Units
 from ..requirements import Requirements
 from .contract import Contract, lerobot, server_config
+from .quiet import quiet_load
 
 if TYPE_CHECKING:
     from ...description import Description
@@ -55,7 +56,8 @@ class LeRobotPolicy:
         cfg = server_config(robot.description, self.checkpoint, **self._kw)
         self.contract = Contract(robot.description, tuple(cfg.features), cfg.action_feature, cfg.semantics)
         self.contract.check()
-        self._runner, self.identity = load_deployment(cfg)
+        with quiet_load():
+            self._runner, self.identity = load_deployment(cfg)
 
     def _need(self) -> Contract:
         if self.contract is None:

@@ -21,6 +21,9 @@ SIM = [
     ("add_robot", {"name": "so101", "position": [1.0, 0.0, 0.0], "id": "guest"}, "success", ""),
     ("add_object", {"name": "cube", "shape": "box", "position": [0.2, 0.0, 0.05]}, "success", ""),
     ("camera", {"name": "front", "position": [1.0, 0.0, 0.5], "size": [64, 48]}, "success", ""),
+    ("camera", {"name": "front", "position": [0.0, -1.0, 0.5]}, "success", ""),  # the same name re-aims it
+    ("light", {"name": "lamp", "position": [0.0, 0.0, 1.5], "color": [0.2, 0.2, 1.0]}, "success", ""),
+    ("light", {"name": "lamp", "color": [2.0, 0.0, 0.0]}, "error", "RGB"),
     ("set_pose", {"body": "cube", "position": [0.25, 0.0, 0.05]}, "success", ""),
     ("pose", {"body": "cube"}, "success", "0.25"),
     ("pose", {"body": "nobody"}, "error", "nobody"),

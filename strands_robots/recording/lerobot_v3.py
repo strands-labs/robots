@@ -4,6 +4,9 @@ from __future__ import annotations
 
 import json
 import logging
+import os
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -28,6 +31,29 @@ def require_lerobot() -> Any:
     return LeRobotDataset
 
 
+@contextmanager
+def quiet() -> Iterator[None]:
+    """LeRobot's writer without the SVT-AV1 banner, libav notices or ``datasets`` bars; a caller's ``SVT_LOG`` wins."""
+    import av.logging
+    from datasets.utils import logging as hf
+
+    logging.getLogger("lerobot").setLevel(logging.ERROR)
+    svt, bars, libav = os.environ.get("SVT_LOG"), hf.is_progress_bar_enabled(), logging.getLogger("libav")
+    level = libav.level
+    os.environ["SVT_LOG"] = svt or "1"  # read by the encoder when it opens: errors only
+    libav.setLevel(logging.ERROR)
+    hf.disable_progress_bar()
+    av.logging.set_libav_level(av.logging.ERROR)  # lerobot hands libav back its own printer after each video
+    try:
+        yield
+    finally:
+        if svt is None:
+            del os.environ["SVT_LOG"]
+        libav.setLevel(level)
+        av.logging.set_libav_level(av.logging.INFO)  # libav's own default
+        (hf.enable_progress_bar if bars else hf.disable_progress_bar)()
+
+
 def check_target(ep: Episode) -> None:
     """Refuse an existing dataset with another fps, robot or units before step one (no observation needed)."""
     root = ep.root if ep.root is not None else _hub_cache(ep.repo_id)
@@ -50,7 +76,6 @@ def _robot_type(ep: Episode) -> str:
 def open_dataset(ep: Episode, first: Observation) -> tuple[Any, bool]:
     """``(dataset, created)``: resume the one already at the target (same features, fps, units) or create it."""
     LeRobotDataset = require_lerobot()
-    logging.getLogger("lerobot").setLevel(logging.ERROR)
     features = features_from(first, ep.description.action_keys)
     said = units_meta(ep.units, ep.description)
     root = ep.root if ep.root is not None else _hub_cache(ep.repo_id)
