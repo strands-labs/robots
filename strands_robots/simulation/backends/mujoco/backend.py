@@ -107,6 +107,10 @@ class MuJoCoBackend(Backend):
             return []
         return build.link_names(self.model, self._index[body].root_body)
 
+    def outline(self) -> np.ndarray | None:
+        roots = [i.root_body for i in self._index.values()]
+        return build.outline(self.model, self.data, roots) if self.model is not None and roots else None
+
     def _body_id(self, name: str) -> int:
         if name in self._index:
             return self._index[name].root_body
@@ -180,9 +184,7 @@ class MuJoCoBackend(Backend):
         m = self.model
         for i, p, dgain in zip(ids, kp, kd, strict=True):
             m.actuator_gainprm[i, 0] = p
-            m.actuator_biasprm[i, 0] = 0.0
-            m.actuator_biasprm[i, 1] = -p
-            m.actuator_biasprm[i, 2] = -dgain
+            m.actuator_biasprm[i, :3] = (0.0, -p, -dgain)
 
     def set_joints(self, body: str, positions: np.ndarray) -> None:
         assert self.model is not None and self.data is not None

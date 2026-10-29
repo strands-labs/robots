@@ -1,6 +1,7 @@
 """A Driver is a hardware Body: a servo bus, a DDS link, a vendor SDK.
 
-Hardware bodies in 1.0: feetech (SO-100/101), unitree (G1/Go2/H1 over DDS), microduck (robotd).
+Hardware bodies in 1.0: feetech (SO-100/101), unitree (G1/Go2/H1 over DDS), microduck (robotd), and
+memory (no wire: any robot as a hardware body with no arm attached, for docs, notebooks and CI).
 ``make_driver`` is the only place that maps a description + port to a driver class; the driver is
 read from ``description.hardware.driver`` (registry data), and drivers import their SDK lazily.
 """
@@ -21,6 +22,7 @@ _DRIVERS: dict[str, str] = {
     "feetech": "strands_robots.robot.drivers.feetech:FeetechDriver",
     "unitree": "strands_robots.robot.drivers.unitree:UnitreeDriver",
     "microduck": "strands_robots.robot.drivers.microduck:MicroduckDriver",
+    "memory": "strands_robots.robot.drivers.memory:MemoryDriver",  # no wire: docs, notebooks, CI
 }
 
 
@@ -94,7 +96,7 @@ def make_driver(
     if kind is None:
         raise ValueError(
             f"no driver known for {description.name!r}; "
-            "pass driver='feetech'|'unitree'|'microduck' or a Driver instance"
+            "pass driver='feetech'|'unitree'|'microduck'|'memory' or a Driver instance"
         )
     if kind not in _DRIVERS:
         raise ValueError(f"unknown driver {kind!r}; known drivers: {sorted(_DRIVERS)}")

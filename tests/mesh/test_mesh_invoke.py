@@ -191,3 +191,35 @@ def test_one_act_cannot_hold_the_world_for_an_unbounded_number_of_steps(served):
     _, _, b = served
     with pytest.raises(ValueError, match="steps= must be an integer"):
         b.invoke("so101-a", "act", action={"shoulder_pan": 0.1}, steps=10**9)
+
+
+def test_every_act_argument_the_manifest_advertises_is_served(served):
+    arm, _, _ = served
+    from strands_robots.mesh.serve import ARGS
+
+    (act,) = [r for r in arm.manifest.rpcs if r.name == "act"]
+    assert set(act.params["properties"]) <= set(ARGS["act"])
+
+
+def test_act_seconds_reaches_the_pose_not_one_step_toward_it(served):
+    arm, _, b = served
+    obs = b.invoke("so101-a", "act", action={"shoulder_pan": 0.4}, seconds=1.0)
+    assert obs.joints["shoulder_pan"] == pytest.approx(0.4, abs=0.02)
+    assert arm.observe().joints["shoulder_pan"] == pytest.approx(0.4, abs=0.02)
+
+
+@pytest.mark.parametrize(
+    "kw, match",
+    [
+        ({"seconds": 0}, "seconds= must be"),
+        ({"seconds": -1.0}, "seconds= must be"),
+        ({"seconds": 11.0}, "seconds= must be"),
+        ({"seconds": True}, "seconds= must be"),
+        ({"seconds": "1"}, "seconds= must be"),
+        ({"seconds": 1.0, "steps": 5}, "not both"),
+    ],
+)
+def test_act_seconds_is_bounded(served, kw, match):
+    _, _, b = served
+    with pytest.raises(ValueError, match=match):
+        b.invoke("so101-a", "act", action={"shoulder_pan": 0.1}, **kw)

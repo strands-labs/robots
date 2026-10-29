@@ -30,7 +30,7 @@ def test_the_same_checkpoint_drives_the_arm_over_zenoh():
         t = time.perf_counter()
         r = arm.run(p, seconds=2)
         wall = time.perf_counter() - t
-    assert r.stopped_by == "steps" and r.steps == 60 and r.fault is None, r
+    assert r.stopped_by == "seconds" and r.steps == 60 and r.fault is None, r
     assert 1.8 < wall < 6.0, wall  # paced by the deployment's clock, not as fast as the sim can go
     assert inside_limits(arm, r.final.joints.positions)
     assert np.abs(r.final.joints.positions - start).max() > 1e-3

@@ -4,7 +4,8 @@ S1 no server → standalone: scene compiled, the default skill loaded (61 in, 14
 S2 stands 10 s at the control rate (trunk above stand_z, no fall)
 S3 W walks it: vx = 0.3 for 10 s moves the trunk ≥ 1 m forward, still standing
 S4 switching skill changes the motion: velstand with wz = 1 turns the body, without a reset
-S5 with a server the page never steps physics: no standalone loop, no policy worker, no ONNX runtime fetched
+S5 a quiet console: no e-stop panel and no /api/mesh poll without a server; the server re-probe backs off 5 s -> 60 s
+S6 with a server the page never steps physics: no standalone loop, no policy worker, no ONNX runtime fetched
 """
 
 from __future__ import annotations
@@ -126,7 +127,20 @@ def test_s4_switching_skill_changes_the_motion(page: Any) -> None:
     page.screenshot(path=str(MEDIA / "standalone.png"))
 
 
-def test_s5_with_a_server_the_page_never_steps_physics(page: Any) -> None:
+def test_s5_no_server_means_a_quiet_console(page: Any) -> None:
+    """Each failed request is a red browser console error, so without a server the page must not keep asking."""
+    page.wait_for_timeout(1_000)  # let the 50 ms safety loop see the final mode
+    hidden = page.evaluate("document.querySelector('#safety').hidden")
+    t0, t1 = page.requests[0][0], time.monotonic()
+    mesh = [u for _, u in page.requests if "/api/mesh" in u]
+    probes = [t - t0 for t, u in page.requests if u.endswith("/api/scene")]  # one same-origin GET per probe
+    # Backing off 5, 10, 20, 40, 60 s, probes after the first land by 5, 15, 35, 75, 135 s (a fixed 5 s tick: far more).
+    due = sum(1 for at in (5, 15, 35, 75, 135, 195, 255) if at <= t1 - t0)
+    assert hidden and not mesh, (hidden, mesh)
+    assert t1 - t0 >= 15 and len(probes) <= 1 + due + 1, (t1 - t0, probes)
+
+
+def test_s6_with_a_server_the_page_never_steps_physics(page: Any) -> None:
     sim = Simulation()
     Robot(SPEC["robot"], sim=sim)
     server = Dashboard(sim).start()

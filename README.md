@@ -75,7 +75,7 @@ hands `sim.tool` and `arm.tool` to one agent, which places three cubes and a cam
 
 ```bash
 uv venv -p 3.12 && source .venv/bin/activate
-uv pip install -e ".[mujoco,onnx,lerobot,mesh,tools,dashboard,feetech]"
+uv pip install -e ".[all]"
 uv pip install "lerobot[remote,feetech,dataset] @ git+https://github.com/huggingface/lerobot@53feaef37b67e8f4c23b6953e880ff535e39d6fe"  # LeRobot main
 pytest -q tests
 ```

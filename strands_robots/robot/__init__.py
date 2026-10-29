@@ -5,6 +5,7 @@ from __future__ import annotations
 from .body import Body, SimBody
 from .robot import Robot
 from .run.result import RunResult
+from .run.source import from_agent
 from .run.task import Task
 
-__all__ = ["Robot", "Body", "SimBody", "Task", "RunResult"]
+__all__ = ["Robot", "Body", "SimBody", "Task", "RunResult", "from_agent"]

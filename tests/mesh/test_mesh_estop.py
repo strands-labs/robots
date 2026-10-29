@@ -273,3 +273,12 @@ def test_resume_by_name_on_a_loopback_zenoh_needs_trust_or_keys(tenant):
         operator.close()
         device.close()
         arm.close()
+
+
+def test_the_mesh_page_says_a_zenoh_resume_needs_keys_or_trust_names():
+    """The page told readers the operator who pressed the stop could resume; over zenoh that name is refused."""
+    from pathlib import Path
+
+    page = (Path(__file__).resolve().parents[2] / "docs" / "mesh.md").read_text()
+    assert "Resuming after an e-stop takes the operator who pressed it" not in page
+    assert "trust_names=True" in page and "resume_key=" in page and "public_keys=" in page

@@ -4,7 +4,7 @@
  *                  the reader's own CLI at 127.0.0.1:8090 when this page is served from the docs site)
  *   standalone     no server reachable: the bundled world steps in this browser and an ONNX skill drives it
  *                  (?standalone=<scene.json> picks another bundle). The browser never steps physics while a server
- *                  is connected; a server that answers later wins (re-probe every 5 s, then a reload).
+ *                  is connected; a server that answers later wins (re-probe backing off 5 s → 60 s, then a reload).
  */
 import { Standalone } from "./standalone.js";
 import { Twin } from "./twin.js";
@@ -467,7 +467,7 @@ async function probe() {
       connectChat();
       return;
     }
-    // No server anywhere: standalone, said on screen. A server that answers later wins: re-probe every 5 s, stop the
+    // No server anywhere: standalone, said on screen. A server that answers later wins: re-probe (5 s, doubling to 60 s), stop the
     // browser's physics and reload into server mode, so nothing from the standalone world survives the flip.
     $("#chatform").querySelector("button").disabled = true;
     $("#prompt").placeholder = "start strands-robots dashboard to chat with an agent";
@@ -475,10 +475,12 @@ async function probe() {
       ? `A <code>strands-robots dashboard</code> answers on <code>${LOCAL_CLI}</code> but does not allow this origin (<code>${location.origin}</code>) to read <code>/api/scene</code>: open <a href="http://${LOCAL_CLI}/">${LOCAL_CLI}</a> directly.`
       : `Start <code>strands-robots dashboard</code> to drive real worlds.`;
     if (server && server.blocked) window.__blocked = true;
-    state.reprobe = setInterval(async () => {
+    const reprobe = (wait) => { state.reprobe = setTimeout(async () => {
       const again = await probe().catch(() => null);
-      if (again && !again.blocked && !again.unreachable) { clearInterval(state.reprobe); state.standalone?.stop(); location.reload(); }
-    }, 5000);
+      if (again && !again.blocked && !again.unreachable) { state.standalone?.stop(); location.reload(); return; }
+      reprobe(Math.min(2 * wait, 60_000)); // each failed probe is a browser console error: back off 5 s → 60 s
+    }, wait); };
+    reprobe(5000);
     const bundled = await fetch(STANDALONE_SCENE, { method: "HEAD" }).then((r) => r.ok, () => false);
     if (!bundled) {
       setMode("offline", "no server");

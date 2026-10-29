@@ -1,0 +1,32 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 320" width="960" height="320" role="img" aria-labelledby="t">
+<title id="t">An agent's act call goes through the safety chain: e-stop latch, joint limits, validators, then the operator gate. A simulated body passes the gate; a hardware body passes only when confirm= says yes, otherwise RequestRefused comes back to the model as the tool result text. A run from an agent on hardware asks approve= once with its RunPlan. resume and calibrate are never offered to the model.</title>
+<style>
+text{font-family:'JetBrains Mono',ui-monospace,monospace;fill:#000}
+.m{font-size:11px;fill:#3d3c3c}.h{font-size:14px;font-weight:600}.r{font-size:11px;fill:#cf222e}
+.card{fill:#fff;stroke:#3d3c3c;stroke-width:1.2}
+.w{stroke:#b6b6b6;stroke-width:1.4;fill:none}
+.lit{fill:none;stroke:#007a3d;stroke-width:2.4;opacity:0;animation:on 8s infinite}
+.bad{fill:none;stroke:#cf222e;stroke-width:2.4;opacity:0;animation:on 8s infinite}
+.badt{opacity:0;animation:on 8s infinite}
+@keyframes on{0%,100%{opacity:0}3%,20%{opacity:1}24%{opacity:0}}
+.a1{animation-delay:0s}.a2{animation-delay:1.3s}.a3{animation-delay:2.6s}.a4{animation-delay:3.9s}.a5{animation-delay:5.2s}.a6{animation-delay:6.5s}
+</style>
+<rect width="960" height="320" fill="#fff"/>
+<path class="w" d="M170 70 H195"/><path class="w" d="M345 70 H370"/><path class="w" d="M520 70 H545"/><path class="w" d="M695 70 H720"/>
+<path class="w" d="M620 105 V195"/>
+<rect class="card" x="20" y="35" width="150" height="70" rx="6"/><rect class="lit a1" x="20" y="35" width="150" height="70" rx="6"/>
+<text class="h" x="34" y="60">model</text><text class="m" x="34" y="80">act shoulder_pan</text><text class="m" x="34" y="94">  = 1.2 rad</text>
+<rect class="card" x="195" y="35" width="150" height="70" rx="6"/><rect class="lit a2" x="195" y="35" width="150" height="70" rx="6"/>
+<text class="h" x="209" y="60">e-stop latch</text><text class="m" x="209" y="80">engaged? EStopped</text><text class="m" x="209" y="94">agent: press only</text>
+<rect class="card" x="370" y="35" width="150" height="70" rx="6"/><rect class="lit a3" x="370" y="35" width="150" height="70" rx="6"/>
+<text class="h" x="384" y="60">limits</text><text class="m" x="384" y="80">joint range, safe</text><text class="m" x="384" y="94">bounds, validators</text>
+<rect class="card" x="545" y="35" width="150" height="70" rx="6"/><rect class="lit a4" x="545" y="35" width="150" height="70" rx="6"/>
+<text class="h" x="559" y="60">operator gate</text><text class="m" x="559" y="80">sim body: pass</text><text class="m" x="559" y="94">hardware: confirm=</text>
+<rect class="card" x="720" y="35" width="215" height="70" rx="6"/><rect class="lit a5" x="720" y="35" width="215" height="70" rx="6"/>
+<text class="h" x="734" y="60">body</text><text class="m" x="734" y="80">MuJoCo targets, or</text><text class="m" x="734" y="94">goal frames on the bus</text>
+<rect class="card" x="485" y="195" width="270" height="70" rx="6"/><rect class="bad a6" x="485" y="195" width="270" height="70" rx="6"/>
+<text class="h" x="499" y="220">confirm(targets) -&gt; False</text><text class="r" x="499" y="242">RequestRefused: the operator gate</text><text class="r" x="499" y="256">refused this action</text>
+<path class="w" d="M485 230 H95 V105"/>
+<text class="m badt a6" x="110" y="222">status "error": the model reads the text</text>
+<text class="m" x="20" y="300">a run from an agent on hardware asks approve=(RunPlan) once; resume and calibrate are not in the model's rpcs</text>
+</svg>

@@ -157,3 +157,46 @@ def test_run_passes_when_the_requirements_are_met_and_the_policy_sees_the_camera
 def test_run_names_a_state_length_mismatch():
     with Simulation() as sim, pytest.raises(ValueError, match="expects a 6-dim state, the robot reports"):
         Robot("g1", sim=sim).run(_Needs(Requirements(state_dim=6)), steps=1)
+
+
+_PAN_ELBOW = {"shoulder_pan": 60.0, "elbow_flex": 30.0}
+
+
+@pytest.mark.parametrize(
+    ("returned", "refusal"),
+    [
+        (lambda seen: dict(_PAN_ELBOW), None),  # a mapping in policy units, other joints unnamed
+        (lambda seen: JointState(tuple(_PAN_ELBOW), np.array([60.0, 30.0]), np.zeros(2), np.zeros(2)), None),
+        (lambda seen: {**dict(zip(seen.joints.names, seen.joints.positions, strict=True)), **_PAN_ELBOW}, None),
+        (lambda seen: {"shoulder_pan.pos": 60.0}, "LeRobot '<joint>.pos' names"),
+        (lambda seen: {"tail": 1.0}, r"unknown joint\(s\) \['tail'\]"),
+    ],
+    ids=["dict", "joint-state", "full-dict", "lerobot-key", "unknown-key"],
+)
+def test_a_mapping_in_policy_units_converts_per_key_and_unnamed_joints_hold(returned, refusal):
+    from strands_robots.robot.run.bind import bind, decide
+
+    arm = Robot("so101", sim=Simulation())
+    u = Units.for_robot(arm.description, "lerobot")
+    obs = arm.observe()
+    bound = bind(arm, lambda seen: returned(seen), "lerobot")
+    if refusal is not None:
+        with pytest.raises(KeyError, match=refusal):
+            decide(arm, bound, obs, None)
+        return
+    keys = list(arm.description.action_keys)
+    want = u.from_rad(obs.joints.positions)
+    for k, v in _PAN_ELBOW.items():
+        want[keys.index(k)] = v
+    np.testing.assert_allclose(
+        decide(arm, bound, obs, None), arm.coerce(u.to_rad(want), measured=obs.joints.positions), atol=1e-12
+    )
+    held = [i for i, k in enumerate(keys) if k not in _PAN_ELBOW]  # an unnamed joint holds q exactly
+    np.testing.assert_allclose(decide(arm, bound, obs, None)[held], obs.joints.positions[held], atol=1e-12)
+
+
+def test_run_with_units_takes_a_mapping_policy():
+    arm = Robot("so101", sim=Simulation())
+    arm.run(lambda obs: dict(_PAN_ELBOW), hz=20, steps=3, units="lerobot")
+    pan = Units.for_robot(arm.description, "lerobot").from_rad(arm.observe().joints.positions)[0]
+    assert pan > 0  # moved toward +60 in LeRobot units

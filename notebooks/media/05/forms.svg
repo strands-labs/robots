@@ -1,0 +1,28 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 420" width="1000" height="420" role="img" aria-labelledby="t">
+<title id="t">Policy(spec) on the left; five wires fan out to five providers, lit one after another. The form of the spec picks the provider: a function becomes CallablePolicy; a preset name such as holosoma or microduck?vx=0.3 runs an ONNX graph in-process; owner/repo or a directory with config.json is a LeRobot checkpoint run in-process inside ChunkedPolicy; zenoh://host:7447/name is a lerobot-policy-server reached by ZenohPolicy; a dataset directory with ?episode=n replays a recorded episode.</title>
+<style>
+text{font-family:'JetBrains Mono',ui-monospace,monospace;fill:#000}
+.h{font-size:17px;font-weight:600}.s{font-size:13px;fill:#3d3c3c}.k{font-size:12px;fill:#3d3c3c}
+.card{fill:#fff;stroke:#3d3c3c;stroke-width:1.2}.lit{fill:none;stroke:#007a3d;stroke-width:3;opacity:0}
+.w{fill:none;stroke:#b6b6b6;stroke-width:1.2}.wl{fill:none;stroke:#007a3d;stroke-width:2.4;opacity:0}
+@keyframes on{0%,100%{opacity:0}3%,17%{opacity:1}20%{opacity:0}}
+.a0{animation:on 10s infinite 0s}
+.a1{animation:on 10s infinite 2s}
+.a2{animation:on 10s infinite 4s}
+.a3{animation:on 10s infinite 6s}
+.a4{animation:on 10s infinite 8s}
+</style>
+<rect width="1000" height="420" fill="#fff"/>
+<g stroke="#d9d9d9" stroke-width="1"><path d="M0 70H1000M0 140H1000M0 210H1000M0 280H1000M0 350H1000M200 0V420M400 0V420M600 0V420M800 0V420"/></g>
+<g transform="translate(24,165)"><rect class="card" width="200" height="90" rx="8"/><text class="h" x="16" y="38">Policy(spec)</text><text class="s" x="16" y="64">picks by form,</text><text class="s" x="16" y="80">never by name</text></g>
+<path class="w" d="M224 210 C 300 210, 300 53, 380 53"/><path class="wl a0" d="M224 210 C 300 210, 300 53, 380 53"/>
+<g transform="translate(380,20)"><rect class="card" width="596" height="66" rx="8"/><rect class="lit a0" width="596" height="66" rx="8"/><text class="h" x="16" y="28">f(obs) -&gt; action</text><text class="s" x="16" y="50">a function</text><text class="k" x="580" y="50" text-anchor="end">CallablePolicy</text></g>
+<path class="w" d="M224 210 C 300 210, 300 133, 380 133"/><path class="wl a1" d="M224 210 C 300 210, 300 133, 380 133"/>
+<g transform="translate(380,100)"><rect class="card" width="596" height="66" rx="8"/><rect class="lit a1" width="596" height="66" rx="8"/><text class="h" x="16" y="28">&quot;holosoma&quot;, &quot;microduck?vx=0.3&quot;</text><text class="s" x="16" y="50">a named ONNX preset</text><text class="k" x="580" y="50" text-anchor="end">onnxruntime, in-process</text></g>
+<path class="w" d="M224 210 C 300 210, 300 213, 380 213"/><path class="wl a2" d="M224 210 C 300 210, 300 213, 380 213"/>
+<g transform="translate(380,180)"><rect class="card" width="596" height="66" rx="8"/><rect class="lit a2" width="596" height="66" rx="8"/><text class="h" x="16" y="28">&quot;owner/repo&quot;, &lt;dir&gt;/config.json</text><text class="s" x="16" y="50">a LeRobot checkpoint</text><text class="k" x="580" y="50" text-anchor="end">ChunkedPolicy(LeRobotPolicy)</text></g>
+<path class="w" d="M224 210 C 300 210, 300 293, 380 293"/><path class="wl a3" d="M224 210 C 300 210, 300 293, 380 293"/>
+<g transform="translate(380,260)"><rect class="card" width="596" height="66" rx="8"/><rect class="lit a3" width="596" height="66" rx="8"/><text class="h" x="16" y="28">&quot;zenoh://host:7447/name&quot;</text><text class="s" x="16" y="50">a lerobot-policy-server</text><text class="k" x="580" y="50" text-anchor="end">ZenohPolicy (06)</text></g>
+<path class="w" d="M224 210 C 300 210, 300 373, 380 373"/><path class="wl a4" d="M224 210 C 300 210, 300 373, 380 373"/>
+<g transform="translate(380,340)"><rect class="card" width="596" height="66" rx="8"/><rect class="lit a4" width="596" height="66" rx="8"/><text class="h" x="16" y="28">&lt;dataset dir&gt;?episode=n</text><text class="s" x="16" y="50">a recorded episode</text><text class="k" x="580" y="50" text-anchor="end">ReplayPolicy</text></g>
+</svg>

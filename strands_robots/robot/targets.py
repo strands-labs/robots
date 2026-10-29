@@ -28,9 +28,12 @@ def clip_to_limits(description: Description, targets: np.ndarray) -> np.ndarray:
 def coerce(robot: Robot, action: Action, *, clip: bool = True, measured: np.ndarray | None = None) -> np.ndarray:
     """Any accepted Action -> a full target vector in ``action_keys`` order, clipped to limits.
 
-    A joint a mapping does not name holds its measured position (``measured=``, the observation the caller
-    already holds; else one read), clipped into its limits even when ``clip=False``: only the caller's own
-    values reach the safety chain unclipped. NaN/inf is refused (``NonFiniteTarget``).
+    A joint a mapping does not name keeps its last commanded target (``robot._held``, set by every write), so
+    a partial action holds the others against gravity instead of re-targeting wherever they sagged to. Before
+    the first write, and after ``hold()``, an e-stop or ``sim.reset()``, it is the measured position
+    (``measured=``, the observation the caller already holds; else one read). Either is clipped into its
+    limits even when ``clip=False``: only the caller's own values reach the safety chain unclipped. NaN/inf is
+    refused (``NonFiniteTarget``).
     """
     desc = robot.description
     keys = desc.action_keys
@@ -46,10 +49,13 @@ def coerce(robot: Robot, action: Action, *, clip: bool = True, measured: np.ndar
                     f"suffix and the units. action_keys are {list(keys)}"
                 )
             raise KeyError(f"unknown joint(s) {unknown} for {robot.id}; action_keys are {list(keys)}")
-        if measured is None:
-            with robot._lock:
-                measured = np.array(robot.body.read().positions, dtype=float)
-        targets = clip_to_limits(desc, measured)
+        base = robot._held
+        if base is None:
+            if measured is None:
+                with robot._lock:
+                    measured = np.array(robot.body.read().positions, dtype=float)
+            base = measured
+        targets = clip_to_limits(desc, base)
         for k, v in action.items():
             targets[keys.index(k)] = float(v)
     else:

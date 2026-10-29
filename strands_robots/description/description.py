@@ -22,6 +22,12 @@ from .registry import _NAME_RE, normalize_name, registry
 from .resolve import _resolve_asset
 
 _SCENE_CANDIDATES = ("scene.xml", "scene_mjx.xml")
+_FILES = (".xml", ".urdf", ".mjcf")
+
+
+def default_id(name: str | Path) -> str:
+    """The id a body gets when none is given: the name as the caller wrote it (``"g1"``, not ``"unitree_g1"``)."""
+    return Path(name).stem if isinstance(name, Path) or name.endswith(_FILES) else normalize_name(name)
 
 
 @dataclass(frozen=True)
@@ -101,7 +107,7 @@ class Description:
     @classmethod
     def load(cls, name: str | Path) -> Description:
         """Resolve a registry name, alias, ``robot_descriptions`` name or MJCF/URDF path."""
-        if isinstance(name, Path) or name.endswith((".xml", ".urdf", ".mjcf")):
+        if isinstance(name, Path) or name.endswith(_FILES):
             path = Path(name).expanduser().resolve()
             if not path.is_file():
                 raise FileNotFoundError(f"robot model file not found: {path}")

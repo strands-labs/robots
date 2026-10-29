@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import time
 from collections.abc import Iterator
 from contextlib import contextmanager
 from typing import Any
@@ -21,7 +22,10 @@ def page_on(url: str, *, timeout_ms: int = 60_000) -> Iterator[Any]:
             pytest.skip(f"chromium unavailable: {exc}")
         page = browser.new_page(viewport={"width": 1400, "height": 860})
         errors: list[str] = []
+        requests: list[tuple[float, str]] = []  # (monotonic s, url): every request the page makes, from load
         page.on("pageerror", lambda e: errors.append(str(e)))
+        page.on("request", lambda r: requests.append((time.monotonic(), r.url)))
+        page.requests = requests
         page.goto(url)
         page.wait_for_function("window.__sceneLoaded >= 1 || window.__error", timeout=timeout_ms)
         page.errors = errors

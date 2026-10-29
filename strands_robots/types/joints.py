@@ -78,4 +78,5 @@ class JointState:
 
 Action = np.ndarray | Mapping[str, float] | JointState
 """Joint targets, either a vector in ``Description.action_keys`` order, a ``{joint: target}`` mapping
-(missing joints hold their current position) or the ``JointState`` an observation measured (a hold)."""
+(missing joints keep their last commanded target) or the ``JointState`` an observation measured (the
+measured pose as the target: once, a hold; every step, it follows gravity down)."""

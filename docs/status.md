@@ -36,7 +36,7 @@ with the extras installed; check 9 (`tests_integ/acceptance`) needs a real SO-10
 | 11 | `dev` becomes `main` | — |
 | 12 | these docs and the notebooks | `mkdocs build --strict`, every page's first example runs |
 
-Measured on an L40S on 2026-10-15: 13 of 25 LeRobot policy families served by `lerobot-policy-server` drove a sim arm
+Measured on an L40S on 2026-10-15: 12 of 24 LeRobot policy families served by `lerobot-policy-server` drove a sim arm
 over Zenoh with every action inside the joint limits (LeRobot itself refuses the rest, with its own message); Newton
 stepped 1,024 copies of a world at 1.75 million env-steps/s.
 

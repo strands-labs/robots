@@ -17,6 +17,15 @@ def test_robot_is_a_class_and_a_body_in_the_default_world():
     assert arm.sim is None and "so101" not in Simulation.default().robots
 
 
+@pytest.mark.parametrize("limit", [{"steps": 6}, {"seconds": 0.2}])
+@pytest.mark.parametrize("world", [False, True])
+def test_a_run_reports_the_limit_its_caller_gave(limit, world):
+    arm = Robot("so101")
+    hold = lambda o: o.joints.positions  # noqa: E731
+    res = arm.sim.run({arm: hold}, hz=30, **limit)[arm.id] if world else arm.run(hold, hz=30, **limit)
+    assert (res.stopped_by, res.steps) == (next(iter(limit)), 6)
+
+
 def test_run_for_steps_reaches_target_and_measures():
     arm = Robot("so101")
     res = arm.run(lambda o: {"shoulder_pan": 0.4, "gripper": 0.8}, hz=50, steps=60)

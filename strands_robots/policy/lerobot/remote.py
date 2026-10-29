@@ -24,7 +24,7 @@ from ..base import PolicyFault
 from ..requirements import Requirements
 from .contract import Contract, lerobot
 from .link import wan_defaults
-from .sequential import Sequential
+from .sequential import Sequential, ledgered
 
 if TYPE_CHECKING:
     from ...description import Description
@@ -55,7 +55,7 @@ class ZenohPolicy:
     the last applied action; chunk behaviour uses LeRobot's settings unchanged (``mode``, ``chunk_merge``,
     ``refill_seconds``, ``blend_*`` ...). Under ``"sequential"`` ``act`` owns the loop (module docstring).
     A terminal fault raises ``PolicyFault`` with the server's reason. After ``attach``, ``policy.execution``
-    names the one running and ``policy.calls`` lists every chunk a sequential session received.
+    names the one running and ``policy.calls`` lists every chunk the session received, under either execution.
     """
 
     realtime = True  # LeRobot ages observations and paces chunks on time.monotonic()
@@ -88,7 +88,7 @@ class ZenohPolicy:
         self.tasks: tuple[str, ...] = self._tasks or ()
         self.contract: Contract | None = None
         self.hz: float | None = None
-        self.calls: list[dict[str, Any]] = []  # every chunk a sequential session received (wall s, rows, server)
+        self.calls: list[dict[str, Any]] = []  # every chunk a session received (wall s, rows, server, instruction)
         self._engine: Any = None  # splice: LeRobot's engine
         self._seq: Sequential | None = None  # sequential: ours
         self._client: Any = None
@@ -162,6 +162,7 @@ class ZenohPolicy:
         from lerobot.remote_inference import RemoteInferenceEngine
         from lerobot.utils.action_interpolator import ActionInterpolator
 
+        client.infer = ledgered(client.infer, contract, self.calls)  # LeRobot's engine asks; the ledger is ours
         self._engine = RemoteInferenceEngine(client, config, task="")
         self._interp = ActionInterpolator(multiplier=1)
         self._engine.start()

@@ -60,15 +60,13 @@ class Simulation(_SceneOps):
             raise ValueError(f"ground={ground!r}; choose True, False, 'checker' or 'plain'")
         self.backend_name, self.physics_name = backend, physics
         self.headless, self.device = headless, device
-        self.num_envs = num_envs
-        self.render_size = render_size
+        self.num_envs, self.render_size = num_envs, render_size
         self.scene = Scene(gravity=gravity, timestep=timestep, ground=ground)
         self._substeps = substeps
         self._robots: dict[str, Member] = {}
         self.revision = 0  # bumped on every scene change (add/remove/add_object/camera/set_pose/randomize)
         self.lock = WorldLock()  # one lock around the world: agents' act() and a dashboard's reads share it
-        self._manual = 0
-        self._editing, self._pending, self._gone = 0, False, []
+        self._manual, self._editing, self._pending, self._gone = 0, 0, False, []
         self._built: dict[str, tuple[tuple[float, ...], tuple[float, ...]]] = {}  # each robot's frame as compiled
         self._closed = False
         cls = load_backend(backend, physics)
@@ -169,6 +167,8 @@ class Simulation(_SceneOps):
             raise ValueError(f"keyframe {keyframe!r} is not on any robot in this world; keyframes are {sorted(named)}")
         with self.lock:
             self.backend.reset(keyframe)
+            for r in self._robots.values():  # every body is back at its spawn pose: no old target survives
+                r._held = None
 
     @property
     def time(self) -> float:
@@ -208,11 +208,9 @@ class Simulation(_SceneOps):
         return lockstep(self, bodies, hz=hz, seconds=seconds, steps=steps, instruction=instruction, units=units)  # type: ignore[arg-type]
 
     def pose(self, body: str) -> Pose:
-        """Where a robot base or object is now: position m, orientation quaternion w,x,y,z."""
-        if body not in self._robots and not any(o.name == body for o in self.scene.objects):
-            raise KeyError(f"no body {body!r} in this world")
+        """Where a robot base, an object or a robot link (``"so101/gripper"``) is now: position m, quat w,x,y,z."""
         with self.lock:
-            return self.backend.body_pose(body)
+            return self.backend.body_pose(_describe.known(self, body))
 
     @property
     def tool(self) -> Any:

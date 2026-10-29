@@ -80,6 +80,7 @@ def spec(mesh: Mesh) -> dict[str, Any]:
         "device_id": {"type": "string", "description": "the device, for describe/observe/act/run/stop/resume"},
         "selector": {"type": "string", "description": "for list and estop; default device(*)"},
         "act": {"type": "object", "properties": joints, "description": "joint targets, radians"},
+        "seconds": {"type": "number", "description": "act: reach the targets over this long; without it, one step"},
         "run": {
             "type": "object",
             "properties": {
@@ -104,7 +105,7 @@ def dispatch(mesh: Mesh, inp: Mapping[str, Any]) -> Any:
     action, did = inp.get("action"), inp.get("device_id")
     if action not in ACTIONS:
         raise ValueError(f"action must be one of {list(ACTIONS)}, got {action!r}")
-    extra = sorted(set(inp) - {"action", "device_id", "selector", "act", "run", "approved_by"})
+    extra = sorted(set(inp) - {"action", "device_id", "selector", "act", "seconds", "run", "approved_by"})
     if extra:
         raise TypeError(f"use_mesh does not take {extra}")
     if action == "list":
@@ -114,7 +115,8 @@ def dispatch(mesh: Mesh, inp: Mapping[str, Any]) -> Any:
     if not isinstance(did, str):
         raise ValueError(f"{action} needs device_id")
     if action == "act":
-        return mesh.invoke(did, "act", action=dict(inp.get("act") or {}))
+        reach = {} if inp.get("seconds") is None else {"seconds": inp["seconds"]}
+        return mesh.invoke(did, "act", action=dict(inp.get("act") or {}), **reach)
     if action == "run":
         args = dict(inp.get("run") or {})
         extra = sorted(set(args) - set(RUN_ARGS))  # record=/push= are the developer's: nothing leaves on a model's say

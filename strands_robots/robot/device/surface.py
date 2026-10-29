@@ -69,6 +69,7 @@ class DeviceVerbs:
         """Keep the current joint positions (under torque on hardware)."""
         with self._robot._lock:
             self._robot.body.hold()
+            self._robot._held = None  # the measured pose is the target now
 
     def subscribe(
         self, event: str, cb: Callable[[dict[str, Any]], Any], *, hz: float | None = None

@@ -1,0 +1,26 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 320" width="900" height="320" role="img" aria-labelledby="t">
+<title id="t">One Simulation box holds two robots, Robot("so101") and Robot("g1"), and a camera. Under them one clock, sim.time, ticks forward in 20 ms control steps; each tick lights both robot cards at once, because sim.run steps the world once after every robot has acted.</title>
+<style>
+text{font-family:'JetBrains Mono',ui-monospace,monospace;fill:#000}
+.h{font-size:16px;font-weight:600}.s{font-size:12.5px;fill:#3d3c3c}
+.card{fill:#fff;stroke:#3d3c3c;stroke-width:1.2}.world{fill:none;stroke:#28292a;stroke-width:1.5}
+.lit{fill:none;stroke:#007a3d;stroke-width:3;animation:on 2s infinite}
+@keyframes on{0%,100%{opacity:0}10%,45%{opacity:1}60%{opacity:0}}
+.tick{fill:#9fd9b0}.now{fill:#007a3d}
+</style>
+<rect width="900" height="320" fill="#fff"/>
+<g stroke="#d9d9d9"><path d="M0 80H900M0 160H900M0 240H900M180 0V320M360 0V320M540 0V320M720 0V320"/></g>
+<rect class="world" x="20" y="20" width="860" height="280" rx="10"/>
+<text class="h" x="40" y="50">Simulation.default()</text><text class="s" x="270" y="50">mujoco · timestep 2 ms · substeps 10</text>
+<g transform="translate(40,75)"><rect class="card" width="240" height="100" rx="8"/><rect class="lit" width="240" height="100" rx="8"/>
+<text class="h" x="14" y="30">Robot("so101")</text><text class="s" x="14" y="56">id so101 · 6 dof</text><text class="s" x="14" y="76">cameras: wrist (so101/gripper)</text></g>
+<g transform="translate(310,75)"><rect class="card" width="240" height="100" rx="8"/><rect class="lit" width="240" height="100" rx="8"/>
+<text class="h" x="14" y="30">Robot("g1")</text><text class="s" x="14" y="56">id unitree_g1 · 29 dof</text><text class="s" x="14" y="76">floating base, keyframe stand</text></g>
+<g transform="translate(580,75)"><rect class="card" width="280" height="100" rx="8"/>
+<text class="h" x="14" y="30">sim.camera("front")</text><text class="s" x="14" y="56">a world camera:</text><text class="s" x="14" y="76">sim.render("front")</text></g>
+<text class="s" x="40" y="215">sim.time — one clock for every body</text>
+<path d="M40 245H860" stroke="#3d3c3c" stroke-width="1.2"/>
+<g id="ticks"><rect class="tick" x="40" y="236" width="6" height="18"/><rect class="tick" x="80" y="236" width="6" height="18"/><rect class="tick" x="120" y="236" width="6" height="18"/><rect class="tick" x="160" y="236" width="6" height="18"/><rect class="tick" x="200" y="236" width="6" height="18"/><rect class="tick" x="240" y="236" width="6" height="18"/><rect class="tick" x="280" y="236" width="6" height="18"/><rect class="tick" x="320" y="236" width="6" height="18"/></g>
+<rect class="now" y="232" width="6" height="26"><animate attributeName="x" values="40;80;120;160;200;240;280;320;360" dur="16s" repeatCount="indefinite" calcMode="discrete"/></rect>
+<text class="s" x="400" y="276">each tick: every robot acts, then the world steps once (20 ms)</text>
+</svg>

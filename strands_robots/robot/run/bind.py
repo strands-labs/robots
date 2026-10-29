@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import math
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from numbers import Real
 from typing import TYPE_CHECKING, Any
@@ -12,7 +12,7 @@ import numpy as np
 
 from ...policy import PolicyLike, as_policy
 from ...policy.requirements import Requirements
-from ...types import Observation
+from ...types import JointState, Observation
 from ...units import Units, calibrated, resolve_units
 from .source import refuse_remote_spec
 
@@ -111,10 +111,11 @@ def release(bound: Bound) -> None:
 def decide(
     robot: Robot, bound: Bound, obs: Observation, instruction: str | None, *, clip: bool = True
 ) -> np.ndarray | None:
-    """One inference in the policy's units, as full targets in the robot's radians; joints it leaves out hold
-    their position in ``obs`` (no second read). ``clip=False`` (an agent run): an out-of-range target is kept so
-    the safety chain refuses it, instead of being silently moved to the limit (K6). ``None`` when the policy
-    returned ``None``: it holds this tick (nothing to coerce, gate or write)."""
+    """One inference in the policy's units, as full targets in the robot's radians. A vector, or a ``{joint:
+    value}`` mapping converted per key: joints it leaves out hold their position in ``obs`` (no second read).
+    ``clip=False`` (an agent run): an out-of-range target is kept so the safety chain refuses it, instead of being
+    silently moved to the limit (K6). ``None`` when the policy returned ``None``: it holds this tick (nothing to
+    coerce, gate or write)."""
     pol, conv, q = bound.policy, bound.units, np.asarray(obs.joints.positions, dtype=float)
     if conv is None:
         out = pol.act(obs, instruction=instruction)
@@ -123,6 +124,18 @@ def decide(
     out = pol.act(seen, instruction=instruction)
     if out is None:
         return None
+    if isinstance(out, JointState):
+        out = out.as_dict()
+    if isinstance(out, Mapping):  # per key, in policy units; an unnamed joint holds q, an unknown one coerce refuses
+        names = list(obs.joints.names)
+        u = np.array(seen.joints.positions, dtype=float)
+        for k, v in out.items():
+            if k in names:
+                u[names.index(k)] = v
+        rad = conv.to_rad(u)
+        return robot.coerce(
+            {k: rad[names.index(k)] if k in names else v for k, v in out.items()}, clip=clip, measured=q
+        )
     return robot.coerce(conv.to_rad(np.asarray(out, dtype=float)), clip=clip, measured=q)
 
 

@@ -251,17 +251,16 @@ def _run_left_and_right(**limits):
     return [("robot_so101", {"rpc": "run", "run": {"policy": f"tests.{s}", **limits}}) for s in ("left", "right")]
 
 
-def test_two_runs_in_one_model_turn_are_one_run_and_one_refusal(two_policies):
+def test_two_runs_in_one_model_turn_run_one_after_the_other(two_policies):
     """strands runs one message's tool uses at once: both runs drove one hardware so101, their goals alternating on
-    the bus. The second is refused with ``Robot.start``'s message, and one policy decides every step."""
+    the bus. The tool now takes them in the order sent: left decides its ten steps, then right its ten, never mixed."""
     from strands_robots import Robot
 
     d, serial = make_driver()
     real = Robot("so101", driver=d, twin=False, approve=lambda p: True)
-    done = sorted((r["status"], r["content"][0]["text"]) for r in _turn(real, [_run_left_and_right(steps=10, hz=20)]))
-    assert [status for status, _ in done] == ["error", "success"], done
-    assert done[0][1] == "RuntimeError: robot 'so101' already has a running task; call stop() first"
-    assert len(two_policies) == 10 and len(set(two_policies)) == 1, two_policies
+    done = [r["status"] for r in _turn(real, [_run_left_and_right(steps=10, hz=20)])]
+    assert done == ["success", "success"], done
+    assert two_policies == ["left"] * 10 + ["right"] * 10, two_policies
     real.close()
 
 

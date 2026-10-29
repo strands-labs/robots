@@ -11,16 +11,17 @@ from strands_robots import Robot, Simulation
 
 arm = Robot("so101"); g1 = Robot("g1", position=[1, 0, 0])   # two bodies, no world given, so they join the default one
 sim = Simulation.default()        # MuJoCo, headless; the world arm and g1 joined
-sim.robots                        # {"so101": ..., "unitree_g1": ...}: ids are unique, a second so101 is "so101_2"
+sim.robots                        # {"so101": ..., "g1": ...}: an id is the name as written, unique: a second so101 is "so101_2"
 sim.physics                       # Physics("mujoco", timestep=0.002, substeps=10): control_dt is 20 ms
 sim.control_step()                # what act() costs a simulated robot: one control step for the whole world
 with sim.manual_time():           # inside, act() only writes targets; the caller calls sim.step(n)
     ...
-sim.set_pose("unitree_g1", position=[2, 0, 0.8])   # teleport; velocities zeroed, time does not advance
+sim.set_pose("g1", position=[2, 0, 0.8])   # teleport; velocities zeroed, time does not advance
 sim.add_object("box", shape="box", position=[0.3, 0, 0.1], size=[0.03, 0.03, 0.03])
 sim.camera("wrist", position=[0.035, 0, -0.02], target=[-0.2, 0, -0.09], attach="so101/gripper")  # link frame
-sim.render()                      # HxWx3 uint8 from the auto-framed overview camera that sees every robot
+sim.render()                      # HxWx3 uint8 from the overview camera, fitted to every robot's geometry
 sim.pose("box")                   # where it is now: position (m), quaternion (w, x, y, z)
+sim.pose("so101/gripper")         # a link too (any name in describe()["robots"]["so101"]["links"]): the end effector
 sim.remove("wrist")               # a robot, an object or a camera, by name
 sim.describe()                    # robots, objects where they are now, cameras, physics, time; JSON-safe
 ```
@@ -43,8 +44,8 @@ Vectors are numbers, never strings: `position` 3, `orientation` a `(w, x, y, z)`
 `randomize` takes a factor or a `(lo, hi)` range and returns what it drew: the world factors, `scales[<target>]` per targeted body, `camera_jitter` per camera. `sim.tool` offers all of these to
 an agent, and `run({"a": spec, "b": spec})` drives robots in lock-step by id.
 
-`Simulation()` refuses what it cannot be: an unknown backend, `physics=` other than `native`,
-`substeps` below 1, `num_envs` above 1, an unknown keyword. Without the `mujoco` extra it raises an `ImportError` that
+`Simulation()` refuses what it cannot be: an unknown backend, `physics=` other than `native` or `newton`,
+`substeps` below 1, `num_envs` above 1 without `physics="newton"`, an unknown keyword. Without the `mujoco` extra it raises an `ImportError` that
 says `pip install 'strands-robots[mujoco]'`, not a bare `ModuleNotFoundError`.
 
 {{drawing:d08_missing_extra}}

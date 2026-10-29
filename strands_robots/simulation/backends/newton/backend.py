@@ -100,6 +100,11 @@ class NewtonBackend(MuJoCoBackend):
             self._fresh()
             return super().render(camera)
 
+    def outline(self) -> np.ndarray | None:
+        with self._mirror:
+            self._fresh()
+            return super().outline()
+
     def contacts(self) -> list[Contact]:
         with self._mirror:
             self._fresh()

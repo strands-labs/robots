@@ -156,3 +156,10 @@ def test_a_peer_cannot_write_prose_into_the_tool_description(lab):
     assert "IMPORTANT" not in text and "xxxx" not in text
     assert all(json.loads(line[2:]) for line in text.splitlines()[1:]), "one JSON line per device"
     assert wire.check_id("helper", "device_id") in text
+
+
+def test_act_with_seconds_reaches_the_pose_through_the_tool(lab):
+    m, arm = lab
+    assert m.tool.tool_spec["inputSchema"]["json"]["properties"]["seconds"]["type"] == "number"
+    status, obs = call(m.tool, action="act", device_id="arm", act={"shoulder_pan": 0.4}, seconds=1.0)
+    assert status == "success" and obs["joints"]["shoulder_pan"] == pytest.approx(0.4, abs=0.02)

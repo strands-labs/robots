@@ -4,5 +4,6 @@ from __future__ import annotations
 
 from .calibration import Calibration, JointCalibration
 from .driver import Driver, driver_kind, make_driver
+from .memory import MemoryDriver
 
-__all__ = ["Driver", "Calibration", "JointCalibration", "make_driver", "driver_kind"]
+__all__ = ["Driver", "Calibration", "JointCalibration", "make_driver", "driver_kind", "MemoryDriver"]

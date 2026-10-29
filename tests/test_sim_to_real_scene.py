@@ -54,6 +54,19 @@ def test_a_camera_rides_any_link_the_world_describes(world):
     assert sim.scene.cameras == []  # a robot takes its cameras, base or link, with it
 
 
+def test_pose_answers_every_link_the_world_describes(world):
+    sim, arm = world
+    tip = sim.pose(f"{arm.id}/gripper").position
+    arm.act({"shoulder_pan": 0.8})
+    sim.step(200)
+    moved = sim.pose(f"{arm.id}/gripper").position
+    assert np.linalg.norm(moved - tip) > 0.05  # an end effector, live: it follows the joints
+    assert np.allclose(sim.pose(f"{arm.id}/base").position, sim.pose(arm.id).position)
+    for bad, hint in [("gripper", "so101/gripper"), ("so101/nope", None), ("ghost/gripper", "so101/gripper")]:
+        with pytest.raises(KeyError, match=f"no body '{bad}'" + (f".*'<robot>/<link>'.*{hint}" if hint else "")):
+            sim.pose(bad)
+
+
 ARM = {"base", "shoulder", "upper_arm", "lower_arm", "wrist", "gripper", "moving_jaw_so101_v1"}
 
 

@@ -44,15 +44,24 @@ def _run_as_the_task(device: Any) -> Callable[..., Any]:
     return run
 
 
+def named(policy: Any, handle: str) -> Any:
+    """A bare callable registered as ``handle`` keeps that name: it is what the operator approves (``RunPlan``)."""
+    from ..policy import PolicyLike
+    from ..policy.callable import CallablePolicy
+
+    return CallablePolicy(policy, name=handle) if callable(policy) and not isinstance(policy, PolicyLike) else policy
+
+
 def resolve_policy(args: Mapping[str, Any], policies: Mapping[str, Any]) -> dict[str, Any]:
     """``policy="ttt"`` -> the registered handle; left out with exactly one handle -> that one; a string that is not
     a handle stays a spec for ``run`` (a preset, a Hub repo; a network address was refused before this)."""
     out = dict(args)
     spec = out.get("policy")
     if isinstance(spec, str) and spec in policies:
-        out["policy"] = policies[spec]
+        out["policy"] = named(policies[spec], spec)
     elif spec is None and "policy" not in out and len(policies) == 1:
-        out["policy"] = next(iter(policies.values()))
+        handle, only = next(iter(policies.items()))
+        out["policy"] = named(only, handle)
     elif spec is None and "policy" not in out and policies:
         raise ValueError(f"policy is required: one of the registered {sorted(policies)}")
     return out

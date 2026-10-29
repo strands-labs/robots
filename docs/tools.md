@@ -23,6 +23,9 @@ On a real turn, Claude looked first, then moved the joint: it landed at 0.469, t
 
 One agent can hold both: [`agent_builds_a_scene.py`](https://github.com/strands-labs/robots/blob/dev/notebooks/examples/agent_builds_a_scene.py)
 gives it `sim.tool` and `arm.tool`; it places three cubes and a camera, moves `shoulder_pan` and renders what it built.
+Calls on one world run in the order the model sent them, even under strands' default executor, which starts every
+call of one message at once: `camera c`, `act`, `render c` in one message renders from `c` after the arm moved. No
+`SequentialToolExecutor()` needed.
 
 Nobody writes these by hand. They're generated from the robot's manifest and method signatures, so a new skill or a
 new joint shows up in the tool automatically. A `policy` argument lists the shipped presets (`holosoma`,

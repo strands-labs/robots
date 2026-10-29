@@ -7,13 +7,14 @@ from typing import Literal
 
 from ...types import Observation
 
-StoppedBy = Literal["steps", "stop_when", "stopped", "fault", "estop", "deadline"]
+StoppedBy = Literal["steps", "seconds", "stop_when", "stopped", "fault", "estop", "deadline"]
 
 
 @dataclass(frozen=True)
 class RunResult:
     """What ``Robot.run`` measured: how many policy steps ran, over how long, and why it stopped.
 
+    ``stopped_by`` names the limit that ended it: ``"seconds"`` / ``"steps"`` for the one the caller gave.
     ``seconds`` is on the body's clock: in a world, the sim time its steps advanced; on hardware, the commanded
     span (first write to one period after the last), so ``hz_achieved == hz_target`` exactly when
     ``deadline_misses == 0``. A miss is a paced write that landed after the next tick should have started

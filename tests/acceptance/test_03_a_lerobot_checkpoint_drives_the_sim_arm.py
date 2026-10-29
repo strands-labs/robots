@@ -45,6 +45,6 @@ def test_a_lerobot_checkpoint_drives_the_sim_arm():
     arm = arm_with_wrist_camera()
     start = arm.observe().joints.positions.copy()
     r = arm.run(Policy(path, device="cpu"), seconds=2)
-    assert r.stopped_by == "steps" and r.steps == 60 and r.fault is None, r
+    assert r.stopped_by == "seconds" and r.steps == 60 and r.fault is None, r
     assert inside_limits(arm, r.final.joints.positions)
     assert np.abs(r.final.joints.positions - start).max() > 1e-3  # the policy moved the arm

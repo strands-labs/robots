@@ -18,6 +18,10 @@ A policy is whatever does the thinking. You pick one by how you write it:
 
 Get it wrong and it tells you every form it understands, before anything loads.
 
+Your own function returns a `{joint: value}` mapping to move, or `None` to **hold**: the body keeps its last
+target that tick, counted in `RunResult.holds`, never a missed deadline — how a run waits on a slow policy
+or network without booking a miss.
+
 ## The duck has skills
 
 The microduck ships with ten skills from Pollen Robotics. Each is one string:

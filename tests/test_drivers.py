@@ -677,6 +677,9 @@ def test_robot_id_names_the_lerobot_calibration_file_and_an_uncalibrated_arm_war
     named = Robot("so101", port="/dev/fake", id="blue_follower", robot_id="other", twin=False)
     assert named.body.calibration_source == str(p.parent / "other.json")  # an explicit robot_id= still wins
     named.close()
+    alias = Robot("so101_follower", port="/dev/fake", twin=False)  # the id is the name as written ...
+    assert alias.id == "so101_follower" and alias.body.calibration_source is None  # ... but only id= names a file
+    alias.close()
     with pytest.warns(UserWarning, match=r"no calibration found.*so_follower/nobody\.json"):
         bare = Robot("so101", port="/dev/fake", id="nobody", twin=False)
     assert bare.body.calibration is None

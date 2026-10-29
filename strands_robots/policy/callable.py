@@ -14,8 +14,9 @@ from .base import Policy, PolicyLike
 class CallablePolicy(Policy):
     """Adapts ``f(obs) -> action`` (optionally ``f(obs, instruction=...)``)."""
 
-    def __init__(self, fn: Callable[..., Any]) -> None:
+    def __init__(self, fn: Callable[..., Any], name: str | None = None) -> None:
         self.fn = fn
+        self.name = name or str(getattr(fn, "__name__", fn))  # what an operator reads: the handle, not a repr
         try:
             self._takes_instruction = "instruction" in inspect.signature(fn).parameters
         except (TypeError, ValueError):
@@ -25,7 +26,7 @@ class CallablePolicy(Policy):
         return self.fn(obs, instruction=instruction) if self._takes_instruction else self.fn(obs)
 
     def __repr__(self) -> str:
-        return f"Policy({getattr(self.fn, '__name__', self.fn)!r})"
+        return f"Policy({self.name!r})"
 
 
 def as_policy(p: Any) -> PolicyLike:

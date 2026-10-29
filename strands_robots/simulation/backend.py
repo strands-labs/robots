@@ -85,6 +85,11 @@ class Backend(ABC):
         """The link (body) names of a robot, for ``camera(attach="<robot>/<link>")``; empty if the engine cannot say."""
         return []
 
+    def outline(self) -> np.ndarray | None:
+        """World points (N x 3) around every robot's visible geometry, for the overview camera to frame; None if
+        the engine cannot say (the overview then guesses from base positions)."""
+        return None
+
     @abstractmethod
     def close(self) -> None: ...
 

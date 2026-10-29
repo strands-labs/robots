@@ -76,7 +76,8 @@ def _lockstep(
     total = steps if steps is not None else int(round(float(seconds or 0.0) / dt))
     paced = any(b.realtime for b in bound.values())
     pacer = Pacer(dt, now=MONOTONIC.now, sleep=MONOTONIC.sleep) if paced else None
-    why: StoppedBy = "steps"
+    limit: StoppedBy = "steps" if steps is not None else "seconds"  # the limit the caller gave
+    why = limit
     faults: dict[str, str] = {}
     ended: list[Robot] = []
     n = 0
@@ -100,7 +101,7 @@ def _lockstep(
                     if step.fault is not None:
                         faults[r.id] = step.fault
                     break
-            if why != "steps":
+            if why != limit:
                 break
             if pacer is not None:
                 pacer.before_write()  # the world's step is lockstep's write: spaced by one period

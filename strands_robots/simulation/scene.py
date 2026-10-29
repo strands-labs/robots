@@ -10,6 +10,19 @@ import numpy as np
 from ..description import Description
 
 _IDENTITY_QUAT = (1.0, 0.0, 0.0, 0.0)
+_BACK = np.array([0.0, -1.0, 0.65]) / np.linalg.norm([0.0, -1.0, 0.65])  # the overview looks from -y, from above
+_RIGHT, _UP = np.array([1.0, 0.0, 0.0]), np.cross(_BACK, [1.0, 0.0, 0.0])
+_TAN = np.tan(np.radians(45.0 / 2))  # half the default vertical field of view
+
+
+def _frame(points: np.ndarray, center: np.ndarray, aspect: float) -> tuple[float, np.ndarray]:
+    """The distance along ``_BACK`` from ``center`` that keeps every point in view with a 10 % margin, and the
+    points' image coordinates (right, up, in units of the half view) seen from there."""
+    off = points - center
+    side, high = np.abs(off @ _RIGHT) / (_TAN * aspect), np.abs(off @ _UP) / _TAN
+    dist = 1.1 * max(float((off @ _BACK + np.maximum(side, high)).max()), 0.2)
+    depth = dist - off @ _BACK
+    return dist, np.array([off @ _RIGHT / (depth * _TAN * aspect), off @ _UP / (depth * _TAN)])
 
 
 @dataclass
@@ -66,8 +79,17 @@ class Scene:
     scales: dict[str, tuple[float, float]] = field(default_factory=dict)  # (friction, mass) of one robot or object
     camera_jitter: dict[str, tuple[float, float, float]] = field(default_factory=dict)  # metres, per camera
 
-    def overview(self) -> dict[str, Any]:
-        """A camera position that sees every robot: look at their centroid from the -y side."""
+    def overview(self, outline: np.ndarray | None = None, aspect: float = 4 / 3) -> dict[str, Any]:
+        """A camera that sees every robot from the -y side. Given ``outline`` (world points around the robots'
+        geometry) it frames them in the default 45 degree view (``aspect`` = width / height) with a 10 % margin;
+        without one it guesses from the robots' base positions."""
+        if outline is not None and len(outline):
+            center = (outline.min(axis=0) + outline.max(axis=0)) / 2
+            for _ in range(3):  # fit the distance, centre the projected extent, fit again
+                dist, (x, y) = _frame(outline, center, aspect)
+                mid_x, mid_y = (x.min() + x.max()) / 2, (y.min() + y.max()) / 2
+                center = center + dist * _TAN * (_RIGHT * aspect * mid_x + _UP * mid_y)
+            return {"position": tuple(center + _frame(outline, center, aspect)[0] * _BACK), "target": tuple(center)}
         pts = np.array([r.position for r in self.robots] or [(0.0, 0.0, 0.0)])
         center = pts.mean(axis=0) + np.array([0.0, 0.0, 0.4])
         spread = float(np.ptp(pts, axis=0).max()) if len(pts) > 1 else 0.0

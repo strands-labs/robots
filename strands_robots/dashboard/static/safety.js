@@ -75,9 +75,14 @@ function paint(estop) {
   for (const [id, { row }] of rows) if (!(id in (estop || {}))) { row.remove(); rows.delete(id); }
 }
 
+/* Only a server has something to stop: in standalone, static or offline mode the panel is hidden and never polls. */
+panel.hidden = true;
+let meshTimer = 0;
 setInterval(() => {
-  const frame = window.__state && window.__state.lastFrame;
-  if (frame && frame.estop) paint(frame.estop);
+  const st = window.__state;
+  panel.hidden = st?.mode !== "server";
+  if (!panel.hidden && !meshTimer) { pollMesh(); meshTimer = setInterval(pollMesh, 2000); }
+  if (st?.lastFrame?.estop) paint(st.lastFrame.estop);
 }, 50);
 
 /* Mesh devices (other peers' robots): listed under the world's, each with its own E-STOP (resume stays with the
@@ -112,5 +117,3 @@ async function pollMesh() {
     meshBox.appendChild(row);
   }
 }
-pollMesh();
-setInterval(pollMesh, 2000);

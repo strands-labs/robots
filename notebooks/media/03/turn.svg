@@ -1,0 +1,48 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 300" width="960" height="300" role="img" aria-labelledby="t">
+<title id="t">One agent turn, lit step by step: a sentence from you, the model picks a tool call, sim_world.add_object runs and the world rebuilds, sim_world.render returns a picture, the picture goes back to the model as an image block, and the model answers in text.</title>
+<style>
+text{font-family:'JetBrains Mono',ui-monospace,monospace;fill:#000}
+.s{font-size:13px}.m{font-size:11px;fill:#3d3c3c}.h{font-size:15px;font-weight:600}
+.card{fill:#fff;stroke:#3d3c3c;stroke-width:1.2}
+.lit{fill:#fff;stroke:#007a3d;stroke-width:2.4;opacity:0;animation:on 9s infinite}
+.w{stroke:#b6b6b6;stroke-width:1.4;fill:none}
+.dot{fill:#007a3d;opacity:0;animation:on 9s infinite}
+@keyframes on{0%,100%{opacity:0}2%,14%{opacity:1}17%{opacity:0}}
+.a1{animation-delay:0s}.a2{animation-delay:1.5s}.a3{animation-delay:3s}.a4{animation-delay:4.5s}.a5{animation-delay:6s}.a6{animation-delay:7.5s}
+</style>
+<rect width="960" height="300" fill="#fff"/>
+<g stroke="#d9d9d9" stroke-width="0.6">
+<line x1="0" y1="150" x2="960" y2="150"/>
+</g>
+<path class="w" d="M150 80 H190"/><path class="w" d="M330 80 H370"/><path class="w" d="M640 80 H680"/>
+<path class="w" d="M760 120 V200 H700"/><path class="w" d="M440 230 H400"/><path class="w" d="M260 200 V120"/>
+
+<rect class="card" x="20" y="45" width="130" height="70" rx="6"/>
+<rect class="lit a1" x="20" y="45" width="130" height="70" rx="6"/>
+<text class="h" x="34" y="72">you</text><text class="m" x="34" y="94">"add a red cube</text><text class="m" x="34" y="108"> on the table"</text>
+
+<rect class="card" x="190" y="45" width="140" height="70" rx="6"/>
+<rect class="lit a2" x="190" y="45" width="140" height="70" rx="6"/>
+<text class="h" x="204" y="72">model</text><text class="m" x="204" y="94">picks rpc + args</text><text class="m" x="204" y="108">from the schema</text>
+
+<rect class="card" x="370" y="45" width="270" height="70" rx="6"/>
+<rect class="lit a3" x="370" y="45" width="270" height="70" rx="6"/>
+<text class="h" x="384" y="72">sim_world.add_object</text><text class="m" x="384" y="94">{"name":"red_cube","shape":"box",</text><text class="m" x="384" y="108"> "size":[.015,.015,.015], ...}</text>
+
+<rect class="card" x="680" y="45" width="160" height="75" rx="6"/>
+<rect class="lit a4" x="680" y="45" width="160" height="75" rx="6"/>
+<text class="h" x="694" y="72">world</text><text class="m" x="694" y="94">scene += object</text><text class="m" x="694" y="108">MuJoCo rebuilds</text>
+
+<rect class="card" x="440" y="190" width="260" height="80" rx="6"/>
+<rect class="lit a5" x="440" y="190" width="260" height="80" rx="6"/>
+<text class="h" x="454" y="216">sim_world.render</text><text class="m" x="454" y="238">-> {"image_shape":[360,480,3]}</text><text class="m" x="454" y="254">   + one PNG block</text>
+<rect x="648" y="196" width="44" height="30" fill="#28292a"/><rect x="666" y="212" width="9" height="9" fill="#cf222e"/>
+
+<rect class="card" x="130" y="190" width="270" height="80" rx="6"/>
+<rect class="lit a6" x="130" y="190" width="270" height="80" rx="6"/>
+<text class="h" x="144" y="216">model sees it, answers</text><text class="m" x="144" y="238">"There's now a red cube on</text><text class="m" x="144" y="254"> the table ..."</text>
+
+<circle class="dot a1" cx="170" cy="80" r="4"/><circle class="dot a2" cx="350" cy="80" r="4"/><circle class="dot a3" cx="660" cy="80" r="4"/>
+<circle class="dot a4" cx="760" cy="160" r="4"/><circle class="dot a5" cx="420" cy="230" r="4"/><circle class="dot a6" cx="260" cy="160" r="4"/>
+<text class="m" x="20" y="292">errors go back as text (status "error"), so the model corrects its next call</text>
+</svg>

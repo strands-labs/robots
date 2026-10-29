@@ -86,3 +86,10 @@ def test_resuming_a_real_body_needs_x_confirm(served) -> None:
     assert r.status_code == 403 and "X-Confirm" in r.json()["detail"] and real.estopped
     r = httpx.post(url, json={"approved_by": "me"}, headers={"X-Confirm": "yes"})
     assert r.status_code == 200 and not real.estopped
+
+
+def test_a_robot_written_g1_is_served_at_its_own_name(served) -> None:
+    sim, _, _, server = served
+    g1 = Robot("g1", sim=sim, position=[1.0, 0.0, 0.0])
+    r = httpx.post(f"{server.url}/api/robots/g1/estop", json={})
+    assert r.status_code == 200 and g1.estopped, r.text  # was 404: "robots are ['so101', 'unitree_g1']"

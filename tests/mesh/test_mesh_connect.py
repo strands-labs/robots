@@ -175,3 +175,14 @@ def test_the_registry_not_a_manifest_decides_position_hold(tenant, robot_type, m
         operator.close()
         liar.close()
         sim.close()
+
+
+def test_a_robot_from_the_mesh_reprs_as_remote_not_hardware(mesh_pair):
+    a, b = mesh_pair
+    device = Robot("so101", sim=Simulation())
+    a.mount(device, device_id="arm", watchdog_ms=None)
+    assert b.discover("arm", min_count=1, timeout=3.0)
+    remote = b.connect("arm")
+    assert "remote on" in repr(remote) and "hardware" not in repr(remote)
+    a.close()
+    device.sim.close()

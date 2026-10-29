@@ -187,3 +187,13 @@ def add_ground(spec: mujoco.MjSpec, ground: bool | str) -> None:
         mat.textures[mujoco.mjtTextureRole.mjTEXROLE_RGB] = "groundtex"
         geom["material"] = "groundmat"
     spec.worldbody.add_geom(**geom)
+
+
+def outline(model: mujoco.MjModel, data: mujoco.MjData, roots: list[int]) -> np.ndarray:
+    """The world corners of every visible geom's box (groups 0-2, what a render draws) in the trees under ``roots``."""
+    g = np.flatnonzero(np.isin(model.body_rootid[model.geom_bodyid], roots) & (model.geom_group < 3))
+    g = g[model.geom_rgba[g, 3] > 0]
+    signs = np.array([[x, y, z] for x in (-1, 1) for y in (-1, 1) for z in (-1, 1)], dtype=float)
+    local = model.geom_aabb[g, None, :3] + signs[None] * model.geom_aabb[g, None, 3:]  # n x 8 x 3, geom frame
+    world = data.geom_xpos[g, None] + np.einsum("nij,nkj->nki", data.geom_xmat[g].reshape(-1, 3, 3), local)
+    return world.reshape(-1, 3)

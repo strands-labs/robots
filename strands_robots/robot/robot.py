@@ -12,7 +12,7 @@ from typing import TYPE_CHECKING, Any
 
 import numpy as np
 
-from ..description import Description
+from ..description import Description, default_id
 from ..types import Action, Observation, Pose
 from . import gate as _gate
 from . import reach as _reach
@@ -69,6 +69,7 @@ class Robot(DeviceVerbs):
         self.twin: Robot | None = None  # on a hardware Robot: the simulated body that mirrors it
         self.twin_of: Robot | None = None  # on that twin: the hardware Robot it mirrors
         self._task: Task | None = None
+        self._held: np.ndarray | None = None  # the last targets written: what a joint an Action omits keeps
         self._body: Body | None = None
         self._bus_lock = threading.RLock()  # a hardware body: one half-duplex bus shared by every thread
         self.clock: Clock = clock or MONOTONIC  # a world's robot reads its world's time, set below
@@ -81,9 +82,9 @@ class Robot(DeviceVerbs):
                 raise TypeError("a hardware Robot takes port=/driver=, not sim=: its twin is in Simulation.default()")
             from .drivers import make_driver
 
-            self.id = id or self.name
+            self.id = id or default_id(name)  # the name as written: Robot("g1").id == "g1"
             hw = {"port": port, "driver": driver, "cameras": cameras, "calibration": calibration}
-            self._body = make_driver(self.description, **hw, options=driver_options, id=self.id)
+            self._body = make_driver(self.description, **hw, options=driver_options, id=id)
             self.supports_position_hold = position_hold_of(self.description, self._body)
             if twin:
                 self.twin = Robot(
@@ -98,7 +99,7 @@ class Robot(DeviceVerbs):
                     "cameras=/calibration= are hardware arguments; in a world: sim.camera(name, attach=robot)"
                 )
             world = sim if sim is not None else Simulation.default()
-            self.sim, self.id = world, world.unique_id(id or self.name)
+            self.sim, self.id = world, world.unique_id(id or default_id(name))
             self.clock = WorldClock(world)
             world.add(self, position=position, orientation=orientation, keyframe=keyframe)
             self._body = SimBody(world, self.id, self.description.action_keys)
@@ -118,8 +119,7 @@ class Robot(DeviceVerbs):
         return self.sim.lock if self.sim is not None else self._bus_lock
 
     def detached(self) -> None:
-        self._body = None
-        self.sim = None
+        self._body = self.sim = None
 
     @property
     def action_keys(self) -> tuple[str, ...]:
@@ -211,6 +211,7 @@ class Robot(DeviceVerbs):
 
         if not isinstance(self.body, Driver):
             raise RuntimeError("calibrate() is for hardware; a simulated body needs no calibration")
+        self._held = None  # torque goes off and the arm is moved by hand: no old target survives it
         return self.body.calibrate(interactive=interactive)
 
     def coerce(self, action: Action, *, clip: bool = True, measured: np.ndarray | None = None) -> np.ndarray:
@@ -245,5 +246,5 @@ class Robot(DeviceVerbs):
             self.twin = None
 
     def __repr__(self) -> str:
-        where = "hardware" if self.is_real else (self.sim.backend_name if self.sim else "detached")
-        return f"Robot({self.name!r}, id={self.id!r}, {where}, dof={self.description.dof})"
+        at = getattr(self._body, "where", "hardware") if self.is_real else getattr(self.sim, "backend_name", "detached")
+        return f"Robot({self.name!r}, id={self.id!r}, {at}, dof={self.description.dof})"

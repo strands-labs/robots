@@ -170,35 +170,38 @@ class _SceneOps:
         attach: Member | str | None = None,
     ) -> SceneCamera:
         """Add a camera at position (m) looking at target, or along orientation (quaternion w,x,y,z); size W,H."""
-        if any(c.name == name for c in self.scene.cameras):
-            raise ValueError(f"camera {name!r} already exists")
-        att = attach if (attach is None or isinstance(attach, str)) else attach.id
-        if att is not None and att.split("/")[0] not in self._robots:  # "<robot>" (its base) or "<robot>/<link>"
-            raise KeyError(f"attach={att!r} is not a robot in this world (or '<robot>/<link>')")
-        cam = SceneCamera(
-            name=name,
-            position=vec(position, 3, "position"),  # type: ignore[arg-type]
-            target=None if orientation is not None else vec(target, 3, "target"),  # type: ignore[arg-type]
-            orientation=None if orientation is None else vec(orientation, 4, "orientation (w, x, y, z)"),  # type: ignore[arg-type]
-            fov=float(fov),
-            size=tuple(size) if size else self.render_size,  # type: ignore[arg-type]
-            attach=att,
-        )
-        self._commit(self.scene.cameras, cam)
-        return cam
+        with self.lock:  # the name check and the add are one step: two callers never both pass the check
+            if any(c.name == name for c in self.scene.cameras):
+                raise ValueError(f"camera {name!r} already exists")
+            att = attach if (attach is None or isinstance(attach, str)) else attach.id
+            if att is not None and att.split("/")[0] not in self._robots:  # "<robot>" (its base) or "<robot>/<link>"
+                raise KeyError(f"attach={att!r} is not a robot in this world (or '<robot>/<link>')")
+            cam = SceneCamera(
+                name=name,
+                position=vec(position, 3, "position"),  # type: ignore[arg-type]
+                target=None if orientation is not None else vec(target, 3, "target"),  # type: ignore[arg-type]
+                orientation=None if orientation is None else vec(orientation, 4, "orientation (w, x, y, z)"),  # type: ignore[arg-type]
+                fov=float(fov),
+                size=tuple(size) if size else self.render_size,  # type: ignore[arg-type]
+                attach=att,
+            )
+            self._commit(self.scene.cameras, cam)
+            return cam
 
     def render(self, camera: str | SceneCamera | None = None) -> np.ndarray:
         """HxWx3 uint8 from a named camera, or from an auto-framed overview camera when none is given."""
-        if camera is None:  # the auto-framed overview, created on first use (user cameras never replace it)
-            if not any(c.name == "overview" for c in self.scene.cameras):
-                self.camera("overview", **self.scene.overview())
-            name = "overview"
-        else:
-            name = camera if isinstance(camera, str) else camera.name
-        assert name is not None
-        if not any(c.name == name for c in self.scene.cameras):
-            raise KeyError(f"no camera {name!r}; cameras are {[c.name for c in self.scene.cameras]}")
-        with self.lock:
+        with self.lock:  # check and draw are one step: a concurrent edit cannot land between them
+            if camera is None:  # the auto-framed overview, created on first use (user cameras never replace it)
+                if not any(c.name == "overview" for c in self.scene.cameras):
+                    self._flush()
+                    w, h = self.render_size
+                    self.camera("overview", **self.scene.overview(self.backend.outline(), w / h))
+                name = "overview"
+            else:
+                name = camera if isinstance(camera, str) else camera.name
+            assert name is not None
+            if not any(c.name == name for c in self.scene.cameras):
+                raise KeyError(f"no camera {name!r}; cameras are {[c.name for c in self.scene.cameras]}")
             self._flush()
             return self.backend.render(name)
 

@@ -18,6 +18,29 @@ from ..base import PolicyFault
 from .contract import Contract
 
 
+def ledgered(infer: Any, contract: Contract, calls: list[dict[str, Any]]) -> Any:
+    """``client.infer`` appending every chunk it returns to ``calls``: a splice session's ledger (LeRobot's engine)."""
+
+    def timed(request: Any, **kw: Any) -> Any:
+        t0 = time.monotonic()
+        chunk = infer(request, **kw)
+        rows = np.asarray(chunk.canonical_actions.detach().cpu(), dtype=float).size // len(
+            contract.action_feature.names
+        )
+        server = dict(getattr(chunk, "server_durations", None) or {})
+        calls.append(
+            {
+                "wall_s": round(time.monotonic() - t0, 4),
+                "rows": rows,
+                "server": server,
+                "instruction": request.observation.task or None,
+            }
+        )
+        return chunk
+
+    return timed
+
+
 class Sequential:
     """The runtime of one admitted ``RemoteClient`` session; ``calls`` lists every chunk it received."""
 

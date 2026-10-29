@@ -23,7 +23,7 @@ from .presence import Directory, announce, refuse_shared, refuse_taken
 from .record import RAISE, check_kill_switch, default_operator, default_tenant, record, state_rate
 from .remote import connect
 from .reply import the_reply
-from .serve import ARGS, estop_each, serve
+from .serve import ARGS, act_wait, estop_each, serve
 from .stream import listen, publish
 from .transports.base import Transport, Unsubscribe, open_transport
 
@@ -129,10 +129,8 @@ class Mesh:
             self._dirs[0].wait_changed(min(left, 0.05))
 
     def invoke(self, device_id: str, rpc: str, *, timeout: float = 2.0, **args: Any) -> Any:
-        """Call ``rpc`` on a device; ``args`` are the rpc's own arguments (the device refuses any it does not take).
-
-        A refusal from the device's safety chain raises ``RequestRefused`` with the device's message verbatim.
-        """
+        """Call ``rpc`` on a device with its own ``args`` (it refuses others); ``act(seconds=)`` waits that much longer.
+        A refusal from the device's safety chain raises ``RequestRefused`` with the device's message verbatim."""
         self._open()
         if rpc not in ARGS:
             raise LookupError(f"{device_id} has no rpc {rpc!r} over the mesh; known: {sorted(ARGS)}")
@@ -151,6 +149,7 @@ class Mesh:
                 args["assertion"] = _authority.sign(self.resume_key, lock["epoch"], [device_id], by)
         self._seq = seq = self._seq + 1
         env = wire.envelope(self.tenant, device_id, "rpc", rpc, seq=seq, args=args, peer=self.peer_id)
+        timeout += act_wait(args) if rpc == "act" else 0.0
         replies = transport.query(wire.key("rpc", self.tenant, device_id, rpc), wire.encode(env), timeout)
         if not replies:
             raise TimeoutError(f"{device_id}.{rpc}: no reply within {timeout} s")

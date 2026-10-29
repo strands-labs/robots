@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterable
+from os import PathLike
 from typing import TYPE_CHECKING, Any
 
 from .bind import Bound
@@ -17,6 +18,15 @@ def emit(robot: Robot, event: str, payload: dict[str, Any]) -> None:
     events = getattr(robot, "events", None)
     if events is not None:
         events.emit(event, {"device_id": robot.id, **payload})
+
+
+def label(policy: object) -> str:
+    """The policy as the operator reads it: a spec as written, a function or a registered handle by its name."""
+    from ...policy.callable import CallablePolicy
+
+    if isinstance(policy, CallablePolicy):
+        return policy.name
+    return str(policy) if isinstance(policy, str | PathLike) else str(getattr(policy, "__name__", None) or repr(policy))
 
 
 def approve_run(robot: Robot, plan: RunPlan) -> None:

@@ -41,6 +41,12 @@ def test_describe_and_pose_report_where_an_object_is_now_not_where_it_spawned(si
     assert json.loads(r["content"][0]["text"])["position"] == pytest.approx([0.0, 0.4, 0.2])
 
 
+def test_an_agent_reads_where_its_gripper_is(sim):
+    arm = Robot("so101", sim=sim)
+    r = _turn(sim, [{"rpc": "pose", "pose": {"body": f"{arm.id}/gripper"}}])[0]
+    assert json.loads(r["content"][0]["text"])["position"] == pytest.approx(sim.pose("so101/gripper").position.tolist())
+
+
 @pytest.mark.parametrize(
     ("rpc", "arg", "n"),
     [

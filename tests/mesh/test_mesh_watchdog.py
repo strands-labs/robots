@@ -169,3 +169,15 @@ def test_a_simulated_device_without_a_watchdog_still_moves(mesh_pair):
     assert float(arm.observe().joints["shoulder_pan"]) > 0.1  # act served, the joint moved toward the target
     a.close()
     arm.close()
+
+
+def test_a_reach_in_progress_is_not_a_quiet_invoker(device):
+    arm, holds, _, b = device
+    real = arm.confirm_act
+    arm.confirm_act = lambda *a, **k: (time.sleep(0.6), real(*a, **k))[1]  # a reach longer than watchdog_ms=300
+    t0 = time.monotonic()
+    b.invoke("arm", "act", action={"shoulder_pan": 0.2}, seconds=0.6)
+    t1 = time.monotonic()
+    assert not holds and t1 - t0 >= 0.6
+    assert _wait(lambda: holds, 2.0)
+    assert holds[0] - t1 >= 0.25  # the quiet clock started when the motion ended

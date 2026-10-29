@@ -66,3 +66,45 @@ def test_an_agent_builds_a_scene_steps_and_renders_an_image_block():
         assert isinstance(sim.robots["so101"], Robot) or "so101" in sim.robots
     finally:
         sim.close()
+
+
+def _logged(obj, verb, done, delay=0.0):
+    """``obj.<verb>`` that sleeps ``delay`` s, runs, then appends ``verb`` to ``done`` (the order calls finish in)."""
+    import functools
+    import time
+
+    real = getattr(obj, verb)
+
+    @functools.wraps(real)  # the tool reads the verb's signature
+    def logged(*a, **k):
+        time.sleep(delay)
+        out = real(*a, **k)
+        done.append(verb)
+        return out
+
+    return logged
+
+
+def test_one_message_that_edits_the_world_and_renders_it_runs_in_the_order_sent():
+    # strands' default ConcurrentToolExecutor starts every call of one message at once; the slow camera and act must
+    # still finish before the render sent after them, across the world's tool and the robot's tool
+    sim = Simulation()
+    try:
+        arm, done = Robot("so101", sim=sim), []
+        sim.camera = _logged(sim, "camera", done, delay=0.2)  # type: ignore[method-assign]
+        arm.act = _logged(arm, "act", done, delay=0.4)  # type: ignore[method-assign]
+        sim.render = _logged(sim, "render", done)  # type: ignore[method-assign]
+        cam = {"rpc": "camera", "camera": {"name": "c", "position": [0.5, -0.5, 0.4], "size": [32, 24]}}
+        act = {"rpc": "act", "act": {"action": {"shoulder_pan": 0.3}}}
+        render = {"rpc": "render", "render": {"camera": "c"}}
+        agent = Agent(
+            model=ScriptedModel([[("sim_world", cam), (arm.tool.tool_name, act), ("sim_world", render)]]),
+            tools=[sim.tool, arm.tool],
+            callback_handler=None,
+        )
+        agent("put a camera on the arm, move it, show me")
+        r = [b["toolResult"] for m in agent.messages for b in m["content"] if "toolResult" in b]
+        assert [x["status"] for x in r] == ["success"] * 3, [x["content"][0]["text"] for x in r]
+        assert done == ["camera", "act", "render"]
+    finally:
+        sim.close()

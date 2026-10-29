@@ -16,7 +16,7 @@ from ...types import Observation
 from ..clock import MONOTONIC
 from ..safety import apply_on_disconnect
 from .bind import Bound, bind, looks, release
-from .common import announce, approve_run, emit, rate
+from .common import announce, approve_run, emit, label, rate
 from .pace import OnMiss, Pacer
 from .result import RunResult, StoppedBy
 from .source import RunPlan, is_agent, is_confirmed
@@ -61,7 +61,7 @@ def run(
     if hz is not None and hz <= 0:
         raise ValueError(f"hz must be > 0, got {hz}")  # before bind: a bad hz loads no checkpoint
     if is_agent() and robot.is_real and not is_confirmed():  # a real agent run asks the operator ONCE (K6),
-        approve_run(robot, RunPlan(robot.id, repr(policy), instruction, hz, seconds, steps))  # before anything acquired
+        approve_run(robot, RunPlan(robot.id, label(policy), instruction, hz, seconds, steps))  # before any acquire
     bound = bind(robot, policy, units)
     try:
         if not start_pose(robot, bound):  # a policy that names where its episodes begin is taken there first
@@ -134,7 +134,7 @@ def _loop(
     max_steps = steps if steps is not None else (int(round(seconds * hz)) if seconds is not None else None)
     n, holds, stops0, fault = 0, 0, robot.estop_latch.count, None
     last: np.ndarray | None = None  # the latest written targets: what a held tick records as its action
-    why: StoppedBy = "steps"
+    why: StoppedBy = "steps" if steps is not None else "seconds"  # the limit the caller gave, when it is the one hit
     always = robot.sim is None or stop_when is not None or ep.wants_images  # a recorded step keeps its cameras
     pacer = None
     if robot.sim is None or realtime or bound.realtime:  # hardware (or a watched world): pace on the body's clock

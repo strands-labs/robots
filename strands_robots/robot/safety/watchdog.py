@@ -79,6 +79,7 @@ def apply_on_disconnect(robot: Robot) -> np.ndarray:
                 out[i] = min(max(q[i], c.safe[0]), c.safe[1])
         if all(c.on_disconnect == "hold" for c in robot.manifest.controls):
             body.hold()
+            robot._held = None
         else:
             from .estop import guarded_write
 

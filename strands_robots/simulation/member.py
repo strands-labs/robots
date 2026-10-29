@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from typing import Protocol
 
+import numpy as np
+
 from ..description import Description
 
 
@@ -15,5 +17,6 @@ class Member(Protocol):
 
     id: str
     description: Description
+    _held: np.ndarray | None  # the last targets it wrote; a reset clears them (the body is back at its spawn pose)
 
     def detached(self) -> None: ...

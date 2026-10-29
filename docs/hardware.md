@@ -24,6 +24,7 @@ real.close()                                 # torque off, port closed, twin rem
 | `feetech` | STS3215 buses: SO-100 / SO-101 (`pip install pyserial`) | read, write, torque, `calibrate()` |
 | `unitree` | DDS `rt/lowstate`: G1 / Go2 / H1 (`unitree_sdk2py`) | observe only |
 | `microduck` | robotd's JSON-RPC socket (`port=` the socket path) | observe only: robotd has no per-joint write |
+| `memory` | no wire: any robot, no arm attached (docs, notebooks, CI) | a write lands at once, the next read returns it |
 
 A `Driver` is `names read() write() pose() images() extras() hold() estop() calibrate() close()` plus
 `supports_position_hold`, `calibration` and `resolution` (None when the bus has none); `driver=` takes a name
@@ -31,6 +32,24 @@ or an instance, and an instance whose `names` are not the description's `action_
 description to `Simulation.default()`: `real.twin` is `so101_twin`, its `twin_of` is `real`, and only
 `real.is_real` is true (`twin=False` to skip). `observe()` places the twin at the measured joints
 (`Backend.set_joints`, no step), so `real.twin.sim.render()` draws the real pose; `act()` mirrors the targets and steps the twin's world one control step (`manual_time()` stops it). `set_pose` raises on hardware; `real.twin.set_pose` works.
+
+**No arm on the desk.** `driver="memory"` is a hardware body with no wire, so the operator gate, `approve=`,
+the e-stop and the watchdog's real-body rule run exactly as they do on an arm. Its `MemoryDriver` logs every
+target in `writes` and counts `holds` and `estops`; it takes no `port=` and no `cameras=`.
+
+```python
+from strands_robots import Robot
+from strands_robots.robot.safety import RequestRefused
+
+real = Robot("so101", driver="memory", twin=False, confirm=lambda targets: False)
+try:
+    real.confirm_act({"shoulder_pan": 0.3})  # what an agent tool or the dashboard sends
+except RequestRefused:
+    pass
+assert real.body.writes == []                # the operator said no: nothing reached the bus
+real.act({"shoulder_pan": 0.3})              # your own code is the operator
+assert len(real.body.writes) == 1
+```
 
 **Driver options.** `Robot(name, port=, **driver_options)` hands any extra keyword to the driver
 unchanged: the `FeetechDriver` takes `robot_id=` (which calibration file to load) and `baud=`, the unitree
@@ -97,7 +116,9 @@ refused, never re-asked each tick. `confirm=` stays the per-command gate (`confi
 
 {{drawing:d16_one_yes_per_run}}
 A remote policy (`Policy("zenoh://host:7447/deployment")`) holds the last target through LeRobot's chunk
-playback and a 1.0 s grace, then raises that fault. Only a real body
+playback and a 1.0 s grace, then raises that fault. Under either execution (`"splice"` or `"sequential"`)
+`policy.calls` lists every chunk the session received: `wall_s` (the round trip), `rows`, the `server` split and the
+`instruction`. Only a real body
 takes `confirm=`:
 
 ```python

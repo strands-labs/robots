@@ -2,14 +2,15 @@
 
 A motion rpc (``act``) arms the watchdog for its invoker. Any rpc from that invoker is a heartbeat. If the invoker
 goes quiet for ``watchdog_ms`` or its Mesh's liveliness token vanishes (closed, crashed, network gone), the device
-applies its ``on_disconnect`` once and disarms until the next motion. Reads never arm it.
+applies its ``on_disconnect`` once and disarms until the next motion. Reads never arm it. The quiet clock does not run
+while a motion rpc is still moving the device (an ``act(seconds=)`` reach): its invoker is waiting on the reply.
 """
 
 from __future__ import annotations
 
 import threading
 import time
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from typing import Any
 
 from ..robot.safety import Watchdog, apply_on_disconnect
@@ -25,20 +26,30 @@ class MeshWatchdog:
         self.dog = Watchdog(robot, timeout_ms, clock=time.monotonic)
         self.peer: str | None = None
         self._lock = threading.Lock()
+        self._moving = 0  # motion rpcs in progress: their invoker is waiting, not quiet
         self._armed = threading.Event()
         self._stop = threading.Event()
         self._thread = threading.Thread(target=self._loop, daemon=True, name="mesh-watchdog")
         self._thread.start()
         self._unwatch = [t.watch_liveliness(wire.key("peer", tenant, "*"), self._on_peer) for t in transports]
 
-    def on_rpc(self, name: str, peer: str | None) -> None:
+    def on_rpc(self, name: str, peer: str | None) -> Callable[[], None] | None:
+        """Every rpc, before it runs; a motion rpc returns what to call once it ends (that is a beat too)."""
         with self._lock:
             if name in MOTION_RPCS and peer is not None:
                 self.peer = peer
                 self.dog.beat()
                 self._armed.set()
-            elif self._armed.is_set() and peer == self.peer:
+                self._moving += 1
+                return self._moved
+            if self._armed.is_set() and peer == self.peer:
                 self.dog.beat()
+        return None
+
+    def _moved(self) -> None:
+        with self._lock:
+            self._moving -= 1
+            self.dog.beat()
 
     def _on_peer(self, key: str, alive: bool) -> None:
         if alive or not self._armed.is_set() or key.rsplit("/", 1)[-1] != self.peer:
@@ -61,7 +72,7 @@ class MeshWatchdog:
         while not self._stop.is_set():
             if not self._armed.wait(0.1):
                 continue
-            if time.monotonic() - self.dog.last > self.dog.timeout:
+            if not self._moving and time.monotonic() - self.dog.last > self.dog.timeout:
                 self._fire()
             self._stop.wait(period)
 
