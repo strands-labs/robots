@@ -151,7 +151,7 @@ class Robot(DeviceVerbs):
             self.sim.backend.set_gains(self.id, kp, kd)
 
     def observe(self, *, images: bool = True) -> Observation:
-        """One read of the body; ``t`` is the capture time on ``self.clock``."""
+        """One read of the body; ``t`` is the capture time on the robot's clock."""
         body = self.body
         with self._lock:
             t = self.clock.now()

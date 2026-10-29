@@ -23,8 +23,14 @@ def _table() -> dict[str, dict[str, Any]]:
     return data
 
 
-def preset_names() -> tuple[str, ...]:
-    return tuple(sorted(_table()))
+def preset_names(robot: str | None = None) -> tuple[str, ...]:
+    """Every shipped preset, or only those that drive the registry robot ``robot``."""
+    return tuple(sorted(n for n, facts in _table().items() if robot is None or robot in facts["robots"]))
+
+
+def preset_robots(name: str) -> tuple[str, ...]:
+    """The registry robots preset ``name`` drives."""
+    return tuple(_table()[name]["robots"])
 
 
 def preset_data(cls: type) -> dict[str, Any]:

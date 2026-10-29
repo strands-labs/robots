@@ -17,7 +17,7 @@ sim.control_step()                # what act() costs a simulated robot: one cont
 with sim.manual_time():           # inside, act() only writes targets; the caller calls sim.step(n)
     ...
 sim.set_pose("g1", position=[2, 0, 0.8])   # teleport; velocities zeroed, time does not advance
-sim.add_object("box", shape="box", position=[0.3, 0, 0.1], size=[0.03, 0.03, 0.03])
+sim.add_object("box", shape="box", position=[0.3, 0, 0.1], size=[0.03, 0.03, 0.03])  # half-sizes m: a 6 cm cube
 sim.camera("wrist", position=[0.035, 0, -0.02], target=[-0.2, 0, -0.09], attach="so101/gripper")  # link frame
 sim.camera("wrist", position=[0.05, 0, -0.02], target=[-0.2, 0, -0.09], attach="so101/gripper")  # same name: re-aimed
 sim.light("lamp", position=[0, 0, 1.5], color=[0.2, 0.2, 1.0])   # a spot; directional=True is a sun; same name recolors

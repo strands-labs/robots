@@ -13,13 +13,15 @@ from __future__ import annotations
 
 import ast
 import inspect
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from typing import Any
 
 _SCALARS = {"int": "integer", "float": "number", "str": "string", "bool": "boolean"}
 _ARRAYS = {"tuple", "list", "Sequence", "Tuple", "List"}
 _OBJECTS = {"dict", "Mapping", "Dict", "MutableMapping"}
 _WIRE_DEFAULTS = (int, float, str, bool)
+# The joints an Action names: a sequence of names, or name -> what a model is told of it (unit, minimum, maximum).
+Joints = Sequence[str] | Mapping[str, Mapping[str, Any]]
 
 
 class NotOnTheWire(TypeError):
@@ -40,7 +42,7 @@ def _args(node: ast.Subscript) -> list[ast.expr]:
     return list(node.slice.elts) if isinstance(node.slice, ast.Tuple) else [node.slice]
 
 
-def _schema(node: ast.expr, joints: Sequence[str]) -> dict[str, Any] | None:
+def _schema(node: ast.expr, joints: Joints) -> dict[str, Any] | None:
     """The JSON schema of one annotation node, or None when it cannot cross a wire."""
     alts = _union(node)
     nullable = any(isinstance(a, ast.Constant) and a.value is None for a in alts)
@@ -57,7 +59,7 @@ def _schema(node: ast.expr, joints: Sequence[str]) -> dict[str, Any] | None:
     return out
 
 
-def _one(node: ast.expr, joints: Sequence[str]) -> dict[str, Any] | None:
+def _one(node: ast.expr, joints: Joints) -> dict[str, Any] | None:
     if isinstance(node, ast.Subscript):
         base, args = _name(node.value), _args(node)
         if base in _ARRAYS:
@@ -82,7 +84,7 @@ def _one(node: ast.expr, joints: Sequence[str]) -> dict[str, Any] | None:
     if name == "Action":
         return {
             "type": "object",
-            "properties": {k: {"type": "number"} for k in joints},
+            "properties": {k: {"type": "number", **(joints[k] if isinstance(joints, Mapping) else {})} for k in joints},
             "additionalProperties": False,
             "description": f"joint -> target, any subset of {list(joints)}",
         }
@@ -93,7 +95,7 @@ def _one(node: ast.expr, joints: Sequence[str]) -> dict[str, Any] | None:
     return None
 
 
-def property_for(param: inspect.Parameter, joints: Sequence[str]) -> dict[str, Any] | None:
+def property_for(param: inspect.Parameter, joints: Joints) -> dict[str, Any] | None:
     """The JSON schema of one parameter, or None when it cannot cross a wire."""
     ann = param.annotation
     if ann is inspect.Parameter.empty:
@@ -126,9 +128,7 @@ def property_for(param: inspect.Parameter, joints: Sequence[str]) -> dict[str, A
     return prop
 
 
-def parameters(
-    fn: Callable[..., Any], *, joints: Sequence[str], exclude: frozenset[str] = frozenset()
-) -> dict[str, Any]:
+def parameters(fn: Callable[..., Any], *, joints: Joints, exclude: frozenset[str] = frozenset()) -> dict[str, Any]:
     """``{"type": "object", "properties": ..., "required": [...]}`` for ``fn``'s wire-able parameters."""
     props: dict[str, Any] = {}
     required: list[str] = []

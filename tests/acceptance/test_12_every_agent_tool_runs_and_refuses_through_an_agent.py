@@ -36,7 +36,7 @@ SIM = [
     ("render", {"camera": "front"}, "success", "image_shape"),
     ("render", {"camera": "nowhere"}, "error", "nowhere"),
     ("describe", None, "success", "cube"),
-    ("remove", {"robot": "guest"}, "success", ""),
+    ("remove", {"name": "guest"}, "success", ""),
     ("reset", None, "success", ""),
 ]
 ROBOT = [

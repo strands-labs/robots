@@ -5,7 +5,7 @@ from __future__ import annotations
 from .graph import OnnxPolicy, projected_gravity, quat_rotate_inverse, read_metadata
 from .holosoma import HolosomaPolicy
 from .microduck import MicroduckPolicy
-from .presets import preset, preset_names
+from .presets import preset, preset_names, preset_robots
 
 __all__ = [
     "OnnxPolicy",
@@ -13,6 +13,7 @@ __all__ = [
     "MicroduckPolicy",
     "preset",
     "preset_names",
+    "preset_robots",
     "projected_gravity",
     "quat_rotate_inverse",
     "read_metadata",

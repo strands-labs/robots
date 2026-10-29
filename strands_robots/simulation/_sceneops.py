@@ -4,6 +4,7 @@ never sees them disagree; ``simulation.py`` keeps the world's lifecycle and time
 
 from __future__ import annotations
 
+import itertools
 from collections.abc import Callable
 from typing import Any, Literal
 
@@ -44,10 +45,7 @@ class _SceneOps:
     def unique_id(self, want: str) -> str:
         if want not in self._robots:
             return want
-        n = 2
-        while f"{want}_{n}" in self._robots:
-            n += 1
-        return f"{want}_{n}"
+        return next(f"{want}_{n}" for n in itertools.count(2) if f"{want}_{n}" not in self._robots)
 
     def add(
         self,
@@ -80,9 +78,9 @@ class _SceneOps:
                 items.pop()
                 raise
 
-    def remove(self, robot: Member | str) -> None:
+    def remove(self, name: Member | str) -> None:
         """Take a robot, object, camera or light out of this world, by name (``camera(name, ...)`` moves a camera)."""
-        rid = robot if isinstance(robot, str) else robot.id
+        rid = name if isinstance(name, str) else name.id
         if rid not in self._robots:
             with self.lock:
                 s = self.scene
@@ -120,7 +118,8 @@ class _SceneOps:
         color: tuple[float, float, float, float] | None = None,
         free: bool = True,
     ) -> Object:
-        """Add a shape, or a mesh/MJCF file (path); position m, orientation quaternion w,x,y,z, color RGBA 0-1."""
+        """Add a shape, or a mesh/MJCF file (path); position m, orientation quaternion w,x,y,z, color RGBA 0-1; size m
+        as half-sizes (box half-sides, sphere radius, cylinder/capsule radius, half-length): 0.05 = 10 cm cube."""
         self._open()
         if (shape is None) == (path is None):
             raise ValueError("add_object needs exactly one of shape= or path=")
@@ -245,6 +244,7 @@ class _SceneOps:
             return _randomize.scales(self.scene)
 
     def contacts(self) -> list[Contact]:
+        """Every touching pair now: the two bodies, the contact point m (world frame), its normal and force N."""
         with self.lock:  # a GPU solver mirrors its state into the CPU world on this read
             self._flush()
             return self.backend.contacts()

@@ -102,9 +102,16 @@ def from_spec(spec: str) -> Any:
     return make(spec)
 
 
-def spec_help() -> str:
-    """What a model is told a policy spec may be: every shipped preset and every form that crosses a wire."""
-    from .onnx import preset_names
+def spec_help(robot: str | None = None) -> str:
+    """What a model is told a policy spec may be: the shipped presets (each with the robots it drives; for
+    ``robot``, only those that drive it) and every form that crosses a wire."""
+    from .onnx import preset_names, preset_robots
 
-    forms = "; ".join(" ".join(f.split()) for f in FORMS if not f.startswith("<callable>"))
-    return f"a policy spec. Shipped presets: {', '.join(map(repr, preset_names()))}. Forms: {forms}"
+    names = preset_names(robot)
+    wire = [f for f in FORMS if not f.startswith("<callable>") and (names or not f.startswith("<preset>"))]
+    forms = "; ".join(" ".join(f.split()) for f in wire)
+    if robot is not None:
+        presets = ", ".join(map(repr, names)) or f"none drives {robot}"
+    else:
+        presets = ", ".join(f"{n!r} ({', '.join(preset_robots(n))})" for n in names)
+    return f"a policy spec. Shipped presets: {presets}. Forms: {forms}"

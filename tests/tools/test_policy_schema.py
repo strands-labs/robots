@@ -22,19 +22,22 @@ def _world_policy() -> dict:
     return run["properties"]["policies"]["additionalProperties"]
 
 
-@pytest.mark.parametrize("schema", [_robot_policy, _world_policy], ids=["Robot.run", "Simulation.run"])
-def test_the_policy_schema_names_every_shipped_preset_and_wire_form(schema):
+@pytest.mark.parametrize(
+    ("schema", "robot"), [(_robot_policy, "so101"), (_world_policy, None)], ids=["Robot.run", "Simulation.run"]
+)
+def test_the_policy_schema_names_every_preset_that_drives_the_robot_and_every_wire_form(schema, robot):
     s = schema()
     assert s["type"] == "string"
-    for name in presets.preset_names():
+    names = presets.preset_names(robot)
+    for name in names:
         assert repr(name) in s["description"]
     for form in WIRE_FORMS:
-        assert form in s["description"]
+        assert (form in s["description"]) == (bool(names) or form != "<preset>[?k=v&k2=v2]")
     assert "<callable>" not in s["description"]  # a function does not cross a wire
 
 
 def test_a_preset_added_to_the_registry_reaches_the_schema(monkeypatch):
-    table = {**presets._table(), "newduck": {"class": "microduck:MicroduckPolicy"}}
+    table = {**presets._table(), "newduck": {"class": "microduck:MicroduckPolicy", "robots": ["microduck"]}}
     monkeypatch.setattr(presets, "_table", lambda: table)
 
     def run(policy: PolicyLike) -> None: ...

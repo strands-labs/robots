@@ -2,6 +2,9 @@
  "microduck": {
   "class": "microduck:MicroduckPolicy",
   "summary": "biped skills from pollen-robotics/microduck-policies (skill=alpha_walking|velstand|alpha_stand|alpha_sitstand|ball_kick_left|ball_kick_right|roller|roller_crouch|roulade|alpha_ground_pick); command vx, vy (m/s), wz (rad/s)",
+  "robots": [
+   "microduck"
+  ],
   "repo": "pollen-robotics/microduck-policies",
   "files": {
    "alpha_walking": "alpha_walking.onnx",
@@ -43,6 +46,9 @@
  "holosoma": {
   "class": "holosoma:HolosomaPolicy",
   "summary": "29-DoF humanoid standing and locomotion; command vx, vy (m/s), wz (rad/s)",
+  "robots": [
+   "unitree_g1"
+  ],
   "repo": "nepyope/holosoma_locomotion",
   "files": {
    "fastsac": "fastsac_g1_29dof.onnx",
