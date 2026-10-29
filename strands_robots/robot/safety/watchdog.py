@@ -65,10 +65,15 @@ class Watchdog:
 
 
 def apply_on_disconnect(robot: Robot) -> np.ndarray:
-    """Write each control's declared disconnect target (hold / zero / safe / apply) straight to the body."""
+    """Write each control's declared disconnect target (hold / zero / safe / apply) straight to the body.
+
+    While the e-stop is latched it writes nothing and returns the measured positions: ``estop()`` already asked
+    the body for its own stop (``Body.estop``), and only ``resume`` lifts the latch."""
     body = robot.body
     with robot._lock:
         q = np.array(body.read().positions, dtype=float)
+        if robot.estopped:
+            return q
         out = q.copy()
         for i, c in enumerate(robot.manifest.controls):
             if c.on_disconnect == "zero":

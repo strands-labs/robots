@@ -71,8 +71,11 @@ class DeviceVerbs:
         self._robot.events.emit("estop", {"device_id": self._robot.id, "engaged": False, "approved_by": approved_by})
 
     def hold(self) -> None:
-        """Keep the current joint positions (under torque on hardware)."""
+        """Keep the current joint positions (under torque on hardware).
+
+        Refused (``EStopped``) while the e-stop is latched, like ``act``: only ``resume`` lifts the latch."""
         with self._robot._lock:
+            self._robot.estop_latch.check(self._robot.id)
             self._robot.body.hold()
             self._robot._held = None  # the measured pose is the target now
 
