@@ -6,7 +6,12 @@ with one call - world created and the robot already added. You just add objects
 and cameras, then run a policy.
 
 Dependencies: pip install "strands-robots[sim-mujoco]"
-Expected output: "run_policy status: success" after 50 steps of mock actions.
+Expected output: "run_policy status: success", then the rollout's own summary -
+    "Policy complete on 'so100'", the policy and instruction, step count and sim
+    time, and the note that MockPolicy does not read the instruction (so the
+    "pick up the red cube" above shaped nothing). The summary is content[0], the
+    text block an agent mounting this as a tool reads; the bare status alone
+    hides the note.
 Runtime: ~2 seconds on CPU.
 """
 
@@ -38,3 +43,4 @@ result = sim.run_policy(
 )
 
 print(f"run_policy status: {result['status']}")
+print(result["content"][0]["text"])
