@@ -17,7 +17,6 @@ os.environ.setdefault("HF_HUB_DISABLE_PROGRESS_BARS", "1")
 import contextlib
 import importlib
 import io
-import logging
 import signal
 import subprocess
 import sys
@@ -51,8 +50,6 @@ def quiet_import(module):
 
 
 quiet_import("lerobot.remote_inference")
-# lerobot reads the checkpoint's saved device ("cuda") before device="cpu" applies and warns; the run is on cpu.
-logging.getLogger("lerobot.configs.policies").setLevel(logging.ERROR)
 print("lerobot", version("lerobot"), "| eclipse-zenoh", version("eclipse-zenoh"))
 
 # %% [markdown]
@@ -173,10 +170,9 @@ for execution in ("sequential", "splice"):
     p = Policy(URL, execution=execution)
     results[execution] = (arm.run(p, seconds=8), len(p.calls))
     arm.sim.close()
-print(f"{'execution':<11} {'steps':>5} {'holds':>5} {'held s':>6} {'misses':>6} {'chunks':>6}  stopped_by")
+print(f"{'execution':<11} {'steps':>5} {'holds':>5} {'held s':>6} {'misses':>6} {'calls':>6}  stopped_by")
 for name, (r, calls) in results.items():
-    chunks = calls if name == "sequential" else "-"
-    print(f"{name:<11} {r.steps:>5} {r.holds:>5} {r.held_seconds:>6.2f} {r.deadline_misses:>6} {chunks:>6}  {r.stopped_by}")
+    print(f"{name:<11} {r.steps:>5} {r.holds:>5} {r.held_seconds:>6.2f} {r.deadline_misses:>6} {calls:>6}  {r.stopped_by}")
 
 # %% [markdown]
 # The same rule holds for any policy: `None` is a hold.

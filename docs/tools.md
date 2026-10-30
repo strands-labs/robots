@@ -30,7 +30,7 @@ call of one message at once: `camera c`, `act`, `render c` in one message render
 Nobody writes these by hand. They're generated from the robot's manifest and method signatures, so a new skill or a
 new joint shows up in the tool automatically. Each `act` joint carries its unit and range from the manifest, each
 rpc reads its docstring's first paragraph and its arguments the rest. A `policy` argument lists the shipped presets
-that drive that robot (`holosoma` for `unitree_g1`, `microduck` for `microduck`, none for `so101`) and every spec form
+that drive that robot (`holosoma` for `g1`, `microduck` for `microduck`, none for `so101`) and every spec form
 an agent can send, so its first `run` names a real policy.
 
 A policy the developer built — a remote one included — is handed to the agent as a **handle**:

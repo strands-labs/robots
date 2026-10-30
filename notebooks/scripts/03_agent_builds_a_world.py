@@ -24,7 +24,6 @@ import sys
 import numpy as np
 from PIL import Image
 from strands import Agent
-from strands.tools.executors import SequentialToolExecutor
 
 import _nb
 from strands_robots import Robot, Simulation
@@ -53,14 +52,13 @@ for tool in (sim.tool, arm.tool):
 print(json.dumps(sim.tool.tool_spec["inputSchema"]["json"]["properties"]["add_object"]["properties"]["shape"]))
 
 # %% [markdown]
-# The agent. `SequentialToolExecutor` runs one tool call at a time: with strands' default (concurrent) executor, a
-# turn that adds a camera and renders it in the same message can render first and fail.
+# The agent, with strands' default executor. It runs tool calls concurrently; a world still applies them in the
+# order the model sent them, so a turn that adds a camera and renders it works.
 
 # %%
 agent = Agent(
     model=os.environ["STRANDS_MODEL_ID"],
     tools=[sim.tool, arm.tool],
-    tool_executor=SequentialToolExecutor(),
     callback_handler=None,
 )
 
@@ -106,14 +104,13 @@ def turn(ask, name):
 turn("add a red cube on the table", "t1_red_cube")
 
 # %% [markdown]
-# `size` is MuJoCo's half-extent (a radius for a sphere), and nothing in the tool schema says so: read the cube's `size`
-# in the call above against the size the reply claims.
+# The tool says `size` is a half-extent in metres (a radius for a sphere), so the side the reply gives is twice the
+# `size` in the call.
 
 # %% [markdown]
 # ## Turn 2: a blue ball and a light
 #
-# There is no verb that adds a light (`randomize(lighting=)` only scales the existing one), so watch what the agent
-# says about that half of the request.
+# `light` adds a spot (or, with `directional=True`, a sun); the same name again moves or recolors it.
 
 # %%
 turn("add a blue ball and a light", "t2_ball_and_light")
@@ -154,14 +151,12 @@ for o in world["objects"]:
 print("cameras:", [c["name"] for c in world["cameras"]])
 
 # %% [markdown]
-# An orbit around it. There is no verb that moves a camera, so each frame is `remove` + `camera` again, a rebuild.
+# An orbit around it. `camera()` with a name that exists re-aims that camera in place.
 
 # %%
 frames = []
 for i in range(36):
     a = 2 * np.pi * i / 36
-    if i:
-        sim.remove("orbit")
     sim.camera("orbit", position=(0.15 + 0.75 * np.cos(a), 0.75 * np.sin(a), 0.5), target=(0.15, 0.0, 0.05), size=(400, 300))
     frames.append(sim.render("orbit"))
 _nb.gif(frames, "03/orbit.gif", width=400, fps=12)

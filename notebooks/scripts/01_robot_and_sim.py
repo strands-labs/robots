@@ -80,6 +80,17 @@ print(f"after 40 acts: t = {sim.time:.2f} s; the G1 reads the same clock: {g1.ob
 print({k: round(v, 3) for k, v in o.joints.as_dict().items()})
 
 # %% [markdown]
+# A joint an action leaves out holds its last target. Here only `elbow_flex` is named for 200 steps; `shoulder_lift`
+# stays where the cell above put it instead of sagging under gravity.
+
+# %%
+lift0 = arm.observe(images=False)["shoulder_lift"]
+for _ in range(200):
+    o = arm.act({"elbow_flex": 0.4})
+print(f"shoulder_lift {lift0:.3f} -> {o['shoulder_lift']:.3f} rad after 200 steps (drift {abs(o['shoulder_lift'] - lift0):.4f})")
+print("gripper (a link) at", sim.pose("so101/gripper").position.round(3), "m")
+
+# %% [markdown]
 # An unknown joint is refused by name; a target past a limit is clipped to it.
 
 # %%
@@ -160,9 +171,8 @@ print(f"stopped_by={r.stopped_by} recorded={r.recorded} fault={r.fault} deadline
 print("final", {k: round(v, 3) for k, v in r.final.joints.as_dict().items()})
 
 # %% [markdown]
-# The policy named two joints; `shoulder_lift` and `wrist_flex` drifted. On `dev` a joint an action leaves out is
-# re-targeted to where it is measured each step, so gravity wins a little every step. Return every joint (or a full
-# vector) when it matters.
+# The policy named two joints; the other four held their last targets (`shoulder_lift` is still where the wave left it).
+# A run limited by `seconds=` says `stopped_by="seconds"`.
 
 # %% [markdown]
 # `stop_when` ends on a condition instead of a count. A run with no limit at all is refused.

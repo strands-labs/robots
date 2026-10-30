@@ -62,7 +62,8 @@ print("\n".join(FORMS))
 # %% [markdown]
 # ## A function is a policy
 #
-# `Policy(f)` wraps `f(obs) -> action`. The action may name only the joints it moves, in radians; on `dev` the others are re-targeted to their measured pose each step and sag (01).
+# `Policy(f)` wraps `f(obs) -> action`. The action may name only the joints it moves, in radians; the others hold
+# their last target (01).
 
 # %%
 arm = Robot("so101")
@@ -167,7 +168,8 @@ for stat in ("min", "max"):
 
 # %% [markdown]
 # Name the units with `norm=` (LeRobot's own per-motor norm modes). Left out, the SO-101 registry default
-# (range mode) is assumed. The sim needs a camera named `wrist` at the trained size, on the gripper.
+# (range mode) is checked against the checkpoint's saved stats, and this one is refused before it moves anything.
+# The sim needs a camera named `wrist` at the trained size, on the gripper.
 
 
 # %%
@@ -178,27 +180,31 @@ def act_arm():
     return a
 
 
-import logging
+arm = act_arm()
+try:
+    arm.run(Policy(repo, device="cpu"), seconds=4)
+except ValueError as e:
+    print("ValueError:", str(e)[:400])
+print("moved:", arm.sim.time > 0)
+arm.sim.close()
 
-# lerobot reads the checkpoint's saved device ("cuda") before device="cpu" applies and warns; the run is on cpu.
-logging.getLogger("lerobot.configs.policies").setLevel(logging.ERROR)
-finals = {}
-for label, norm in [("registry default", None), ("degrees", {"*": "degrees", "gripper": "range_0_100"})]:
-    arm = act_arm()
-    act = Policy(repo, device="cpu", norm=norm)
-    frames = []
-    r = arm.run(act, seconds=4, stop_when=lambda obs: frames.append(arm.sim.render("view")) or False)
-    finals[label] = (act.inner.contract.semantics, r, frames, arm.observe().images["wrist"])
-    arm.sim.close()
+# %% [markdown]
+# The error names the fix. With `norm=` in degrees the same checkpoint loads and runs.
 
-for label, (sem, r, _, _) in finals.items():
-    deg = np.degrees(r.final.joints.positions).round(1)
-    print(f"{label:>16}: {sem} | {r.steps} steps, {r.stopped_by} | final (deg) {dict(zip(names, deg.tolist()))}")
+# %%
+arm = act_arm()
+act = Policy(repo, device="cpu", norm={"*": "degrees", "gripper": "range_0_100"})
+frames = []
+r = arm.run(act, seconds=4, stop_when=lambda obs: frames.append(arm.sim.render("view")) or False)
+finals = {"degrees": (act.inner.contract.semantics, r, frames, arm.observe().images["wrist"])}
+arm.sim.close()
+deg = np.degrees(r.final.joints.positions).round(1)
+print(f"{act.inner.contract.semantics} | {r.steps} steps, {r.stopped_by} | final (deg) {dict(zip(names, deg.tolist()))}")
 print(act, "is a", type(act).__name__, "around", type(act.inner).__name__)
 
 # %% [markdown]
-# Under the wrong units `wrist_roll` is driven into its -160° limit; under degrees it stays inside the -156..-72° the
-# training data covers. The model never saw this sim, so the motion is not a task; the units are the point.
+# `wrist_roll` stays inside the -156..-72° the training data covers. The model never saw this sim, so the motion is
+# not a task; the units are the point.
 
 # %%
 _, r, frames, wrist = finals["degrees"]

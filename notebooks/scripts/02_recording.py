@@ -95,6 +95,7 @@ print("time did not move for the refused run:", round(arm.sim.time, 2), "s")
 # %%
 from lerobot.datasets.lerobot_dataset import LeRobotDataset
 
+av.logging.set_libav_level(av.logging.ERROR)  # record= turns libav's notices back on when it returns (dev d19adedc)
 ds = LeRobotDataset("local/so101-waves", root=target)
 print("episodes", ds.num_episodes, "| frames", ds.num_frames, "| fps", ds.fps)
 print("state names:", ds.meta.features["observation.state"]["names"])
@@ -140,7 +141,7 @@ print((target / "meta" / "units.json").read_text())
 # %% [markdown]
 # With `units="lerobot"` the policy sees and returns LeRobot's normalised units (SO-101: -100..100, gripper 0..100),
 # and the dataset stores those, and says so. A radian run into that folder would be refused.
-# Under `units=` the policy returns a full vector: on `dev` a `{joint: value}` mapping there raises a `TypeError`.
+# A `{joint: value}` mapping works here too, in the same units; joints it leaves out hold.
 
 # %%
 lr_target = work / "so101-lerobot-units"
@@ -148,10 +149,8 @@ seen = []
 
 
 def wave_lerobot(obs):
-    u = np.array(obs.joints.positions)  # already in lerobot units here
-    seen.append(u[0])
-    u[0], u[2] = 60 * math.sin(3 * obs.t), 30.0  # shoulder_pan, elbow_flex
-    return u
+    seen.append(obs["shoulder_pan"])  # already in lerobot units here
+    return {"shoulder_pan": 60 * math.sin(3 * obs.t), "elbow_flex": 30.0}
 
 
 arm = so101()
@@ -177,6 +176,7 @@ arm.sim.close()
 arm = so101()
 replay = Policy(f"{target}?episode=1")
 r = arm.run(replay, seconds=2, record=work / "replayed")
+av.logging.set_libav_level(av.logging.ERROR)  # again, after record=
 print(type(replay).__name__, "|", r.steps, "steps at", r.hz_target, "Hz, stopped_by", r.stopped_by)
 again = LeRobotDataset("local/replayed", root=work / "replayed")
 a = np.stack([again[i]["action"].numpy() for i in range(again.num_frames)])

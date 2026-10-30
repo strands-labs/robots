@@ -68,11 +68,12 @@ print("record:", d, "| controls:", [c["name"] for c in d.manifest["controls"]][:
 # %% [markdown]
 # ## Invoke
 #
-# `act` over the mesh runs `confirm_act` on the device. A refusal from the device's chain comes back as the same
+# `act` over the mesh runs `confirm_act` on the device; `seconds=` (up to 10) reaches the pose before it answers,
+# `steps=` advances that many control steps. A refusal from the device's chain comes back as the same
 # `RequestRefused`, message verbatim.
 
 # %%
-obs = me.invoke("so101", "act", action={"shoulder_pan": 0.3}, steps=50)
+obs = me.invoke("so101", "act", action={"shoulder_pan": 0.3}, seconds=1.0)
 print("act -> the device reads shoulder_pan =", round(arm.observe().joints["shoulder_pan"], 3))
 try:
     me.invoke("so101", "act", action={"shoulder_pan": 99.0})
@@ -84,10 +85,10 @@ except RequestRefused as e:
     local = str(e)
 print("over the mesh:", remote)
 print("verbatim:", remote == local)
-for rpc, kw in (("teleport", {"x": 1}), ("act", {"action": {"shoulder_pan": 0.1}, "seconds": 1.0})):
+for rpc, kw in (("teleport", {"x": 1}), ("act", {"action": {"shoulder_pan": 0.1}, "seconds": 30.0})):
     try:
         me.invoke("so101", rpc, **kw)
-    except (LookupError, TypeError) as e:
+    except (LookupError, TypeError, ValueError, RequestRefused) as e:
         print(f"{rpc}{sorted(kw)}: {type(e).__name__}: {e}")
 print("rtt over loopback, 50 describe calls:")
 ts = []

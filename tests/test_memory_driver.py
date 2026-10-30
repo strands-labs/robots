@@ -44,6 +44,10 @@ def test_estop_reaches_the_memory_bus_and_the_watchdog_takes_it_as_hardware():
     t = [0.0]
     dog = Watchdog(robot, 100, clock=lambda: t[0])
     t[0] = 1.0
+    assert dog.poll() and bus.holds == 0  # latched: a lapse writes nothing (#4794)
+    robot.resume(approved_by="operator")
+    dog.beat()
+    t[0] = 2.5
     assert dog.poll() and bus.holds == 1  # so101 declares on_disconnect="hold"
 
 

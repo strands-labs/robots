@@ -494,8 +494,8 @@ print({k: (round(v, 3) if isinstance(v, float) else v) for k, v in s.items() if 
 # %% [markdown]
 # ![standalone: the microduck walks in the browser, no server](media/07/standalone.png)
 #
-# The errors this page logs are its own polling of a server that is not there: `GET /api/scene` and
-# `ws://.../ws/state` (the re-probe every 5 s) and `GET /api/mesh` (the e-stop panel, every 2 s).
+# The few errors this page logs are its probes for a server that is not there (`GET /api/scene`, `ws://.../ws/state`).
+# The re-probe backs off from 5 s to 60 s, and with no server the e-stop panel is hidden and never polls `/api/mesh`.
 
 # %% [markdown]
 # ## With a real arm

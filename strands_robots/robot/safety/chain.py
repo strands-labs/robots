@@ -37,8 +37,20 @@ class SafetyChain:
         from ..gate import operator_gate
 
         robot.estop_latch.check(robot.id)
-        request = Request(robot.action_keys, robot.coerce(action, clip=False, measured=measured), confirmed, source)
-        JointLimitValidator()(robot, request)
+        targets = robot.coerce(action, clip=False, measured=measured)
+        request = Request(robot.action_keys, targets, confirmed, source, measured=measured)
+        try:
+            JointLimitValidator()(robot, request)
+        except RequestRefused:
+            # A joint can read a hair past a soft/calibration limit; re-grade against where the body
+            # actually sits so a hold (or a return toward range) passes and only driving further out is
+            # refused. ``measured`` is read once, here, only when the plain check would refuse.
+            if measured is not None:
+                raise
+            with robot._lock:
+                measured = np.array(robot.body.read().positions, dtype=float)
+            request = Request(robot.action_keys, targets, confirmed, source, measured=measured)
+            JointLimitValidator()(robot, request)
         soft = outside_safe(robot, request)
         if soft and approved_run:
             raise RequestRefused(f"{robot.id}: {'; '.join(soft)}: outside the approved run's safe bounds")

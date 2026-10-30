@@ -28,12 +28,17 @@ class NonFiniteTarget(ValueError):
 
 @dataclass(frozen=True)
 class Request:
-    """A control write on its way through the safety chain: full targets in ``action_keys`` order."""
+    """A control write on its way through the safety chain: full targets in ``action_keys`` order.
+
+    ``measured`` (same order, or None) is where the body actually sits: a target is never refused for a
+    limit the body already rests past, only for driving a joint further out (``JointLimitValidator``).
+    """
 
     keys: tuple[str, ...]
     targets: np.ndarray
     confirmed: bool = False
     source: str = "agent"
+    measured: np.ndarray | None = None
 
     def items(self) -> list[tuple[str, float]]:
         return [(k, float(v)) for k, v in zip(self.keys, self.targets, strict=True)]
@@ -47,14 +52,26 @@ def _outside(v: float, bound: tuple[float, float] | None) -> bool:
 
 
 class JointLimitValidator:
-    """Refuse any target outside its control's hard ``range`` (the Description's joint limits)."""
+    """Refuse a target that drives a joint further outside its hard ``range`` than the body already sits.
+
+    A joint can rest a hair past a soft (MuJoCo) or calibration (hardware: ``counts_to_rad`` has no clamp)
+    limit; holding there, or moving back toward the range, is always allowed. Only a target beyond the
+    body's measured position on the outside is refused, so an agent run that holds a saturated pose, or a
+    ``confirm_act`` of the measured joints, is not refused for where the body already is.
+    """
 
     def __call__(self, robot: Robot, request: Request) -> None:
         manifest = robot.manifest
-        for key, v in request.items():
+        measured = request.measured
+        for i, (key, v) in enumerate(request.items()):
             rng = manifest.control(f"{key}.pos").range
-            if _outside(v, rng):
-                assert rng is not None
+            if rng is None:
+                continue
+            lo, hi = rng
+            if measured is not None:  # the body may read past a soft/calibration limit: it can hold there
+                m = float(measured[i])
+                lo, hi = min(lo, m), max(hi, m)
+            if _outside(v, (lo, hi)):
                 raise RequestRefused(f"{robot.id}: {key}={v:.4f} rad is outside its range [{rng[0]:.4f}, {rng[1]:.4f}]")
 
 

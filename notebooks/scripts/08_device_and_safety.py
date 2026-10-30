@@ -108,45 +108,14 @@ arm.validators.remove(cup_held)
 # %% [markdown]
 # ## A hardware-like body
 #
-# `Robot(name, driver=<Driver>)` is a real robot as far as the package is concerned (`is_real=True`). The package
-# ships no in-memory driver, so here is one: it meets the `Driver` protocol and keeps its joints in a numpy array.
+# `Robot(name, driver="memory")` is a hardware body with no wire: as far as the package is concerned it is real
+# (`is_real=True`), so every gate below runs exactly as on an arm. `observe().extras` counts its writes, holds and e-stops.
 
 # %%
-from strands_robots.description import Description
-from strands_robots.types import JointState
-
-
-class MemoryDriver:
-    """A bus with no wire: writes land at once, reads return them."""
-
-    supports_position_hold, calibration, resolution = True, None, None
-
-    def __init__(self, name):
-        self.names = Description.load(name).action_keys
-        self.q = np.zeros(len(self.names))
-        self.writes, self.stops = 0, 0
-
-    def read(self):
-        n = len(self.names)
-        return JointState(self.names, self.q.copy(), np.zeros(n), np.zeros(n))
-
-    def write(self, targets):
-        self.q, self.writes = np.asarray(targets, dtype=float).copy(), self.writes + 1
-
-    def pose(self): return None
-    def images(self): return {}
-    def extras(self): return {"writes": self.writes}
-    def hold(self): pass
-    def estop(self): self.stops += 1
-    def calibrate(self, *, interactive=True): raise NotImplementedError("no bus")
-    def close(self): pass
-
-
-bus = MemoryDriver("so101")
-real = Robot("so101", driver=bus, twin=False)
+real = Robot("so101", driver="memory", twin=False)
 print(real, "| is_real:", real.is_real, "| manifest.real:", real.manifest.real)
 real.act({"shoulder_pan": 0.2})  # your own code is the operator: no gate
-print("direct act -> shoulder_pan", round(real.observe().joints["shoulder_pan"], 3), "| bus writes", bus.writes)
+print("direct act -> shoulder_pan", round(real.observe().joints["shoulder_pan"], 3), "| bus", real.observe().extras)
 try:
     real.confirm_act({"shoulder_pan": 0.3})  # what an agent tool or the dashboard sends
 except RequestRefused as e:
@@ -160,7 +129,7 @@ except RequestRefused as e:
 from strands_robots.robot.run.source import from_agent
 
 asked = []
-real = Robot("so101", driver=MemoryDriver("so101"), twin=False,
+real = Robot("so101", driver="memory", twin=False,
              confirm=lambda t: asked.append(np.round(t, 3).tolist()) or abs(t[0]) < 0.5,
              approve=lambda plan: print("operator sees:", plan) or plan.steps <= 30)
 real.confirm_act({"shoulder_pan": 0.3})
@@ -188,7 +157,7 @@ with from_agent():
 # never be mounted where a mover may vanish.
 
 # %%
-g1_real = Robot("g1", driver=MemoryDriver("g1"), twin=False)
+g1_real = Robot("g1", driver="memory", twin=False)
 print("g1 hardware.on_disconnect:", g1_real.description.hardware.on_disconnect)
 try:
     Watchdog(g1_real, timeout_ms=200)

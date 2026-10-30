@@ -93,3 +93,21 @@ def test_a_callers_units_never_override_what_the_dataset_says_it_stores(recorded
 def test_a_replay_on_a_robot_with_keys_the_dataset_lacks_is_refused_by_name(recorded):
     with pytest.raises(ValueError, match="has no action for"):
         Robot("g1").run(Policy(str(recorded)), steps=1)
+
+
+def test_a_degrees_run_replays_on_a_real_arm_at_the_counts_it_wrote(tmp_path):
+    # A checkpoint run under norm={"*": "degrees", ...}, recorded on the hardware so101 (the repo's fake Feetech bus)
+    # and on a simulated one, replayed on the hardware so101: the registry's range units would land it up to 36 deg off.
+    from test_replay_units import Degrees, _arm, _goals
+
+    direct = _goals(Degrees())
+    arm, _ = _arm()
+    arm.run(Degrees(), steps=3, hz=30, record=tmp_path / "hardware")
+    arm.close()
+    Robot("so101").run(Degrees(), steps=3, hz=30, record=tmp_path / "sim")
+    for name in ("hardware", "sim"):
+        replayed = _goals(Policy(str(tmp_path / name)))
+        print(f"[measured] recorded on the {name} so101: Goal_Position {replayed}, the run itself {direct}")
+        assert replayed == direct
+        said = json.loads((tmp_path / name / "meta" / "units.json").read_text())
+        assert said["joints"]["shoulder_pan.pos"]["mode"] == "degrees"

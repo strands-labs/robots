@@ -13,7 +13,8 @@
 # uv pip install -e ".[mujoco]"
 # ```
 #
-# That is everything this notebook needs. Agents, recording and policies need more extras; their notebooks say which.
+# That is everything this notebook needs. `uv pip install -e ".[all]"` installs every CPU extra the other notebooks
+# use; LeRobot itself is one more line ([02](02_recording.ipynb)).
 
 # %%
 from strands_robots import Robot
@@ -36,7 +37,7 @@ print("t =", obs.t)
 print({k: round(v, 3) for k, v in obs.joints.as_dict().items()})
 
 # %% [markdown]
-# `act()` writes joint targets and advances the world one control step (20 ms). A joint you leave out is re-targeted to where it is now, so gravity pulls it a little each step (01 shows it).
+# `act()` writes joint targets and advances the world one control step (20 ms). A joint you leave out holds its last target (01 shows it).
 
 # %%
 obs = arm.act({"shoulder_pan": 0.5})
@@ -50,11 +51,17 @@ obs = arm.act({"shoulder_pan": 0.5, "elbow_flex": 0.6}, seconds=1.0)
 print(f"t = {obs.t:.2f} s, shoulder_pan = {obs['shoulder_pan']:.3f}, elbow_flex = {obs['elbow_flex']:.3f}")
 
 # %% [markdown]
-# A camera, and one frame from it.
+# One frame of the world.
 
 # %%
 from PIL import Image
 
+Image.fromarray(arm.sim.render())
+
+# %% [markdown]
+# With no camera named, `render()` frames the robots. A named camera puts the eye where you want it:
+
+# %%
 arm.sim.camera("front", position=[0.5, -0.6, 0.42], target=[-0.08, -0.05, 0.08], size=(480, 360))
 Image.fromarray(arm.sim.render("front"))
 

@@ -64,6 +64,24 @@ def test_an_allowed_hold_writes_and_the_twin_mirrors_it():
     real.close()
 
 
+def test_a_servo_resting_past_its_limit_can_still_hold_and_return():
+    """A joint that reads a hair past its hard range (no clamp in counts_to_rad) can still be commanded to
+    where it is, or back toward the range; only a target driving it further out is refused (Yin #4774)."""
+    d, s = make_driver()
+    s.actual[d.ids[3]] = 3072 + 40  # wrist_flex encoder past range_max: it reads outside [lo, hi]
+    real = Robot("so101", driver=d, confirm=lambda action: True, twin=False)
+    hold = real.observe().joints
+    assert hold["wrist_flex"] > real.description.limits["wrist_flex"][1]  # genuinely past its hard limit
+    s.frames.clear()
+    real.confirm_act(hold.positions)  # "hold where you are" is allowed, not refused for where the body is
+    assert len(goal_writes(s)) == 2  # torque on, then one Goal_Position write
+    toward = {"wrist_flex": real.description.limits["wrist_flex"][1]}  # moving back toward the range: allowed
+    real.confirm_act(toward)
+    with pytest.raises(PermissionError, match="wrist_flex"):  # driving it further out: refused
+        real.confirm_act({"wrist_flex": float(hold["wrist_flex"]) + 0.2})
+    real.close()
+
+
 def test_confirmed_out_of_band_and_sim_bodies_are_ungated():
     d, _ = make_driver()
     real = Robot("so101", driver=d, twin=False)

@@ -35,11 +35,14 @@ def features_from(first: Observation, action_keys: tuple[str, ...]) -> dict[str,
 
 
 def units_meta(units: Units | None, description: Description) -> dict[str, Any]:
-    """``meta/units.json``: the unit system state/action are stored in, per joint as its range next to radians."""
+    """``meta/units.json``: the unit system state/action are stored in, per joint as its range next to radians and,
+    when the scheme has modes (LeRobot's ``MotorNormMode``), the joint's mode: what a replay rebuilds."""
     if units is None:
         return {"units": "rad", "joints": {}}
-    joints = {
-        f"{k}.pos": {"range": [float(a), float(b)], "rad": [float(lo), float(hi)]}
-        for k, a, b, lo, hi in zip(units.keys, units.lo_u, units.hi_u, units.lo, units.hi, strict=True)
-    }
+    modes = units.modes or (None,) * len(units.keys)
+    joints: dict[str, dict[str, Any]] = {}
+    for k, a, b, lo, hi, mode in zip(units.keys, units.lo_u, units.hi_u, units.lo, units.hi, modes, strict=True):
+        joints[f"{k}.pos"] = {"range": [float(a), float(b)], "rad": [float(lo), float(hi)]}
+        if mode is not None:
+            joints[f"{k}.pos"]["mode"] = mode
     return {"units": units.name, "joints": joints, "robot": description.name}

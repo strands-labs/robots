@@ -20,7 +20,6 @@ import sys
 
 import numpy as np
 from strands import Agent
-from strands.tools.executors import SequentialToolExecutor
 
 import _nb
 from strands_robots import Robot, Simulation
@@ -54,7 +53,6 @@ print(json.dumps(robot_tool.tool_spec["inputSchema"]["json"]["properties"]["run"
 agent = Agent(
     model=os.environ["STRANDS_MODEL_ID"],
     tools=[robot_tool, sim.tool],
-    tool_executor=SequentialToolExecutor(),  # one call at a time (notebook 03 says why)
     callback_handler=None,
 )
 
@@ -105,12 +103,14 @@ _nb.show(_nb.image(sim.render("side"), width=480))
 # %% [markdown]
 # ## Toward the cube
 #
-# The tools can read where the cube is (`sim_world.pose`), but not where the gripper is: `pose` takes a robot base or
-# an object, not a link, and there is no inverse kinematics verb. Watch how the model gets there anyway.
+# `sim_world.pose` answers for the cube and for a link (`so101/gripper`), and `describe` says how the arm reaches.
+# There is no inverse kinematics verb, so the model closes the gap by trying and measuring.
 
 # %%
 moves += turn("move the gripper so it is just above the red cube")
 print(joints())
+gap = sim.pose("so101/gripper").position - sim.pose("red_cube").position
+print(f"gripper - cube: {np.round(gap, 3).tolist()} m")
 _nb.show(_nb.image(sim.render("side"), width=480))
 
 # %% [markdown]
@@ -194,8 +194,7 @@ def goal_writes(serial):
 
 
 def hw_agent(robot):
-    return Agent(model=os.environ["STRANDS_MODEL_ID"], tools=[robot.tool(policies={"wave": wave})],
-                 tool_executor=SequentialToolExecutor(), callback_handler=None)
+    return Agent(model=os.environ["STRANDS_MODEL_ID"], tools=[robot.tool(policies={"wave": wave})], callback_handler=None)
 
 # %% [markdown]
 # No `confirm=`: the model's `act` is refused, and the refusal is what it reads.

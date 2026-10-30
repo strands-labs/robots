@@ -4,7 +4,10 @@ build-backend = "hatchling.build"
 
 [project]
 name = "strands-robots"
-version = "1.0.0.dev0"
+# One copy of the version, strands_robots.__version__ ([tool.hatch.version] below), so the wheel and the package
+# cannot disagree: a release sets it (`hatch version 1.0.0rc1`) in the release commit, and the publish workflow
+# refuses a tag that is not v<version>.
+dynamic = ["version"]
 description = "A Simulation is a world, a Robot is a body in a world (or on a bus), a Policy turns an observation into an action."
 readme = "README.md"
 license = "Apache-2.0"
@@ -39,6 +42,9 @@ dashboard = ["fastapi>=0.115", "uvicorn>=0.35", "websockets>=13"]
 # _extras.LEROBOT): `uv pip install -e ".[all]"`.
 all = ["strands-robots[mujoco,feetech,onnx,lerobot,tools,mesh,iot,dashboard]"]
 dev = ["pytest>=8", "pytest-timeout", "ruff>=0.6", "mypy>=1.10", "import-linter>=2.1", "onnx>=1.16", "moto[iot]>=5"]
+
+[tool.hatch.version]
+path = "strands_robots/__init__.py"
 
 [tool.hatch.build.targets.wheel]
 packages = ["strands_robots"]

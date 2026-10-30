@@ -35,7 +35,7 @@ It stays pressed until a named person lets go:
 
 ```python
 task = arm.start(my_policy, seconds=30)
-arm.estop()                          # the run stops ~10 ms later, stopped_by="estop"
+arm.estop(by="alice")                # the run stops ~10 ms later; a later move is refused "e-stop is engaged by alice"
 arm.resume(approved_by="alice")    # nobody else's say-so counts
 ```
 
