@@ -1,5 +1,11 @@
-"""Every MuJoCo render runs on one GL thread: a context is bound to its thread (macOS hangs otherwise)."""
+"""Every MuJoCo render runs on one GL thread: a context is bound to its thread (macOS hangs otherwise).
 
+The exception is GLFW on macOS, which makes its window on the main thread only: there a render stays put.
+"""
+
+import os
+import subprocess
+import sys
 import threading
 
 import pytest
@@ -37,6 +43,50 @@ def test_renders_from_any_thread_run_on_the_one_gl_thread(monkeypatch):
     assert len(rendered) >= 3 and len(set(made)) == 1 and set(rendered) == set(made)
     assert made[0].startswith("strands-gl")
     arm.close()
+
+
+@pytest.mark.parametrize(
+    "system, context, inline",
+    [
+        ("Darwin", "mujoco.glfw", True),
+        ("Darwin", "mujoco.cgl", False),
+        ("Darwin", None, False),  # MUJOCO_GL=disable: no GLContext at all
+        ("Linux", "mujoco.glfw", False),
+        ("Linux", "mujoco.egl", False),
+        ("Linux", "mujoco.osmesa", False),
+    ],
+)
+def test_only_glfw_on_macos_renders_on_the_thread_that_asks(monkeypatch, system, context, inline):
+    import mujoco.gl_context
+
+    from strands_robots import _gl
+
+    monkeypatch.setattr(_gl.platform, "system", lambda: system)
+    made_by = type("GLContext", (), {"__module__": context})  # the class MuJoCo's Renderer makes its context with
+    monkeypatch.setattr(mujoco.gl_context, "GLContext", made_by, raising=False)
+    if context is None:
+        monkeypatch.delattr(mujoco.gl_context, "GLContext")
+    here = threading.current_thread().name
+    ran_on = _gl.on_gl_thread(lambda: threading.current_thread().name)
+    assert (ran_on == here) if inline else ran_on.startswith("strands-gl")
+
+
+_PROBE = """
+from strands_robots import Robot, Simulation
+sim = Simulation()
+sim.camera("cam", size=(64, 48), attach=Robot("so101", sim=sim))
+try:
+    print(sim.render("cam").shape)
+except RuntimeError as e:
+    print(str(e).split(":")[0])
+sim.close()
+"""
+
+
+def test_with_mujoco_gl_disabled_a_render_still_says_rendering_unavailable():
+    env = {**os.environ, "MUJOCO_GL": "disable"}  # no GLContext at all: the backend refuses, as it did before
+    out = subprocess.run([sys.executable, "-c", _PROBE], env=env, capture_output=True, text=True, timeout=120)
+    assert (out.returncode, out.stdout.strip()) == (0, "rendering unavailable")
 
 
 def test_a_base_exception_on_the_gl_thread_reaches_the_caller_and_ends_the_worker():

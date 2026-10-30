@@ -32,6 +32,7 @@ class SceneRobot:
     position: tuple[float, float, float] = (0.0, 0.0, 0.0)
     orientation: tuple[float, float, float, float] = _IDENTITY_QUAT
     keyframe: str | None = None
+    _twin: bool = False  # a hardware Robot's twin (robot/twin.py marks it): it touches the floor and nothing else
 
 
 @dataclass

@@ -31,7 +31,7 @@ A `Driver` is `names read() write() pose() images() extras() hold() estop() cali
 or an instance, and an instance whose `names` are not the description's `action_keys`, in order, is refused. `Robot(name, port=)` picks the driver from the registry entry and adds a twin of the same
 description to `Simulation.default()`: `real.twin` is `so101_twin`, its `twin_of` is `real`, and only
 `real.is_real` is true (`twin=False` to skip). `observe()` places the twin at the measured joints
-(`Backend.set_joints`, no step), so `real.twin.sim.render()` draws the real pose; `act()` mirrors the targets and steps the twin's world one control step (`manual_time()` stops it). `set_pose` raises on hardware; `real.twin.set_pose` works.
+(`Backend.set_joints`, no step), so `real.twin.sim.render()` draws the measured joints (a floating base is not placed); `act()` mirrors the targets and steps the twin's world one control step (`manual_time()` stops it). The twin touches the floor as its plain body would, and nothing else, so it never pushes a simulated robot or object standing where it spawns; a NaN reading, or one beyond MuJoCo's 1e10 (inf included), is not mirrored, and if its world closes the real robot carries on without it. `set_pose` raises on hardware; `real.twin.set_pose` works.
 
 **No arm on the desk.** `driver="memory"` is a hardware body with no wire, so the operator gate, `approve=`,
 the e-stop and the watchdog's real-body rule run exactly as they do on an arm. Its `MemoryDriver` logs every
@@ -74,10 +74,10 @@ own at `run()`. The dict's keys are the policy's image keys; there is nothing to
 
 **Calibration.** `calibrate(interactive=False)` returns the LeRobot file it found under
 `$HF_LEROBOT_CALIBRATION/robots/`: `so_follower/<id>.json` (LeRobot 0.6 names every SO-10x arm so),
-then `<lerobot_type>/<id>.json`; without an id, `<lerobot_type>.json` or the only file in the directory.
+then `<lerobot_type>/<id>.json`, `<id>` being `Robot(id=)`, which never loads another arm's file (a warning names the files there); without one, `<lerobot_type>.json` or the only file in the directory.
 `Robot("so101", port=..., calibration="my_arm.json")` takes any path; a missing file is an error that
 lists where it looked. `calibrate()` walks a human at a terminal through LeRobot's procedure (middle
-pose, then a sweep) and writes the file; with no terminal it refuses before torque goes off. Without a
+pose, then a sweep of every joint but `wrist_roll`, which gets the full turn, 0..4095, as LeRobot gives it) and writes over the file it loaded, else `<lerobot_type>/<id>.json`; with `save=True` (the default) it refuses to record when that file was only a guess (no id, the one file in its directory), which may be another arm's: pass `id=` or `calibration=`. A sweep that leaves a swept joint without a range is refused, as LeRobot refuses it; nothing is saved, and the servos get back the homing offsets they held, so the calibration loaded still maps the arm. With no terminal it refuses before torque goes off. With a calibration loaded it asks first, as LeRobot does; Enter keeps it and, unlike LeRobot, writes nothing to the servos; `c` re-records. Without a
 file, joints map the full turn of counts (2048 is 0 rad). `observe()` maps each joint's calibrated
 `range_min`..`range_max` onto the description's joint limits, so radians match the twin; LeRobot's own
 degrees are 360/4095 per count from the middle of that range, so the same pose can read a few degrees apart. A LeRobot policy

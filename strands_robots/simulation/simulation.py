@@ -89,18 +89,18 @@ class Simulation(_SceneOps):
 
     def step(self, n: int = 1) -> None:
         """Advance ``n`` physics steps (``timestep`` each)."""
-        self._open()
         if n < 0:
             raise ValueError(f"n must be >= 0, got {n}")
         with self.lock:
+            self._open()  # under the lock close() takes: never a step on a model another thread just closed
             self._flush()
             self.backend.step(int(n))
 
     def control_step(self) -> None:
         """Advance exactly one control step (``physics.substeps`` physics steps) unless time is manual."""
-        self._open()
-        if not self._manual:
-            with self.lock:
+        with self.lock:
+            self._open()
+            if not self._manual:
                 self.backend.step(self._substeps)
 
     @contextmanager
@@ -139,6 +139,7 @@ class Simulation(_SceneOps):
             if self._editing:  # inside ``with sim.editing():`` the rebuild waits for the block's exit
                 self._pending = True
                 return
+            self._open()  # camera(), randomize() and render() never rebuild a closed world
             self._load()
             self.revision += 1
             self._pending = False
@@ -161,11 +162,13 @@ class Simulation(_SceneOps):
 
     def reset(self, *, keyframe: str | None = None) -> None:
         """Every body back to its spawn state, or to ``keyframe`` where a robot has one."""
-        self._open()
-        named = {k for r in self._robots.values() for k in r.description.keyframes}
-        if keyframe is not None and keyframe not in named:
-            raise ValueError(f"keyframe {keyframe!r} is not on any robot in this world; keyframes are {sorted(named)}")
-        with self.lock:
+        with self.lock:  # the keyframe check too: close() empties self._robots under this lock
+            self._open()
+            named = {k for r in self._robots.values() for k in r.description.keyframes}
+            if keyframe is not None and keyframe not in named:
+                raise ValueError(
+                    f"keyframe {keyframe!r} is not on any robot in this world; keyframes are {sorted(named)}"
+                )
             self.backend.reset(keyframe)
             for r in self._robots.values():  # every body is back at its spawn pose: no old target survives
                 r._held = None
@@ -225,13 +228,14 @@ class Simulation(_SceneOps):
             return _describe.describe(self)
 
     def close(self) -> None:
-        if self._closed:
-            return
-        self._closed = True
-        for r in list(self._robots.values()):
-            r.detached()
-        self._robots.clear()
-        self.backend.close()
+        with self.lock:  # a step, a rebuild or a twin's mirror in another thread ends first; none starts after it
+            if self._closed:
+                return
+            self._closed = True
+            for r in list(self._robots.values()):
+                r.detached()
+            self._robots.clear()
+            self.backend.close()
         if Simulation._default is self:
             Simulation._default = None
 
@@ -242,7 +246,5 @@ class Simulation(_SceneOps):
         self.close()
 
     def __repr__(self) -> str:
-        return (
-            f"Simulation({self.backend_name!r}, physics={self.physics_name!r}, "
-            f"robots={list(self._robots)}, t={self.time:.3f})"
-        )
+        b, p = self.backend_name, self.physics_name
+        return f"Simulation({b!r}, physics={p!r}, robots={list(self._robots)}, t={self.time:.3f})"

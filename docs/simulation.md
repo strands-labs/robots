@@ -33,7 +33,8 @@ in it and the time. Every scene change (`add`, `remove`, `add_object`, `camera`,
 `randomize`) bumps `revision`; motion does not. Adding a robot appends to the scene and rebuilds the
 world, and every body that survives keeps its joint state. `sim.lock` is one re-entrant lock around
 the world, so a reader and a stepping loop never see a half-built world. It is fair: a release hands it to
-the oldest waiter, so a reader looping on `with sim.lock:` never starves an `act()`.
+the oldest waiter, so a reader looping on `with sim.lock:` never starves an `act()`. `close()` takes it too: a
+step another thread is taking ends first, and a closed world is never stepped or compiled again.
 
 `set_pose` moves a fixed base by moving its spawn frame in the scene and rebuilding, the path every
 scene change takes: joint state, time and randomised physics carry over. A floating base is teleported in place and keeps its spawn frame, so `reset()` stands it back
@@ -75,7 +76,7 @@ headroom in both directions. An unknown `ground=` is refused by name.
 `body_pose`, `set_pose`, `set_gains`, `render`, `contacts`, `physics` and `close`. `mujoco` is the
 first backend (MuJoCo 3.3.4 or newer): one `MjSpec`, each robot attached under an `id/` prefix,
 rebuilt on every scene change with time kept and joint state carried by joint name. `mujoco` is imported when the first world is made, not by
-`import strands_robots`. Rendering uses EGL when no display is present: `import strands_robots` sets `MUJOCO_GL=egl` (or `osmesa`) on a headless Linux host before anything imports `mujoco`, which reads it only once. An explicit `MUJOCO_GL` is respected; a display or macOS keeps the native context. If `mujoco` was imported first, `render()` raises and names the variable to set before that import. Every render runs on one GL thread, whichever thread asks, so a `start()` after a `run()` renders from its background thread too. Its contexts are freed before EGL shuts down at exit, so a script that rendered ends quietly; an `EGL_NOT_INITIALIZED` traceback after the last line of a script is a teardown bug to report, not a failed render.
+`import strands_robots`. Rendering uses EGL when no display is present: `import strands_robots` sets `MUJOCO_GL=egl` (or `osmesa`) on a headless Linux host before anything imports `mujoco`, which reads it only once. An explicit `MUJOCO_GL` is respected; a display or macOS keeps the native context. If `mujoco` was imported first, `render()` raises and names the variable to set before that import. Every render runs on one GL thread, whichever thread asks, so a `start()` after a `run()` renders from its background thread too. With `MUJOCO_GL=glfw` on macOS a render runs on the thread that asks: GLFW makes its window on the main thread only. Its contexts are freed before EGL shuts down at exit, so a script that rendered ends quietly; an `EGL_NOT_INITIALIZED` traceback after the last line of a script is a teardown bug to report, not a failed render.
 
 Measured headless: 2000 physics steps of so101 plus g1 take 85 us each (MuJoCo 3.15, one CPU core).
 

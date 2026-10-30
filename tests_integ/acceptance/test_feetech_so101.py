@@ -103,10 +103,9 @@ def test_calibrate_returns_lerobots_file_unchanged(arm):
     real = arm(lambda action: False)
     driver = real.body
     assert isinstance(driver, ft.FeetechDriver)
-    path = driver.default_calibration_path()
-    if not path.is_file():
-        pytest.skip(f"no LeRobot calibration at {path}: run lerobot-calibrate for this arm first")
-    on_disk = json.loads(path.read_text())
+    if driver.calibration_source is None:  # the file the driver loaded, if it found one
+        pytest.skip(f"no LeRobot calibration in {driver.calibration_looked}: run lerobot-calibrate for this arm first")
+    on_disk = json.loads(Path(driver.calibration_source).read_text())
     cal = real.calibrate(interactive=False)
     assert cal == Calibration.from_json(on_disk) and cal.to_json() == on_disk
 

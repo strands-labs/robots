@@ -87,10 +87,7 @@ class Robot(DeviceVerbs):
             self._body = make_driver(self.description, **hw, options=driver_options, id=id)
             self.supports_position_hold = position_hold_of(self.description, self._body)
             if twin:
-                self.twin = Robot(
-                    name, position=position, orientation=orientation, keyframe=keyframe, id=f"{self.id}_twin"
-                )
-                self.twin.twin_of = self
+                self.twin = _twin.make(self, name, position, orientation, keyframe)
         else:
             if driver_options:
                 raise TypeError(f"{sorted(driver_options)} are hardware driver options; a world's robot takes none")
@@ -152,8 +149,8 @@ class Robot(DeviceVerbs):
 
     def observe(self, *, images: bool = True) -> Observation:
         """One read of the body; ``t`` is the capture time on the robot's clock."""
-        body = self.body
         with self._lock:
+            body = self.body  # under the lock: a world that closed meanwhile has detached it, and this says so
             t = self.clock.now()
             js = body.read()
             obs = Observation(

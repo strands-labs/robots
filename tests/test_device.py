@@ -3,13 +3,15 @@
 from __future__ import annotations
 
 import json
+import threading
 import time
 
 import pytest
-from test_drivers import make_driver
+from test_drivers import FakeSerial, make_driver
 
 from strands_robots import Robot
 from strands_robots.robot.device import Manifest
+from strands_robots.robot.drivers import feetech as ft
 from strands_robots.robot.safety import RequestRefused
 
 
@@ -154,6 +156,150 @@ def test_lockstep_emits_per_robot():
     sim.run({a: lambda o: {}, b: lambda o: {}}, steps=2)
     assert sorted(stopped) == ["a", "b"]
     sim.close()
+
+
+class FlakySerial(FakeSerial):
+    """The fake bus with trouble on the line: while ``noise`` is set every SYNC_READ reply's last checksum is flipped;
+    while ``dead`` is set no servo answers, and a read waits out the bus's 20 ms timeout, as pyserial does."""
+
+    def __init__(self):
+        super().__init__()
+        self.noise, self.dead, self.garbled = False, False, 0
+
+    def write(self, data):
+        if self.dead:
+            self.frames.append(bytes(data))
+            return
+        super().write(data)
+        if self.noise and data[4] == ft.SYNC_READ:
+            self.rx[-1] ^= 0xFF
+            self.garbled += 1
+
+    def read(self, n):
+        if self.dead and n > len(self.rx):
+            time.sleep(0.02)
+        return super().read(n)
+
+
+def _until(cond, timeout=5.0):
+    t0 = time.monotonic()
+    while not cond() and time.monotonic() - t0 < timeout:
+        time.sleep(0.002)
+    return cond()
+
+
+def _streaming_arm(hz=200, **subscribers):
+    """An SO-101 on a ``FlakySerial`` bus streaming state at ``hz`` into a list: (arm, serial, got, unsubscribe)."""
+    d, s = make_driver(serial=FlakySerial())
+    arm = Robot("so101", driver=d, twin=False)
+    for event, cb in subscribers.items():
+        arm.subscribe(event, cb)
+    got: list[dict] = []
+    return arm, s, got, arm.subscribe("state", got.append, hz=hz)
+
+
+def _a_burst_of_noise(arm, s, got):
+    """Garble every reply until three reads failed, then clear the line: a burst, since a driver that asks again for
+    a garbled reply (``num_read_retries``) never lets a single one reach the stream. Returns "resumed", or where the
+    stream stopped."""
+    assert _until(lambda: len(got) >= 3)
+    g, burst = s.garbled, 3 * (1 + getattr(arm.body, "num_read_retries", 0))
+    s.noise = True
+    if not _until(lambda: s.garbled >= g + burst):
+        s.noise = False
+        return f"stopped reading the bus after {s.garbled - g} of {burst} garbled replies"
+    s.noise, n = False, len(got)
+    return "resumed" if _until(lambda: len(got) >= n + 3) else "no sample after the noise"
+
+
+def test_a_state_stream_keeps_running_through_a_burst_of_corrupted_replies_and_resumes_after_it():
+    escaped: list[BaseException] = []
+    old = threading.excepthook
+    threading.excepthook = lambda a: escaped.append(a.exc_value)
+    try:
+        arm, s, got, unsubscribe = _streaming_arm()
+        outcome = _a_burst_of_noise(arm, s, got)
+        unsubscribe()
+        arm.close()
+    finally:
+        threading.excepthook = old
+    assert (outcome, escaped) == ("resumed", [])
+    seqs = [g["seq"] for g in got]
+    assert arm.events.errors == seqs[-1] + 1 - len(seqs) >= 3  # each failed read is counted, and is a gap in seq
+
+
+def test_a_state_stream_reports_one_fault_event_per_run_of_failed_reads():
+    faults: list[dict] = []
+    arm, s, got, unsubscribe = _streaming_arm(fault=faults.append)
+    arm.subscribe("fault", lambda f: 1 / 0)  # a fault subscriber's own bug does not end the stream either
+    outcomes = [_a_burst_of_noise(arm, s, got) for _ in range(2)]
+    unsubscribe()
+    arm.close()
+    assert outcomes == ["resumed", "resumed"] and len(faults) == 2, faults
+    assert {f["device_id"] for f in faults} == {"so101"}
+    assert all("state stream" in f["reason"] and "ProtocolError: servo 6: bad checksum" in f["reason"] for f in faults)
+
+
+def test_a_state_subscriber_that_raises_keeps_its_stream_and_is_reported_once():
+    d, _ = make_driver()
+    arm = Robot("so101", driver=d, twin=False)
+    faults: list[dict] = []
+    arm.subscribe("fault", faults.append)
+    calls: list[int] = []
+
+    def broken(payload):
+        calls.append(payload["seq"])
+        raise RuntimeError("this subscriber cannot take the sample")
+
+    unsubscribe = arm.subscribe("state", broken, hz=200)
+    kept = _until(lambda: len(calls) >= 5)
+    unsubscribe()
+    arm.close()
+    assert kept, f"the stream ended after {len(calls)} sample(s)"
+    assert len(faults) == 1 and "RuntimeError: this subscriber cannot take the sample" in faults[0]["reason"]
+
+
+def test_an_error_that_cannot_print_itself_is_reported_by_its_type_and_does_not_end_a_state_stream():
+    class Unprintable(OSError):
+        def __str__(self) -> str:
+            raise RuntimeError("this error cannot format its own message")
+
+    d, _ = make_driver()
+    arm = Robot("so101", driver=d, twin=False)
+    faults: list[dict] = []
+    arm.subscribe("fault", faults.append)
+    read, calls = d.read, []
+
+    def read_failing_twice():
+        calls.append(1)
+        if len(calls) <= 2:
+            raise Unprintable()
+        return read()
+
+    d.read = read_failing_twice  # type: ignore[method-assign]
+    got: list[dict] = []
+    unsubscribe = arm.subscribe("state", got.append, hz=200)
+    resumed = _until(lambda: len(got) >= 3)
+    unsubscribe()
+    arm.close()
+    assert resumed, f"the stream ended after {len(calls)} read(s)"
+    assert arm.events.errors == 2
+    assert len(faults) == 1 and "a sample failed (Unprintable)" in faults[0]["reason"], faults
+
+
+def test_after_a_failed_read_a_state_stream_waits_a_period_so_it_never_bursts_when_the_bus_answers_again():
+    arm, s, got, unsubscribe = _streaming_arm(hz=100)
+    assert _until(lambda: len(got) >= 3)
+    s.dead = True  # a read now fails after the 20 ms timeout, once per try: two periods or more at 100 Hz
+    time.sleep(1.0)
+    s.dead, n = False, len(got)
+    t0 = time.monotonic()
+    assert _until(lambda: len(got) > n), "no sample after the bus answered again"
+    time.sleep(max(0.0, t0 + 0.25 - time.monotonic()))
+    unsubscribe()
+    arm.close()
+    back = [g for g in got[n:] if g["t"] - t0 < 0.2]  # 20 periods: a late or retried read is made up, the outage not
+    assert len(back) <= 40, f"{len(back)} samples in the first 200 ms back at 100 Hz"
 
 
 def test_k4_manifest_sees_a_camera_added_after_it_was_first_read():

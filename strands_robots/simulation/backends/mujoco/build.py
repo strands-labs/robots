@@ -16,6 +16,7 @@ from ...scene import Scene, SceneCamera, SceneObject, SceneRobot
 ensure_gl()
 import mujoco  # noqa: E402
 
+_TWIN_BIT = 1 << 30  # a twin's own contact bit, far above the 1, 2 and 4 the registry's models use
 _GEOM = {
     "box": mujoco.mjtGeom.mjGEOM_BOX,
     "sphere": mujoco.mjtGeom.mjGEOM_SPHERE,
@@ -67,6 +68,9 @@ def attach_robot(spec: mujoco.MjSpec, r: SceneRobot) -> None:
         rs.delete(g)  # the world owns the floor
     for light in [li for li in rs.lights if li.parent.name == "world"]:
         rs.delete(light)  # and the lighting: a robot's scene light would stack on the world's and wash it out
+    if r._twin:  # a hardware robot's twin touches the floor as its plain body would, and nothing else
+        for g in rs.geoms:  # a plain geom meets the floor (1, 1) when either of its masks has bit 1
+            g.contype, g.conaffinity = (_TWIN_BIT, 0) if (g.contype | g.conaffinity) & 1 else (0, 0)
     frame = spec.worldbody.add_frame(pos=list(r.position), quat=list(r.orientation))
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")  # "attach conflict: integrator" — the world's option wins
@@ -186,7 +190,7 @@ def add_ground(spec: mujoco.MjSpec, ground: bool | str) -> None:
         mat = spec.add_material(name="groundmat", texrepeat=[4, 4], texuniform=True)
         mat.textures[mujoco.mjtTextureRole.mjTEXROLE_RGB] = "groundtex"
         geom["material"] = "groundmat"
-    spec.worldbody.add_geom(**geom)
+    spec.worldbody.add_geom(**geom).conaffinity = 1 | _TWIN_BIT  # every body touches the floor, and so does a twin
 
 
 def outline(model: mujoco.MjModel, data: mujoco.MjData, roots: list[int]) -> np.ndarray:

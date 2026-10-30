@@ -79,6 +79,21 @@ class FakeSerial:
                     self.actual[i] = (int.from_bytes(chunk, "little") + self._homing(i)) % 4096
 
 
+class SweepSerial(FakeSerial):
+    """The operator's sweep: each SYNC_READ finds every joint but the ``still`` ones 200 counts below, then above,
+    ``middle``."""
+
+    def __init__(self, middle=2348, still=()):
+        super().__init__()
+        self.middle, self.still, self.side = middle, set(still), 200
+
+    def write(self, data):
+        if data[4] == ft.SYNC_READ:
+            self.side = -self.side
+            self.actual.update({i: self.middle + self.side for i in self.actual if i not in self.still})
+        super().write(data)
+
+
 CAL = {
     n: {"id": i + 1, "drive_mode": 0, "homing_offset": 0, "range_min": 1024, "range_max": 3072}
     for i, n in enumerate(("shoulder_pan", "shoulder_lift", "elbow_flex", "wrist_flex", "wrist_roll", "gripper"))
@@ -244,17 +259,18 @@ def test_calibration_loads_from_lerobot_path(tmp_path, monkeypatch):
 
 def test_calibrate_writes_lerobot_json(tmp_path, monkeypatch):
     monkeypatch.setenv("HF_LEROBOT_CALIBRATION", str(tmp_path))
-    d, s = make_driver(cal=None)
+    d, s = make_driver(cal=None, serial=SweepSerial(middle=2100))
     with pytest.raises(RuntimeError, match="interactive=True"):
         d.calibrate(interactive=False)  # no file yet: recording one needs a human
     for i in s.regs:  # the encoder reads 2100 at "middle"; the EEPROM still carries an old calibration's offset
         s.actual[i] = 2100
         s.regs[i][ft.REG_HOMING_OFFSET : ft.REG_HOMING_OFFSET + 2] = ft.encode_sm(-300, 11)
-    cal = d.calibrate(interactive=True, prompt=lambda msg: None, sweep_seconds=0.05)
+    cal = d.calibrate(interactive=True, prompt=lambda msg: None, sweep_seconds=0.1)
+    s.actual.update(dict.fromkeys(s.actual, 2100))  # the sweep over, the arm is back at the middle
     # LeRobot's Feetech convention: Homing_Offset = middle - 2047, so the firmware then reports the middle at 2047
     assert cal.joints["shoulder_pan"].homing_offset == 2100 - 2047 == s._homing(1)
     assert ft.decode_sm(d.bus.read(1, ft.REG_PRESENT_POSITION, 2), 15) == 2047
-    assert (cal.joints["shoulder_pan"].range_min, cal.joints["shoulder_pan"].range_max) == (2047, 2047)
+    assert (cal.joints["shoulder_pan"].range_min, cal.joints["shoulder_pan"].range_max) == (2047 - 200, 2047 + 200)
     saved = json.loads((tmp_path / "robots" / "so101_follower" / "so101_follower.json").read_text())
     assert saved["gripper"]["id"] == 6
     assert set(saved["gripper"]) == {"id", "drive_mode", "homing_offset", "range_min", "range_max"}

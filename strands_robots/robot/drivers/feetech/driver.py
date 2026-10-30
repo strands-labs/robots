@@ -6,7 +6,6 @@ import json
 import math
 import sys
 import time
-import warnings
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
@@ -15,7 +14,8 @@ import numpy as np
 
 from ....description import Description
 from ....types import JointState, Pose
-from ..calibration import Calibration, JointCalibration, lerobot_calibration_candidates, lerobot_calibration_path
+from .. import calibration as calib
+from ..calibration import Calibration, JointCalibration, lerobot_calibration_path
 from ..cameras import Cameras
 from ..slew import MAX_SPEED, Slew
 from .bus import (
@@ -66,15 +66,9 @@ class FeetechDriver:
         self.calibration: Calibration | None = None
         self.calibration_source: str | None = None
         self.calibration_looked: list[str] = []
+        self._save_to: Path | None = self.default_calibration_path(robot_id)  # calibrate()'s file; None: no safe one
         self._load_calibration(calibration, robot_id)
-        if self.calibration is None:
-            warnings.warn(
-                f"{description.name} on {self.bus.port}: no calibration found (looked at "
-                f"{', '.join(self.calibration_looked) or 'nothing'}); joints read as a full uncalibrated turn and "
-                f"LeRobot degrees will not match the arm's own. Pass calibration=, robot_id= (Robot(id=)) or run "
-                f"calibrate().",
-                stacklevel=3,
-            )
+        calib.warn_if_missing(self.calibration, f"{description.name} on {self.bus.port}", self.calibration_looked)
         missing = [i for i in self.ids if not self.bus.ping(i)]
         if missing:
             raise ConnectionError(f"{description.name} on {self.bus.port}: no reply from servo id(s) {missing}")
@@ -85,24 +79,17 @@ class FeetechDriver:
         elif isinstance(cal, Mapping):
             self.calibration, self.calibration_source = Calibration.from_json(cal), "caller"
         else:
-            looked = [Path(cal).expanduser()] if cal is not None else self.calibration_candidates(robot_id)
-            path = next((p for p in looked if p.is_file()), looked[0])
+            rtype = str(self.description.hardware.lerobot_type or self.description.name)
+            path, self._save_to, looked = calib._find_lerobot_calibration(rtype, robot_id, cal)
             self.calibration_looked = [str(p) for p in looked]
-            if path.is_file():
+            if path is not None:
                 self.calibration = Calibration.from_json(json.loads(path.read_text()))
                 self.calibration_source = str(path)
-            elif cal is not None:
-                raise FileNotFoundError(f"calibration file not found: {path}")
 
     def default_calibration_path(self, robot_id: str | None = None) -> Path:
-        """Where ``calibrate()`` saves: LeRobot's ``<type>/<id>.json`` for this arm."""
+        """Where ``calibrate()`` saves when no file was loaded: LeRobot's ``<type>/<id>.json`` for this arm."""
         rtype = str(self.description.hardware.lerobot_type or self.description.name)
         return lerobot_calibration_path(rtype, robot_id or rtype)
-
-    def calibration_candidates(self, robot_id: str | None = None) -> list[Path]:
-        return lerobot_calibration_candidates(
-            str(self.description.hardware.lerobot_type or self.description.name), robot_id
-        )
 
     def _span(self, name: str) -> tuple[float, float, float, float, bool]:
         """(count_min, count_max, rad_lo, rad_hi, reversed) for a joint, or the uncalibrated full turn."""
@@ -196,7 +183,8 @@ class FeetechDriver:
     ) -> Calibration:
         """LeRobot's procedure: torque off, middle pose sets the homing offset, sweep records min/max.
 
-        ``interactive=False`` returns the calibration already loaded (LeRobot's file) and moves nothing."""
+        ``interactive=False`` returns the calibration already loaded (LeRobot's file) and moves nothing. With one
+        loaded, ``interactive=True`` first asks, as LeRobot does: Enter keeps it, ``c`` records a new one."""
         if not interactive:
             if self.calibration is None:
                 raise RuntimeError(
@@ -207,34 +195,47 @@ class FeetechDriver:
             return self.calibration
         if prompt is input and not sys.stdin.isatty():  # torque off drops the arm: only a human at the arm says go
             raise RuntimeError(f"{self.description.name}: calibrate(interactive=True) needs a human at a terminal")
+        if self.calibration is not None:  # ask first, as LeRobot does; unlike LeRobot's, this Enter writes nothing
+            said = f"{self.description.name} has a calibration ({self.calibration_source}). Enter keeps it"
+            if str(prompt(said + ", c re-records (torque goes off)") or "").strip().lower() != "c":
+                return self.calibration
+        if save and self._save_to is None:  # over or beside a guess, the save could give another arm this calibration
+            raise RuntimeError(f"with no id, {self.calibration_source} may be another arm's: pass id= or calibration=")
         self.torque(False)
-        for i in self.ids:  # the firmware reports Present = Actual - Homing_Offset: read the middle unshifted
-            self._write_homing(i, 0)
         prompt(f"Move {self.description.name} to the MIDDLE of every joint's range, then press Enter")
+        was = {i: decode_sm(self.bus.read(i, REG_HOMING_OFFSET, 2), 11) for i in self.ids}  # put back if refused
+        for i in self.ids:  # only after that Enter; Present = Actual - Homing_Offset, so read the middle unshifted
+            self._write_homing(i, 0)
         mid = {i: decode_sm(self.bus.read(i, REG_PRESENT_POSITION, 2), 15) for i in self.ids}
-        limit = (1 << 11) - 1  # sign-magnitude, bit 11: LeRobot clamps pos - 2047 the same way
-        homing = {i: max(-limit, min(limit, m - (RESOLUTION - 1) // 2)) for i, m in mid.items()}
+        homing = {i: max(-2047, min(2047, m - (RESOLUTION - 1) // 2)) for i, m in mid.items()}  # as LeRobot clamps
         for i, h in homing.items():
             self._write_homing(i, h)
-        prompt(f"Now move EVERY joint through its full range for {sweep_seconds:.0f} s (recording); Enter to start")
-        lo = {i: RESOLUTION for i in self.ids}
-        hi = {i: 0 for i in self.ids}
+        full = {i for n, i in zip(self.names, self.ids, strict=True) if n == "wrist_roll"}  # LeRobot never sweeps it
+        prompt(f"Now move every joint but wrist_roll through its full range for {sweep_seconds:.0f} s; Enter to start")
+        lo = {i: 0 if i in full else RESOLUTION for i in self.ids}  # wrist_roll: the full turn, as LeRobot records it
+        hi = {i: RESOLUTION - 1 if i in full else 0 for i in self.ids}
         end = time.monotonic() + sweep_seconds
         while time.monotonic() < end:
             raw = self.bus.sync_read(REG_PRESENT_POSITION, 2, self.ids)
-            for i in self.ids:
+            for i in set(self.ids) - full:
                 v = decode_sm(raw[i], 15)
                 lo[i], hi[i] = min(lo[i], v), max(hi[i], v)
             time.sleep(0.01)
+        if unswept := [n for n, i in zip(self.names, self.ids, strict=True) if lo[i] >= hi[i]]:  # as LeRobot does
+            for i, h in was.items():  # the driver keeps the calibration it had: the servos get their offsets back
+                self._write_homing(i, h)
+            raise ValueError(
+                f"{self.description.name}: the sweep recorded no range for {unswept}: nothing saved, and the servos "
+                "have their homing offsets back. Run calibrate() again and move each of them through its full range"
+            )
         cal = Calibration(
             {n: JointCalibration(i, 0, homing[i], lo[i], hi[i]) for n, i in zip(self.names, self.ids, strict=True)}
         )
         self.calibration, self.calibration_source = cal, "calibrate()"
-        if save:
-            path = self.default_calibration_path()
-            path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text(json.dumps(cal.to_json(), indent=4))
-            self.calibration_source = str(path)
+        if save and self._save_to is not None:  # the file it loaded, else <type>/<id>.json: the next connect's file
+            self._save_to.parent.mkdir(parents=True, exist_ok=True)
+            self._save_to.write_text(json.dumps(cal.to_json(), indent=4))
+            self.calibration_source = str(self._save_to)
         return cal
 
     def _write_homing(self, motor_id: int, offset: int) -> None:
