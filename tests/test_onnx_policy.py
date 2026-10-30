@@ -231,6 +231,26 @@ def test_gate_holosoma_keeps_the_pelvis_up_for_ten_seconds():
 
 @pytest.mark.network
 @needs_onnx_extra
+def test_gate_holosoma_walks_through_a_scene_change():
+    sim = Simulation("mujoco")
+    g1 = Robot("g1", sim=sim, keyframe="stand")
+    x0, zs = float(g1.pose.position[0]), []
+
+    def watch(o):
+        zs.append(float(o.pose.position[2]))
+        if len(zs) == 100:  # t = 2 s: the first sim.render() (a dashboard, a notebook) recompiles the world
+            sim.render()
+        return False
+
+    g1.run(Policy("holosoma?vx=0.5"), seconds=10, stop_when=watch)
+    dx = float(g1.pose.position[0]) - x0
+    print(f"[measured] g1 holosoma vx=0.5 10 s, a render at 2 s: pelvis min {min(zs):.3f} m, dx {dx:.2f} m")
+    assert len(zs) == 500 and min(zs) > 0.7 and dx > 3.0  # dev: under the MJCF's gains it falls at 7.3 s, 1.3 m
+    sim.close()
+
+
+@pytest.mark.network
+@needs_onnx_extra
 def test_gate_microduck_walks_a_metre_in_ten_seconds():
     duck = Robot("microduck")
     x0 = float(duck.pose.position[0])

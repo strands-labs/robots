@@ -10,6 +10,7 @@ import importlib.util
 import threading
 import time
 
+import numpy as np
 import pytest
 
 from strands_robots import Robot, Simulation
@@ -119,6 +120,37 @@ def test_concurrent_estops_stop_a_background_run():
             arm.resume(approved_by="test")
     finally:
         sim.close()
+
+
+def test_a_scene_change_puts_the_kept_gains_on_the_device_in_one_upload(monkeypatch):
+    """No GPU needed: a stand-in for the device stepper records the gains each upload carries."""
+    from strands_robots.simulation.backends.newton import backend as newton
+
+    uploads: list[np.ndarray] = []
+
+    class Device:
+        def __init__(self, device, num_envs):
+            self.d = None
+
+        def load(self, model, data):
+            uploads.append(model.actuator_gainprm[:, 0].copy())
+
+        def set_ctrl(self, ids, targets):
+            pass
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(newton, "NewtonStepper", Device)
+    with Simulation(physics="newton") as sim:
+        arms = [Robot("so101", sim=sim), Robot("so101", sim=sim, position=[0, 0.5, 0])]
+        for arm in arms:
+            arm.set_gains(np.full(6, 33.0), np.full(6, 1.0))
+        n = len(uploads)
+        sim.add_object("box", shape="box", position=[0.3, 0, 0.1])
+        ids = [sim.backend.model.actuator(f"{a.id}/{k}").id for a in arms for k in a.description.actuators]
+        assert len(uploads) == n + 1  # one per scene change, not one more per robot with gains
+        assert np.allclose(uploads[-1][ids], 33.0)  # dev: the MJCF's kp 17.8 went to the device
 
 
 @pytest.mark.parametrize(("verb", "args"), [("reach", ("so101",)), ("move_camera", (None, None))])

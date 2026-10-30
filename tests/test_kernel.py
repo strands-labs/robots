@@ -11,12 +11,15 @@ import time
 
 import numpy as np
 import pytest
+from test_drivers import make_driver, writes
 
 from strands_robots import JointState, Robot, Simulation
 from strands_robots.description import Description
 from strands_robots.robot.clock import MONOTONIC
+from strands_robots.robot.drivers import feetech as ft
 from strands_robots.robot.run import lockstep
 from strands_robots.robot.run.pace import Pacer
+from strands_robots.robot.safety import NonFiniteTarget
 
 
 class VirtualClock:
@@ -115,6 +118,56 @@ def test_k1_command_never_reads():
     robot, drv = _hw()
     robot.command(robot.coerce({"shoulder_pan": 0.1}, measured=np.zeros(6)))
     assert drv.reads == [] and len(drv.writes) == 1
+
+
+@pytest.mark.parametrize("bad", [np.nan, np.inf])
+def test_k1_command_refuses_a_non_finite_target_before_the_bus_as_act_does(bad):
+    d, s = make_driver()
+    real = Robot("so101", driver=d, twin=False)
+    with pytest.raises(NonFiniteTarget, match="shoulder_pan"):
+        real.command(np.array([bad, 0.0, 0.0, 0.0, 0.0, 0.0]))
+    assert writes(s) == []  # no torque, no goal (the driver used to refuse it after Torque_Enable)
+
+
+@pytest.mark.parametrize("n", [5, 7])
+def test_k1_command_refuses_a_target_that_is_not_one_value_per_action_key_before_the_bus(n):
+    d, s = make_driver()
+    real = Robot("so101", driver=d, twin=False)
+    with pytest.raises(ValueError, match=f"action has {n} values; so101 has 6 action keys"):
+        real.command(np.zeros(n))
+    assert writes(s) == []  # it used to fail in the driver's zip(), after Torque_Enable
+
+
+def test_k1_command_clips_every_joint_into_its_limits_and_still_never_reads():
+    d, s = make_driver(cal=None)  # uncalibrated: full-turn counts, so only the limits keep 3 rad off the servo
+    real = Robot("so101", driver=d, twin=False)
+    hi = real.description.limits["shoulder_lift"][1]
+    s.frames.clear()
+    real.command(np.array([0.0, 3.0, 0.0, 0.0, 0.0, 0.0]))
+    goal = int.from_bytes(s.regs[2][ft.REG_GOAL_POSITION : ft.REG_GOAL_POSITION + 2], "little")
+    assert goal == d.rad_to_counts("shoulder_lift", hi)  # 3186; 3.0 rad used to go out as 4004
+    assert [f for f in s.frames if f[4] in (ft.READ, ft.SYNC_READ)] == []
+
+
+def test_k1_command_never_puts_a_nan_or_an_out_of_limit_target_into_a_world():
+    sim = Simulation()
+    arm = Robot("so101", sim=sim)
+    t0 = sim.time
+    with pytest.raises(NonFiniteTarget, match="shoulder_pan"):
+        arm.command(np.array([np.nan, 0.0, 0.0, 0.0, 0.0, 0.0]))
+    # while one ctrl is NaN, MuJoCo drives every actuator in the world as if its ctrl were 0
+    assert np.isfinite(sim.backend.data.ctrl[:6]).all() and sim.time == t0
+    arm.command(np.array([0.0, 3.0, 0.0, 0.0, 0.0, 0.0]))
+    assert sim.backend.data.ctrl[1] == pytest.approx(arm.description.limits["shoulder_lift"][1])
+    sim.close()
+
+
+@pytest.mark.parametrize("n", [5, 7])
+def test_k1_coerce_refuses_a_measured_vector_that_is_not_one_value_per_action_key(n):
+    robot, drv = _hw()
+    with pytest.raises(ValueError, match=f"measured has {n} values; so101 has 6 action keys"):
+        robot.coerce({"gripper": 0.2}, measured=np.zeros(n))  # 5 used to raise IndexError, 7 to return 7 targets
+    assert drv.reads == [] and drv.writes == []
 
 
 def test_k3_no_catch_up_burst_after_a_stall():
@@ -254,20 +307,43 @@ class BrokenClock(VirtualClock):
         raise OSError("ptp: no grandmaster")
 
 
-def test_k5_a_clock_that_raises_never_stops_the_estop_from_latching_and_reaching_the_body():
+def _announced(robot) -> list[tuple[str, dict]]:
+    got: list[tuple[str, dict]] = []
+    for event in ("estop", "fault"):
+        robot.subscribe(event, lambda payload, event=event: got.append((event, payload)))
+    return got
+
+
+def test_k5_a_clock_that_raises_never_stops_the_estop_from_latching_reaching_the_body_or_being_announced():
     drv = CountingDriver()
     stops = []
     drv.estop = lambda: stops.append(1)  # type: ignore[method-assign]
     robot = Robot("so101", driver=drv, twin=False, clock=BrokenClock())
-    with pytest.raises(OSError, match="grandmaster"):
-        robot.estop()
+    got = _announced(robot)
+    robot.estop(by="op")  # returns: the stop latched and reached the body, only its time stamp is missing
     assert robot.estopped and robot.estop_latch.count == 1 and robot.estop_latch.engaged_at is None and stops == [1]
+    assert got[0] == ("estop", {"device_id": "so101", "engaged": True, "by": "op"})
+    assert [e for e, _ in got] == ["estop", "fault"] and "OSError('ptp: no grandmaster')" in got[1][1]["reason"]
     sim = Simulation()
     arm = Robot("so101", sim=sim)
     sim.close()
-    with pytest.raises(AssertionError):  # a closed world has no time to read; the stop latches regardless
-        arm.estop()
+    got = _announced(arm)
+    arm.estop()  # a closed world has no time to read; the stop latches and is announced regardless
     assert arm.estopped and arm.estop_latch.engaged_at is None
+    assert [e for e, _ in got] == ["estop", "fault"] and "AssertionError" in got[1][1]["reason"]
+
+
+def test_k5_a_body_stop_that_raises_is_still_raised_when_the_clock_raises_too():
+    drv = CountingDriver()
+
+    def bus_down() -> None:
+        raise ConnectionError("the bus did not answer")
+
+    drv.estop = bus_down  # type: ignore[method-assign]
+    robot = Robot("so101", driver=drv, twin=False, clock=BrokenClock())
+    with pytest.raises(ConnectionError, match="did not answer"):  # the body may not have stopped: the caller hears it
+        robot.estop()
+    assert robot.estopped and robot.estop_latch.engaged_at is None
 
 
 def test_k5_a_world_robot_reads_world_time_and_refuses_a_clock():
@@ -278,6 +354,12 @@ def test_k5_a_world_robot_reads_world_time_and_refuses_a_clock():
     with pytest.raises(TypeError, match="clock="):
         Robot("so101", sim=sim, clock=MONOTONIC)
     sim.close()
+
+
+@pytest.mark.parametrize("clock", [time.monotonic, lambda: 1.0, type(MONOTONIC)], ids=["function", "lambda", "class"])
+def test_k5_a_hardware_robot_refuses_a_clock_that_is_not_a_clock_instance_and_says_what_to_pass(clock):
+    with pytest.raises(TypeError, match=r"clock= must be a Clock instance.*now\(\).*sleep\(seconds\).*leave clock="):
+        Robot("so101", driver=CountingDriver(), twin=False, clock=clock)  # taken before: act() wrote, then failed
 
 
 def test_a_faulted_hardware_run_still_puts_the_body_in_its_on_disconnect_state():

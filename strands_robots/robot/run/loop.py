@@ -15,7 +15,7 @@ from ...recording import Episode, NotRecording, episode
 from ...types import Observation
 from ..clock import MONOTONIC
 from ..safety import apply_on_disconnect
-from .bind import Bound, bind, looks, release
+from .bind import Bound, bind, install_gains, looks, release
 from .common import announce, approve_run, emit, label, rate
 from .pace import OnMiss, Pacer
 from .result import RunResult, StoppedBy
@@ -141,10 +141,11 @@ def _loop(
         clock = robot.clock if robot.sim is None else MONOTONIC
         sleep = robot.estop_latch.wait if clock is MONOTONIC else clock.sleep  # an e-stop never waits out a period
         pacer = Pacer(dt, on_miss=on_miss, now=clock.now, sleep=sleep)
+    held = install_gains({robot: bound})  # after the rate, the step count and the pacer, the loop's last checks
     t0, wall0 = robot.clock.now(), _time.monotonic()
     gated = is_agent()  # an agent's run passes the gate on every step
     while True:
-        if stopped(robot, stops0):
+        if held or stopped(robot, stops0):
             why = "estop"
             break
         if stop_event is not None and stop_event.is_set():

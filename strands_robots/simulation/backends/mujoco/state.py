@@ -1,8 +1,9 @@
-"""Carry joint positions, velocities and actuator targets across a recompile, by name."""
+"""Carry joint positions, velocities and actuator targets across a recompile, by name; and set_gains' PD gains."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Any
 
 import mujoco
 import numpy as np
@@ -54,3 +55,40 @@ def place(model: mujoco.MjModel, data: mujoco.MjData, qadr: list[int], dadr: lis
         if qa >= 0:
             data.qpos[qa], data.qvel[da] = q, 0.0
     mujoco.mj_forward(model, data)
+
+
+Gains = dict[str, tuple[np.ndarray, np.ndarray]]  # robot id -> the (kp, kd) set_gains wrote
+
+
+def check_gains(body: str, ids: list[int], kp: Any, kd: Any, keys: Any) -> tuple[np.ndarray, np.ndarray]:
+    """``(kp, kd)`` as fresh float vectors, one per actuator, or a refusal that set nothing."""
+    kp, kd = np.array(kp, dtype=float).reshape(-1), np.array(kd, dtype=float).reshape(-1)
+    if kp.shape != (len(ids),) or kd.shape != (len(ids),):
+        raise ValueError(f"{body}: kp {kp.shape} / kd {kd.shape} for {len(ids)} actuators")
+    if not np.all(np.isfinite(np.r_[kp, kd]) & (np.r_[kp, kd] >= 0)):  # a NaN kp: MuJoCo resets the whole world
+        raise ValueError(f"{body}: kp and kd must be finite and >= 0, got kp {kp.tolist()} / kd {kd.tolist()}")
+    if -1 in ids:  # an actuator without a name: index -1 is the world's last actuator, another robot's
+        raise KeyError(
+            f"{body}: action key {keys[ids.index(-1)]!r} has no named actuator in the compiled world; nothing was set"
+        )
+    return kp, kd
+
+
+def write_gains(model: mujoco.MjModel, ids: list[int], kp: np.ndarray, kd: np.ndarray) -> None:
+    """Actuators ``ids`` as the PD law ``tau = kp·(target − q) − kd·q̇`` (no recompile)."""
+    for i, p, dgain in zip(ids, kp, kd, strict=True):
+        model.actuator_gainprm[i, 0] = p
+        model.actuator_biasprm[i, 0] = 0.0
+        model.actuator_biasprm[i, 1] = -p
+        model.actuator_biasprm[i, 2] = -dgain
+
+
+def rewrite_gains(model: mujoco.MjModel, kept: Gains, ids: dict[str, list[int]]) -> Gains:
+    """A compile starts from the MJCF's gains: write what ``set_gains`` wrote again, for each robot still in ``ids``.
+
+    A removed robot's gains go with it, so a new robot given its id starts from its own MJCF.
+    """
+    kept = {body: g for body, g in kept.items() if body in ids}
+    for body, (kp, kd) in kept.items():
+        write_gains(model, ids[body], kp, kd)
+    return kept

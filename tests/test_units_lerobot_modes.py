@@ -2,8 +2,9 @@
 
 import numpy as np
 import pytest
+from test_drivers import make_driver
 
-from strands_robots import Description
+from strands_robots import Description, Policy, Robot
 from strands_robots.units import lerobot_units, semantics_for, units_for_semantics
 
 DEG = {"*": "degrees", "gripper": "range_0_100"}
@@ -97,3 +98,16 @@ def test_a_lerobot_normalized_label_is_an_alias_that_never_becomes_the_default(l
     np.testing.assert_allclose(got.hi_u, want.hi_u)
     np.testing.assert_allclose(got.lo_u, want.lo_u)
     assert semantics_for(d) == "so101-range-gripper-percent-v1"  # strands still writes its own label
+
+
+@pytest.mark.parametrize("said", [{}, {"semantics": ""}, {"norm": {}}], ids=["nothing", "empty-label", "empty-norm"])
+def test_a_real_arm_refuses_a_checkpoint_that_does_not_say_its_norm_mode(tmp_path, said):
+    (tmp_path / "config.json").write_text("{}")  # never read: the refusal comes before LeRobot is imported
+    d, s = make_driver()
+    real = Robot("so101", driver=d, twin=False)
+    s.frames.clear()
+    names = r"so101 is a real body: pass norm=\{'\*': 'degrees' \| 'range_m100_100', \.\.\.\}.* or semantics="
+    with pytest.raises(ValueError, match=names):  # an empty label falls back to the registry's, an empty norm to rad
+        real.run(Policy(str(tmp_path), **said), steps=1)
+    assert s.frames == []  # nothing on the wire, not even a read
+    real.close()

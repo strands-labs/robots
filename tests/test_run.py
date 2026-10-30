@@ -3,7 +3,7 @@ import time
 import pytest
 
 from strands_robots import JointState, Policy, Robot, Simulation
-from strands_robots.policy import SequencePolicy
+from strands_robots.policy import Requirements, SequencePolicy
 from strands_robots.robot import RunResult
 
 
@@ -127,6 +127,171 @@ def test_set_gains_takes_one_kp_and_kd_per_actuator():
     arm.set_gains([50.0] * 6, [1.0] * 6)
     with pytest.raises(ValueError, match="for 6 actuators"):
         arm.set_gains([50.0] * 5, [1.0] * 6)
+
+
+def _kp(robot):
+    m = robot.sim.backend.model
+    return [float(m.actuator_gainprm[m.actuator(f"{robot.id}/{a}").id, 0]) for a in robot.description.actuators]
+
+
+ONE_LINK = (  # one hinge whose <position> actuator has no name, as many hand-written MJCFs have
+    '<mujoco model="one_link"><compiler angle="radian"/><worldbody><body name="base">'  # MJCF reads degrees otherwise
+    '<geom type="box" size=".05 .05 .05" mass="1"/>'
+    '<body name="link" pos="0 0 .1"><joint name="hinge" axis="0 1 0" range="-1.5 1.5"/>'
+    '<geom type="capsule" fromto="0 0 0 0 0 .2" size=".02" mass=".2"/></body></body></worldbody>'
+    '<actuator><position joint="hinge" kp="20" ctrlrange="-1.5 1.5"/></actuator></mujoco>'
+)
+
+
+def test_set_gains_never_writes_an_actuator_the_world_cannot_name(tmp_path):
+    xml = tmp_path / "one_link.xml"
+    xml.write_text(ONE_LINK)
+    with Simulation() as sim:
+        link = Robot(str(xml), sim=sim)
+        arm = Robot("so101", sim=sim, position=[0.5, 0, 0])
+        before = _kp(arm)
+        with pytest.raises(KeyError, match="'hinge' has no named actuator"):
+            link.set_gains([5.0], [0.1])  # dev: written to the world's last actuator, the arm's gripper
+        sim.add_object("box", shape="box", position=[1, 1, 0.05])  # and so never put back on it by a recompile
+        assert _kp(arm) == before
+
+
+class _PD:
+    """A policy that carries its own PD gains, as holosoma's checkpoint does."""
+
+    gains = ([33.0] * 6, [1.0] * 6)
+
+    def act(self, obs, *, instruction=None):
+        return obs.joints.positions
+
+    def reset(self):
+        pass
+
+
+class _PDAt50(_PD):
+    hz = 50.0
+
+
+class _PDNeedsFront(_PD):
+    def requirements(self):
+        return Requirements(images={"front": None})
+
+
+class _PDForFive(_PD):
+    gains = ([33.0] * 5, [1.0] * 5)
+
+
+@pytest.mark.parametrize(
+    ("start", "match"),
+    [
+        (lambda a, b: a.run(_PD(), units="bogus", steps=1), "unknown units"),
+        (lambda a, b: a.run(_PDNeedsFront(), steps=1), "needs camera"),
+        (lambda a, b: a.run(_PDAt50(), hz=100, steps=1), "runs at 50 Hz; hz=100"),
+        (lambda a, b: a.run(_PD(), seconds=float("nan")), "NaN"),  # the step count
+        (lambda a, b: a.run(_PD(), steps=1, realtime=True, on_miss="bogus"), "on_miss"),  # the pacer, the last check
+        (lambda a, b: a.sim.run({a: _PDNeedsFront()}, steps=1), "needs camera"),
+        (lambda a, b: a.sim.run({a: _PDAt50()}, hz=100, steps=1), "runs at 50 Hz; hz=100"),
+        (lambda a, b: a.sim.run({a: _PDAt50(), b: _At30([{"shoulder_pan": 0.1}])}, steps=1), "different rates"),
+        (lambda a, b: a.sim.run({a: _PD()}, seconds=float("nan")), "NaN"),
+        (lambda a, b: a.sim.run({a: _PD(), b: _PDForFive()}, steps=1), "so101_2: .*actuators"),  # b's own gains
+    ],
+    ids=[
+        "units",
+        "requirements",
+        "rate",
+        "steps",
+        "on_miss",
+        "lockstep_requirements",
+        "lockstep_rate",
+        "lockstep_two_rates",
+        "lockstep_steps",
+        "lockstep_gains_size",
+    ],
+)
+def test_a_run_refused_before_step_one_leaves_the_gains_it_found(start, match):
+    arm, other = Robot("so101"), Robot("so101", position=[0, 0.5, 0])
+    found = _kp(arm), _kp(other)
+    with pytest.raises(ValueError, match=match):
+        start(arm, other)
+    assert (_kp(arm), _kp(other)) == found  # dev: the policy's kp 33 on the body
+
+
+def test_a_run_a_latched_estop_ends_at_step_zero_leaves_the_gains_it_holds_with():
+    arm = Robot("so101")
+    found = _kp(arm)
+    arm.estop()
+    assert arm.run(_PD(), steps=3).steps == 0 and arm.sim.run({arm: _PD()}, steps=3)[arm.id].stopped_by == "estop"
+    assert _kp(arm) == found  # dev: kp 33; an e-stopped G1 given holosoma's gains this way falls within 3 s
+    other = Robot("so101", position=[0, 0.5, 0])  # not e-stopped: its partner's latch ends the run, nothing goes on
+    assert arm.sim.run({other: _PD(), arm: _PD()}, steps=3)[other.id].stopped_by == "estop"
+    assert (_kp(arm), _kp(other)) == (found, found)
+
+
+class _PDThatReads(_PD):
+    """Records, at each act(), the kp its robot is under."""
+
+    gains = ([33.0] * 6, [0.0] * 6)  # kd 0, no damping: a gain, not a refusal
+
+    def __init__(self, robot):
+        self.robot, self.seen = robot, []
+
+    def act(self, obs, *, instruction=None):
+        self.seen.append(_kp(self.robot))
+        return super().act(obs, instruction=instruction)
+
+
+@pytest.mark.parametrize(
+    "start", [lambda a, p: a.run(p, steps=2), lambda a, p: a.sim.run({a: p}, steps=2)], ids=["run", "lockstep"]
+)
+def test_a_run_that_passes_its_checks_acts_under_its_policys_gains_from_step_one(start):
+    arm = Robot("so101")
+    pol = _PDThatReads(arm)
+    start(arm, pol)
+    assert pol.seen == [[33.0] * 6] * 2  # each loop puts them on itself, after its last checks
+
+
+def test_a_run_that_starts_under_a_latched_estop_ends_at_step_zero_even_if_resumed_before_step_one(monkeypatch):
+    import importlib
+
+    from strands_robots.robot.run.bind import install_gains
+
+    def install_then_resume(bound):  # the operator's resume() lands after the gains were held back, before step one
+        held = install_gains(bound)
+        for r in bound:
+            r.resume(approved_by="test")
+        return held
+
+    for name in ("loop", "lockstep"):  # each loop module imports install_gains by name
+        module = importlib.import_module(f"strands_robots.robot.run.{name}")
+        monkeypatch.setattr(module, "install_gains", install_then_resume)
+    arm = Robot("so101")
+    found = _kp(arm)
+    arm.estop()
+    alone = arm.run(_PD(), steps=3)
+    arm.estop()
+    lock = arm.sim.run({arm: _PD()}, steps=3)[arm.id]
+    assert (alone.stopped_by, alone.steps, lock.stopped_by, lock.steps) == ("estop", 0, "estop", 0)
+    assert _kp(arm) == found  # without one read: 3 steps at kp 17.8, a run without its policy's gains
+
+
+@pytest.mark.parametrize(
+    ("kp", "kd"),
+    [(float("nan"), 1.0), (float("inf"), 1.0), (-50.0, 1.0), (33.0, float("nan")), (33.0, float("inf")), (33.0, -5.0)],
+    ids=["nan_kp", "inf_kp", "negative_kp", "nan_kd", "inf_kd", "negative_kd"],
+)
+def test_set_gains_refuses_a_kp_or_kd_that_is_nan_infinite_or_negative(kp, kd):
+    arm, other = Robot("so101"), Robot("so101", position=[0, 0.5, 0])
+    found = _kp(arm), _kp(other)
+    bad = ([33.0] * 5 + [kp], [1.0] * 5 + [kd])
+
+    class _Bad(_PD):
+        gains = bad
+
+    with pytest.raises(ValueError, match="finite and >= 0"):
+        arm.set_gains(*bad)  # dev: written; a NaN or inf makes MuJoCo reset the whole shared world every step
+    with pytest.raises(ValueError, match="finite and >= 0"):
+        arm.sim.run({other: _PD(), arm: _Bad()}, steps=1)  # refused in bind, before the other's kp 33 goes on
+    assert (_kp(arm), _kp(other)) == found
 
 
 def test_the_operator_gate_passes_a_simulated_body():

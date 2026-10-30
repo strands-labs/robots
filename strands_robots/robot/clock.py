@@ -51,3 +51,15 @@ class WorldClock(MonotonicClock):
 
 
 MONOTONIC = MonotonicClock()
+
+
+def checked(clock: object) -> Clock:
+    """``Robot(clock=)`` as given, refused unless it is a Clock instance; ``None`` is the monotonic clock."""
+    if clock is None:
+        return MONOTONIC
+    if isinstance(clock, type) or not isinstance(clock, Clock):
+        raise TypeError(
+            "clock= must be a Clock instance, an object with now() -> seconds and sleep(seconds) "
+            f"(leave clock= out for the monotonic clock), got {clock!r}"
+        )
+    return clock

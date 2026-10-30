@@ -285,6 +285,56 @@ def test_world_time_survives_every_scene_change(pair):
     assert t > 0 and sim.time == t
 
 
+def _gains(robot):
+    """(kp, kd) per actuator, read from the compiled world (a position servo's biasprm is [0, -kp, -kd])."""
+    m = robot.sim.backend.model
+    ids = [m.actuator(f"{robot.id}/{a}").id for a in robot.description.actuators]
+    return m.actuator_gainprm[ids, 0].copy(), -m.actuator_biasprm[ids, 2]
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        lambda sim, arm: sim.render(),  # the first render adds the overview camera
+        lambda sim, arm: sim.add_object("box", shape="box", position=[0.3, 0, 0.1]),
+        lambda sim, arm: sim.camera("cam", position=[1, -1, 1], target=[0, 0, 0.2]),
+        lambda sim, arm: Robot("so101", sim=sim, position=[0, 0.5, 0]),
+        lambda sim, arm: sim.remove(arm),
+        lambda sim, arm: sim.remove("crate"),  # by name
+        lambda sim, arm: sim.randomize(friction=1.2),
+        lambda sim, arm: sim.set_pose(arm, position=[0, -0.5, 0]),  # a fixed base is rebuilt where it lands
+    ],
+    ids=[
+        "first_render",
+        "add_object",
+        "camera",
+        "a_robot_joins",
+        "a_robot_leaves",
+        "an_object_leaves",
+        "randomize",
+        "fixed_base_teleport",
+    ],
+)
+def test_the_gains_set_gains_wrote_survive_every_scene_change(pair, change):
+    arm, g1 = pair
+    arm.sim.add_object("crate", shape="box", position=[-0.6, 0.6, 0.1])  # there before the gains: one case removes it
+    n = g1.description.dof
+    g1.set_gains(np.full(n, 40.0), np.full(n, 1.0))  # what run() does with a policy's PD (#4749 decision 6)
+    change(arm.sim, arm)
+    kp, kd = _gains(g1)
+    assert np.allclose(kp, 40.0) and np.allclose(kd, 1.0)  # dev: back to the MJCF's, kp 500
+
+
+def test_a_removed_robots_gains_leave_with_it(pair):
+    arm, _ = pair
+    sim = arm.sim
+    mjcf = _gains(arm)
+    arm.set_gains(np.full(6, 5.0), np.full(6, 0.1))
+    sim.remove(arm)
+    again = Robot("so101", sim=sim)  # the same id, a new body: it starts from its MJCF
+    assert again.id == "so101" and all(np.allclose(a, b) for a, b in zip(_gains(again), mjcf, strict=True))
+
+
 def test_revision_bumps_on_every_scene_change_and_not_on_motion(pair):
     arm, g1 = pair
     sim = arm.sim

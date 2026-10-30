@@ -10,7 +10,7 @@ from typing import TYPE_CHECKING, Any
 from ...types import Observation
 from ..clock import MONOTONIC
 from ..safety import apply_on_disconnect
-from .bind import Bound, bind, looks, release
+from .bind import Bound, bind, install_gains, looks, release
 from .common import announce, declared, emit
 from .loop import start_pose
 from .pace import Pacer
@@ -76,6 +76,7 @@ def _lockstep(
     total = steps if steps is not None else int(round(float(seconds or 0.0) / dt))
     paced = any(b.realtime for b in bound.values())
     pacer = Pacer(dt, now=MONOTONIC.now, sleep=MONOTONIC.sleep) if paced else None
+    held = install_gains(bound)  # after the rate, the step count and the pacer, the loop's last checks
     limit: StoppedBy = "steps" if steps is not None else "seconds"  # the limit the caller gave
     why = limit
     faults: dict[str, str] = {}
@@ -85,7 +86,7 @@ def _lockstep(
     stops0 = {r: r.estop_latch.count for r in bound}
     with sim.manual_time():
         while n < total:
-            ended = [r for r in bound if stopped(r, stops0[r])]
+            ended = held or [r for r in bound if stopped(r, stops0[r])]
             if ended:
                 why = "estop"
                 break

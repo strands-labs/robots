@@ -26,7 +26,7 @@ from ...backend import Backend
 from ...physics import Contact, Physics
 from ...scene import Scene, SceneRobot
 from . import build
-from .state import place, restore, snapshot
+from .state import Gains, check_gains, place, restore, rewrite_gains, snapshot, write_gains
 from .view import View, add_lights
 
 
@@ -49,6 +49,7 @@ class MuJoCoBackend(View, Backend):
         self.model: mujoco.MjModel | None = None
         self.data: mujoco.MjData | None = None
         self._scene: Scene = Scene()
+        self._gains: Gains = {}  # what set_gains wrote, per robot: load writes it again after every compile
         self._index: dict[str, _RobotIndex] = {}
         self._renderers: dict[tuple[int, int], mujoco.Renderer] = {}
         self._gl_failed: str | None = None
@@ -84,6 +85,7 @@ class MuJoCoBackend(View, Backend):
         self._index = {r.id: self._make_index(model, r) for r in scene.robots}
         self._close_renderers()  # built for the old model; freed on the GL thread, never by the collector elsewhere
         build.apply_keyframes(model, data, scene, {rid: idx.joint_ids for rid, idx in self._index.items()})
+        self._gains = rewrite_gains(model, self._gains, {rid: idx.actuator_ids for rid, idx in self._index.items()})
         restore(model, data, carried)
         data.time = t  # a scene change is not a reset: world time carries over like joint state
         mujoco.mj_forward(model, data)
@@ -177,13 +179,9 @@ class MuJoCoBackend(View, Backend):
         """Make this robot's position actuators the PD law ``tau = kp·(target − q) − kd·q̇`` (no recompile)."""
         assert self.model is not None
         ids = self._index[body].actuator_ids
-        kp, kd = np.asarray(kp, dtype=float).reshape(-1), np.asarray(kd, dtype=float).reshape(-1)
-        if kp.shape != (len(ids),) or kd.shape != (len(ids),):
-            raise ValueError(f"{body}: kp {kp.shape} / kd {kd.shape} for {len(ids)} actuators")
-        m = self.model
-        for i, p, dgain in zip(ids, kp, kd, strict=True):
-            m.actuator_gainprm[i, 0] = p
-            m.actuator_biasprm[i, :3] = (0.0, -p, -dgain)
+        kp, kd = check_gains(body, ids, kp, kd, self._scene.robot(body).description.action_keys)
+        write_gains(self.model, ids, kp, kd)
+        self._gains[body] = (kp, kd)  # load writes these again after every compile
 
     def set_joints(self, body: str, positions: np.ndarray) -> None:
         assert self.model is not None and self.data is not None
