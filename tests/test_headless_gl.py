@@ -17,6 +17,16 @@ def _run(code: str, **env: str) -> subprocess.CompletedProcess[str]:
     return subprocess.run(cmd, env={**clean, **env}, capture_output=True, text=True, timeout=120)
 
 
+def _fake_host(monkeypatch, system, env):
+    monkeypatch.setenv("MUJOCO_GL", "")  # recorded, so the value ensure_gl() writes itself is undone after the test
+    for key in ("MUJOCO_GL", "DISPLAY"):
+        monkeypatch.delenv(key, raising=False)
+    for key, value in env.items():
+        monkeypatch.setenv(key, value)
+    monkeypatch.setattr(_gl.platform, "system", lambda: system)
+    monkeypatch.setattr(_gl, "_loads", lambda lib: lib == "libEGL.so.1")
+
+
 @pytest.mark.parametrize(
     ("system", "env", "expect"),
     [
@@ -27,14 +37,21 @@ def _run(code: str, **env: str) -> subprocess.CompletedProcess[str]:
     ],
 )
 def test_ensure_gl_picks_only_when_headless_and_unset(monkeypatch, system, env, expect):
-    for key in ("MUJOCO_GL", "DISPLAY"):
-        monkeypatch.delenv(key, raising=False)
-    for key, value in env.items():
-        monkeypatch.setenv(key, value)
-    monkeypatch.setattr(_gl.platform, "system", lambda: system)
-    monkeypatch.setattr(_gl, "_loads", lambda lib: lib == "libEGL.so.1")
+    _fake_host(monkeypatch, system, env)
     assert _gl.ensure_gl() == expect
     assert os.environ.get("MUJOCO_GL", "") == expect
+
+
+def test_picking_for_a_faked_headless_host_leaves_an_unset_mujoco_gl_unset():
+    # Unset as on a Mac, where a leaked egl fails every later `import mujoco`; CI's own MUJOCO_GL=egl would hide it.
+    with pytest.MonkeyPatch.context() as outer:
+        outer.setenv("MUJOCO_GL", "")  # recorded, so this test too puts back what the process had
+        outer.delenv("MUJOCO_GL")
+        with pytest.MonkeyPatch.context() as mp:
+            _fake_host(mp, "Linux", {})
+            assert _gl.ensure_gl() == "egl"
+        left = os.environ.get("MUJOCO_GL")  # compared alone: a failing assert on os.environ would print it
+    assert left is None
 
 
 @pytest.mark.skipif(not LINUX_EGL, reason="needs Linux with libEGL")

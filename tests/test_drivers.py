@@ -205,6 +205,45 @@ def test_driver_cycle_never_waits_on_the_wire():
     assert serial.waited == 0
 
 
+class CorruptingSerial(FakeSerial):
+    """Noise on the line: the next ``corrupt`` SYNC_READ replies arrive with the last servo's checksum flipped."""
+
+    def __init__(self):
+        super().__init__()
+        self.corrupt = 0
+
+    def write(self, data):
+        super().write(data)
+        if self.corrupt and data[4] == ft.SYNC_READ:
+            self.rx[-1] ^= 0xFF
+            self.corrupt -= 1
+
+
+def test_a_corrupted_status_packet_is_read_again_at_most_twice():
+    d, s = make_driver(serial=CorruptingSerial())
+    s.corrupt = 2
+    assert d.read().names == d.names  # the third reading of the same request lands
+    s.corrupt = 3
+    with pytest.raises(ft.ProtocolError, match="servo 6: bad checksum"):
+        d.read()
+
+
+def test_one_corrupted_status_packet_in_twenty_ticks_does_not_abort_a_run():
+    d, s = make_driver(serial=CorruptingSerial())
+    real = Robot("so101", driver=d, twin=False)
+    ticks: list[int] = []
+
+    def policy(obs):
+        ticks.append(len(ticks))
+        if len(ticks) == 10:
+            s.corrupt = 1  # the next status packet on the wire arrives garbled
+        return {"shoulder_pan": 0.3}
+
+    res = real.run(policy, hz=100, steps=20)
+    assert (res.steps, res.stopped_by, len(ticks), s.corrupt) == (20, "steps", 20, 0)
+    real.close()
+
+
 def test_driver_reads_through_calibration_and_writes_goals():
     d, s = make_driver()
     js = d.read()

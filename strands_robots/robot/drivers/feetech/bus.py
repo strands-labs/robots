@@ -140,7 +140,16 @@ class FeetechBus:
     def write(self, motor_id: int, reg: int, data: bytes) -> None:
         self._txrx(frame(motor_id, WRITE, bytes([reg]) + data), motor_id, 0)
 
-    def sync_read(self, reg: int, n: int, ids: list[int]) -> dict[int, bytes]:
+    def sync_read(self, reg: int, n: int, ids: list[int], retries: int = 0) -> dict[int, bytes]:
+        """One reply per servo; a garbled or missing reply is asked for again, up to ``retries`` more times."""
+        for _ in range(retries):
+            try:
+                return self._sync_read(reg, n, ids)
+            except ProtocolError:
+                continue
+        return self._sync_read(reg, n, ids)
+
+    def _sync_read(self, reg: int, n: int, ids: list[int]) -> dict[int, bytes]:
         packet = frame(BROADCAST, SYNC_READ, bytes([reg, n]) + bytes(ids))
         out: dict[int, bytes] = {}
         with self.wire:

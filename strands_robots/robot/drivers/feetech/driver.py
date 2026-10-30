@@ -36,6 +36,7 @@ class FeetechDriver:
 
     supports_position_hold = True  # an STS servo keeps Goal_Position while torque is on
     resolution = RESOLUTION  # encoder counts per turn
+    num_read_retries = 2  # LeRobot's SO follower default, from huggingface/lerobot#4207
 
     def __init__(
         self,
@@ -69,8 +70,7 @@ class FeetechDriver:
         self._save_to: Path | None = self.default_calibration_path(robot_id)  # calibrate()'s file; None: no safe one
         self._load_calibration(calibration, robot_id)
         calib.warn_if_missing(self.calibration, f"{description.name} on {self.bus.port}", self.calibration_looked)
-        missing = [i for i in self.ids if not self.bus.ping(i)]
-        if missing:
+        if missing := [i for i in self.ids if not self.bus.ping(i)]:
             raise ConnectionError(f"{description.name} on {self.bus.port}: no reply from servo id(s) {missing}")
 
     def _load_calibration(self, cal: Any, robot_id: str | None) -> None:
@@ -117,7 +117,7 @@ class FeetechDriver:
     # Body
 
     def read(self) -> JointState:
-        raw = self.bus.sync_read(REG_PRESENT_POSITION, 6, self.ids)
+        raw = self.bus.sync_read(REG_PRESENT_POSITION, 6, self.ids, retries=self.num_read_retries)
         pos, vel, load = [], [], []
         for name, mid in zip(self.names, self.ids, strict=True):
             r = raw[mid]
