@@ -156,13 +156,16 @@ def _loop(
         if max_steps is not None and n >= max_steps:
             break
         if pacer is not None:
-            pacer.start()
+            pacer.start()  # the wait for this tick: a stop or an e-stop in it ends the run before the tick reads
+            if stopped(robot, stops0) or (stop_event is not None and stop_event.is_set()):
+                continue  # the checks above name why (an e-stop outranks stop())
         step = tick(
             robot,
             bound,
             instruction,
             images=always or looks(bound, instruction),
             gated=gated,
+            stops0=stops0,
             stop_when=stop_when,
             steps=sim_steps,
             before_write=pacer.before_write if pacer is not None else None,
@@ -181,10 +184,12 @@ def _loop(
         if pacer is not None and not pacer.after_write():
             why, fault = "deadline", f"tick {n} ended {pacer.worst_late * 1e3:.1f} ms past its deadline"
             break
-    if pacer is not None and n:  # the last write owns its period: the body's next write (any run) waits it out
-        pacer.before_write()
-    if why == "fault":  # the policy can no longer act safely: put the body in its declared on_disconnect state
-        apply_on_disconnect(robot)
+    try:
+        if why == "fault":  # the policy can no longer act safely: put the body in its declared on_disconnect state now
+            apply_on_disconnect(robot)
+    finally:  # the last tick's write owns its period, even when on_disconnect raises: a later run waits it out
+        if pacer is not None and n:
+            pacer.before_write()
     final = robot.observe(images=False)
     span = final.t - t0 if robot.sim is not None else (pacer.span() if pacer is not None else 0.0)
     if robot.sim is None and pacer is not None and holds and n > holds:  # held ticks are part of the commanded span

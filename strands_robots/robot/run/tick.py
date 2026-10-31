@@ -37,6 +37,7 @@ def tick(
     *,
     images: bool,
     gated: bool,
+    stops0: int,
     stop_when: Callable[[Observation], bool] | None = None,
     steps: int | None = None,
     before_write: Callable[[], None] | None = None,
@@ -47,9 +48,13 @@ def tick(
 
     ``gated`` (an agent's run) passes the targets through the safety chain and the operator gate first; under
     ``from_agent(confirmed=True)`` the operator step is pre-satisfied, every other step still runs.
+    ``stops0`` is the e-stop latch's count when the loop began (after any ``start_pose`` ramp): a press since then,
+    even one resumed, ends the tick before its write.
     """
     step = decided(robot, bound, instruction, images=images, gated=gated, stop_when=stop_when)
-    return step if step.ended is not None else commit(robot, step, gated=gated, steps=steps, before_write=before_write)
+    if step.ended is not None:
+        return step
+    return commit(robot, step, gated=gated, stops0=stops0, steps=steps, before_write=before_write)
 
 
 def decided(
@@ -83,10 +88,17 @@ def decided(
 
 
 def commit(
-    robot: Robot, step: Tick, *, gated: bool, steps: int | None = None, before_write: Callable[[], None] | None = None
+    robot: Robot,
+    step: Tick,
+    *,
+    gated: bool,
+    stops0: int,
+    steps: int | None = None,
+    before_write: Callable[[], None] | None = None,
 ) -> Tick:
     """A decided tick's one write; a hold writes nothing and a world still advances its period. ``steps=None`` in
-    lockstep: the world steps once for everyone after every robot wrote."""
+    lockstep: the world steps once for everyone after every robot wrote. A press since ``stops0`` (see ``tick``),
+    even one resumed, ends the tick unwritten."""
     if step.held:  # the body keeps its last target; simulated actuators hold it through the period
         idle(robot, steps)
         return step
@@ -94,7 +106,8 @@ def commit(
     try:
         if before_write is not None:  # a paced body: at least one period since the previous write
             before_write()
-        robot.command(step.targets, steps=steps)
+        # guarded_write refuses it, under the bus lock, once the latch has moved since stops0
+        robot.command(step.targets, steps=steps, stops0=stops0)
     except (RequestRefused, PolicyFault, NonFiniteTarget) as e:
         if (ended := _ended(step.obs, e, gated)) is None:
             raise

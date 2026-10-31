@@ -96,7 +96,9 @@ def _lockstep(
                 why = "stopped"
                 break
             if pacer is not None:
-                pacer.start()
+                pacer.start()  # the wait for this tick: a stop or an e-stop in it ends the run before any robot reads
+                if any(stopped(r, stops0[r]) for r in bound) or (stop_event is not None and stop_event.is_set()):
+                    continue  # the checks above name why (an e-stop outranks stop())
             stop = _tick(bound, stops0, instruction, gated, faults)
             if stop is not None:  # a fault, a refusal or an e-stop ended this tick
                 why, ended = stop
@@ -140,7 +142,7 @@ def _tick(
             return "estop", pressed
         ticks.append((r, step))
     for r, step in ticks:
-        done = commit(r, step, gated=gated)
+        done = commit(r, step, gated=gated, stops0=stops0[r])
         if done.ended is not None:  # an e-stop landing during the writes: the robots before it have written
             return _stop(r, done, faults)
     return None

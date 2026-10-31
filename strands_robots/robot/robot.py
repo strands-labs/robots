@@ -190,12 +190,12 @@ class Robot(DeviceVerbs):
             _reach.reach(self, self.coerce(action), seconds)
         return self.observe(images=False)
 
-    def command(self, targets: np.ndarray, *, steps: int | None = None) -> None:
+    def command(self, targets: np.ndarray, *, steps: int | None = None, stops0: int | None = None) -> None:
         """The run loop's write, no read: full ``targets`` checked as ``act`` checks them (NaN/inf or a wrong
         length refused, clipped into the limits) before the body, then the world advances."""
         targets = self.coerce(np.asarray(targets, dtype=float))
         with self._lock:
-            guarded_write(self, targets)
+            guarded_write(self, targets, stops0=stops0)
             if self.sim is not None:
                 if steps is None:
                     self.sim.control_step()

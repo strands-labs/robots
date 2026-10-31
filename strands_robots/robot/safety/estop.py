@@ -96,10 +96,14 @@ def engage(robot: Robot, reason: str = "estop()", by: str | None = None) -> Exce
             body.estop()
 
 
-def guarded_write(robot: Robot, targets: object) -> None:
-    """Write, refusing while latched (the caller holds ``robot._lock``); a stop landing mid-write is re-applied."""
+def guarded_write(robot: Robot, targets: object, *, stops0: int | None = None) -> None:
+    """Write, refusing while latched (the caller holds ``robot._lock``); a stop landing mid-write is re-applied.
+
+    ``stops0`` (a run's write): refused too once the latch engaged since that count, resumed or not."""
     latch, body = robot.estop_latch, robot.body
     latch.check(robot.id)
+    if stops0 is not None and latch.count != stops0:  # under the bus lock: after any wait for it
+        raise EStopped(f"{robot.id}: e-stop #{latch.count} was pressed during this run; the run ends")
     body.write(targets)  # type: ignore[arg-type]
     robot._held = np.array(targets, dtype=float)  # a joint the next Action omits keeps this
     if latch.engaged:

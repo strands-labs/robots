@@ -7,6 +7,8 @@ logged with its time, and nothing waits for real.
 from __future__ import annotations
 
 import contextlib
+import dataclasses as dc
+import importlib
 import threading
 import time
 
@@ -17,6 +19,7 @@ from test_drivers import FakeSerial, make_driver, writes
 from strands_robots import JointState, Robot, Simulation
 from strands_robots.description import Description
 from strands_robots.robot.clock import MONOTONIC
+from strands_robots.robot.device.build import manifest_key
 from strands_robots.robot.drivers import feetech as ft
 from strands_robots.robot.run import lockstep
 from strands_robots.robot.run.pace import Pacer
@@ -36,6 +39,20 @@ class VirtualClock:
         self.t += max(0.0, seconds)
 
     advance = sleep
+
+
+class OperatorClock(VirtualClock):
+    """A ``VirtualClock`` on which someone acts while the run waits: ``during_wait`` runs once, in the next wait."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.during_wait = None
+
+    def sleep(self, seconds: float) -> None:
+        if seconds > 1e-3 and self.during_wait is not None:  # a pacing wait, not a rounding residue
+            act, self.during_wait = self.during_wait, None
+            act()
+        super().sleep(seconds)
 
 
 class CountingDriver:
@@ -452,6 +469,92 @@ def test_k3_estop_during_a_pacing_wait_writes_nothing_more():
     assert time.monotonic() - t0 < 1.5  # it did not wait out the remaining periods
 
 
+def _operated():
+    clock = OperatorClock()
+    drv = CountingDriver(clock)
+    return Robot("so101", driver=drv, twin=False, clock=clock), drv, clock
+
+
+def test_k3_a_stop_during_the_wait_between_ticks_ends_the_run_before_another_read():
+    robot, drv, clock = _operated()
+    ev, calls = threading.Event(), [0]
+
+    def pol(obs):
+        calls[0] += 1
+        if calls[0] == 2:
+            clock.during_wait = ev.set  # Task.stop() lands while the run waits for tick 3 (most of a period)
+        clock.advance(0.002)
+        return {"shoulder_pan": 0.1 * calls[0]}
+
+    res = robot.run(pol, steps=10, hz=50, stop_event=ev)
+    assert (res.stopped_by, res.steps, calls[0], len(drv.writes)) == ("stopped", 2, 2, 2)
+    assert len(drv.reads) == 1 + 2 + 1  # bind's check, two ticks, the final observation: no tick after the stop
+
+
+def test_k3_an_estop_in_the_wait_between_ticks_ends_the_run_before_another_read_even_once_resumed():
+    robot, drv, clock = _operated()
+    calls = [0]
+
+    def pol(obs):
+        calls[0] += 1
+        if calls[0] == 2:
+            clock.during_wait = robot.estop  # pressed while the run waits for tick 3
+        if robot.estopped:
+            robot.resume(approved_by="op")  # and cleared while tick 3 decides
+        clock.advance(0.002)
+        return {"shoulder_pan": 0.1 * calls[0]}
+
+    res = robot.run(pol, steps=10, hz=50)
+    assert (res.stopped_by, calls[0], len(drv.writes)) == ("estop", 2, 2)
+    assert len(drv.reads) == 1 + 2 + 1  # bind's check, two ticks, the final observation: no tick after the press
+
+
+@pytest.mark.parametrize("where", ["inference", "floor wait"])
+def test_k3_an_estop_pressed_and_resumed_before_a_tick_writes_ends_the_run_with_that_tick_unwritten(where):
+    robot, drv, clock = _operated()
+    calls, pressed = [0], []
+
+    def press_and_resume() -> None:
+        pressed.append(clock.now())  # resume() clears the latch's engaged_at
+        robot.estop()
+        robot.resume(approved_by="op")
+
+    def pol(obs):
+        calls[0] += 1
+        if calls[0] == 3 and where == "inference":
+            press_and_resume()  # while tick 3 decides
+        elif calls[0] == 3:
+            clock.during_wait = press_and_resume  # while tick 3's write waits a period after tick 2's (8 ms)
+        clock.advance(0.010 if calls[0] == 2 else 0.002)
+        return {"shoulder_pan": 0.1 * calls[0]}
+
+    res = robot.run(pol, steps=10, hz=50)
+    assert res.stopped_by == "estop" and len(drv.writes) == 2
+    assert all(t < pressed[0] for t, _ in drv.writes)  # nothing decided after the press
+
+
+def test_k3_an_estop_pressed_and_resumed_as_a_tick_writes_still_writes_nothing():
+    """Where acceptance check 13 presses: in Robot.command, after its coerce, before the bus lock and the write."""
+    robot, drv, clock = _operated()
+    calls, inner = [0], robot.coerce
+
+    def pol(obs):
+        calls[0] += 1
+        clock.advance(0.002)
+        return {"shoulder_pan": 0.1 * calls[0]}
+
+    def coerce(action, **kw):
+        out = inner(action, **kw)
+        if calls[0] == 3 and not kw:  # command()'s coerce (decide() passes clip= and measured=)
+            robot.estop()
+            robot.resume(approved_by="op")
+        return out
+
+    robot.coerce = coerce  # type: ignore[method-assign]
+    res = robot.run(pol, steps=10, hz=50)
+    assert (res.stopped_by, len(drv.writes)) == ("estop", 2)
+
+
 def test_k5_observation_t_is_capture_time_on_the_body_clock():
     robot, drv = _hw()
     drv.clock.advance(1.5)
@@ -538,6 +641,61 @@ def test_a_faulted_hardware_run_still_puts_the_body_in_its_on_disconnect_state()
 
     res = robot.run(nan_at_3, steps=10, hz=50)
     assert res.stopped_by == "fault" and len(drv.writes) == 2 and drv.holds == 1  # so101: every control holds
+
+
+def _stall_then_nan(clock, seen, then=None):
+    """Tick 2's inference stalls 300 ms (a miss: tick 3 starts at once); tick 3's policy returns NaN, at a time
+    appended to ``seen``, and ``then`` runs in the first wait after it."""
+    k = [0]
+
+    def pol(obs):
+        k[0] += 1
+        clock.advance(0.3 if k[0] == 2 else 0.002)
+        if k[0] < 3:
+            return {"shoulder_pan": 0.8}
+        seen.append(clock.now())
+        if then is not None:
+            clock.during_wait = then
+        return {"shoulder_pan": float("nan")}
+
+    return pol
+
+
+def test_a_faulted_paced_run_holds_the_body_when_the_fault_is_seen_not_a_period_later():
+    robot, drv = _hw()
+    held, seen = [], []
+    drv.hold = lambda: held.append(drv.clock.now())  # type: ignore[method-assign]  # so101: every control holds
+    res = robot.run(_stall_then_nan(drv.clock, seen), steps=10, hz=50)
+    assert (res.stopped_by, res.deadline_misses) == ("fault", 1)
+    assert held == seen  # not when the period of tick 2's late write runs out
+
+
+def test_an_estop_right_after_a_fault_leaves_the_run_its_fault_and_finds_the_on_disconnect_target_sent():
+    robot, drv, clock = _operated()
+    m = robot.manifest  # shoulder_pan's on_disconnect is 'zero': a write, and nothing is written while latched
+    zero = tuple(dc.replace(c, on_disconnect="zero") if c.name == "shoulder_pan.pos" else c for c in m.controls)
+    robot.__dict__["_manifest"] = (manifest_key(robot), dc.replace(m, controls=zero))
+    seen: list[float] = []
+    res = robot.run(_stall_then_nan(clock, seen, then=robot.estop), steps=10, hz=50)  # pressed just after the fault
+    assert (res.stopped_by, robot.estopped) == ("fault", True)
+    assert drv.writes[-1][0] == seen[0] and drv.writes[-1][1][0] == 0.0  # the zero went out before the press
+
+
+def test_a_faulted_paced_run_whose_on_disconnect_raises_still_waits_out_its_last_write_period():
+    robot, drv = _hw()
+    seen: list[float] = []
+
+    def bus_down() -> None:
+        raise ConnectionError("the bus did not answer")
+
+    drv.hold = bus_down  # type: ignore[method-assign]  # so101: every control holds, so on_disconnect is a hold
+    with pytest.raises(ConnectionError):
+        robot.run(_stall_then_nan(drv.clock, seen), steps=10, hz=50)
+    last = drv.writes[-1][0]  # tick 2's write, 300 ms late: the floor of its period is 18 ms after tick 3's NaN
+    assert drv.clock.now() - seen[0] == pytest.approx(0.018)  # it raised once that period ran out, not at the NaN
+    drv.hold = lambda: None  # type: ignore[method-assign]  # the bus answers again
+    robot.run(lambda obs: {"shoulder_pan": 0.1}, steps=1, hz=50)
+    assert drv.writes[-1][0] - last == pytest.approx(0.02)  # the next run's first write: a period after it, not 2 ms
 
 
 def _pair():
@@ -714,6 +872,84 @@ def test_k7_lockstep_honours_a_stop_event():
 
     res = lockstep(sim, {a: pa, b: lambda o: {}}, steps=50, stop_event=ev)
     assert res["a"].stopped_by == "stopped" and res["a"].steps == 4
+    sim.close()
+
+
+class Watched:
+    """A policy that asks for a watched (real-time) world, so lock-step paces its ticks."""
+
+    realtime = True
+
+    def __init__(self, act=None) -> None:
+        self._act = act
+
+    def act(self, obs, *, instruction=None):
+        return {} if self._act is None else self._act(obs)
+
+    def reset(self) -> None: ...
+
+
+def _pace_lockstep_on(clock, monkeypatch) -> None:
+    """Paced lock-step waits on the host's monotonic clock; this test's clock instead, so nothing waits for real."""
+    monkeypatch.setattr(importlib.import_module("strands_robots.robot.run.lockstep"), "MONOTONIC", clock)
+
+
+def test_k7_a_stop_during_the_wait_of_a_paced_lockstep_steps_the_world_no_further(monkeypatch):
+    clock = OperatorClock()
+    _pace_lockstep_on(clock, monkeypatch)
+    sim, a, b = _pair()
+    ev, k = threading.Event(), [0]
+
+    def pa(obs):
+        k[0] += 1
+        if k[0] == 1:
+            clock.during_wait = ev.set  # stop() lands while lock-step waits for tick 2
+        return {}
+
+    t0 = sim.time
+    res = lockstep(sim, {a: Watched(pa), b: Watched()}, hz=10, steps=50, stop_event=ev)
+    assert (res["a"].stopped_by, res["a"].steps, k[0]) == ("stopped", 1, 1)
+    assert sim.time - t0 == pytest.approx(0.1)  # one tick of world time, not two
+    sim.close()
+
+
+def test_k7_an_estop_resumed_in_the_wait_of_a_paced_lockstep_ends_it_before_any_robot_decides(monkeypatch):
+    clock = OperatorClock()
+    _pace_lockstep_on(clock, monkeypatch)
+    sim, a, b = _pair()
+    k = [0]
+
+    def pa(obs):
+        k[0] += 1
+        if k[0] == 1:  # pressed and cleared while lock-step waits for tick 2
+            clock.during_wait = lambda: (a.estop(), a.resume(approved_by="op"))
+        return {}
+
+    t0 = sim.time
+    res = lockstep(sim, {a: Watched(pa), b: Watched()}, hz=10, steps=50)
+    assert (res["a"].stopped_by, res["a"].steps, k[0]) == ("estop", 1, 1)  # a, listed first, did not decide tick 2
+    assert sim.time - t0 == pytest.approx(0.1)  # one tick of world time, not two
+    sim.close()
+
+
+def test_k7_a_robot_pressed_and_resumed_while_another_writes_that_tick_writes_nothing():
+    sim, a, b = _pair()
+    k, inner = [0], a.command
+
+    def pb(obs):  # tick 1: 0.1, tick 2: 0.2, tick 3: 0.3
+        k[0] += 1
+        return {"shoulder_pan": 0.1 * k[0]}
+
+    def command(targets, **kw) -> None:  # a writes first: b's stop is pressed and cleared in a's tick-3 write
+        inner(targets, **kw)  # what commit() passes: steps= and stops0=
+        if k[0] == 3:
+            b.estop()
+            b.resume(approved_by="op")
+
+    a.command = command  # type: ignore[method-assign]
+    res = sim.run({a: lambda o: {}, b: pb}, steps=10)
+    assert (res["b"].stopped_by, res["b"].steps, res["b"].fault) == ("estop", 2, "e-stop engaged on b")
+    assert _pan_target(sim, b) != pytest.approx(0.3)  # b's tick-3 target, decided before the press, never went out
     sim.close()
 
 
