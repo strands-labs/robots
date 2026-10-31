@@ -27,6 +27,12 @@ def _cam(sim, pose, **kw):
     return sim.camera("cam", position=pose[0], target=pose[1], **kw)
 
 
+def _same_picture(a, b):
+    # two Simulation()s render through two fresh GL contexts, which on an NVIDIA EGL disagree by one level of 255 on a
+    # few pixels (#4879); a camera aimed anywhere else moves whole edges, so one level still pins "the same picture"
+    return a.shape == b.shape and np.abs(a.astype(int) - b.astype(int)).max() <= 1
+
+
 def test_naming_a_camera_again_re_aims_it_in_place_and_draws_what_a_fresh_one_draws(world, monkeypatch):
     sim, _ = world
     _cam(sim, FRONT, size=(96, 72))
@@ -41,7 +47,7 @@ def test_naming_a_camera_again_re_aims_it_in_place_and_draws_what_a_fresh_one_dr
     try:
         assert loads == [] and sim.revision == rev + 1 and cam.size == (96, 72)
         assert [c.name for c in sim.scene.cameras].count("cam") == 1
-        assert np.array_equal(moved, fresh.render("cam"))
+        assert _same_picture(moved, fresh.render("cam"))
     finally:
         fresh.close()
 
@@ -55,7 +61,7 @@ def test_a_camera_moved_inside_editing_waits_for_the_block_and_still_lands(world
     Robot("so101", sim=fresh)
     _cam(fresh, BACK, size=(96, 72))
     try:
-        assert np.array_equal(sim.render("cam"), fresh.render("cam"))
+        assert _same_picture(sim.render("cam"), fresh.render("cam"))
     finally:
         fresh.close()
 
