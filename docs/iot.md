@@ -141,6 +141,11 @@ before drops messages silently until IAM propagates. Presence and the live state
 (3,600–108,000 triggers per robot per hour); `IotOptions(telemetry_hz=1)` opts a robot into Basic Ingest, which
 carries no messaging charge and no subscriber ever sees.
 
+Each rule is named `strands_<kind>_<tenant>`. A rule name takes only letters, digits and `_`, at most 128 of them,
+so a tenant with `_ - . :` or more than 110 characters keeps at most its first 97, with `_` for `- . :`, then `_` and
+the first 12 hex digits of its SHA-256: `lab-a`'s e-stop rule is `strands_estop_lab_a_1c327e55b394`, `lab_a` gets
+rules of its own, and `rules.delete_rules(iot, tenant)` deletes only the tenant's.
+
 ## Setup checklist
 
 1. `pip install 'strands-robots[iot]'` (awsiotsdk, boto3, cryptography).
