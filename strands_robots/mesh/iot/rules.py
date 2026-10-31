@@ -18,6 +18,9 @@ from typing import Any
 from .. import wire
 
 MAX_TELEMETRY_HZ = 1.0
+KINDS = ("estop", "events", "fault", "telemetry", "lifecycle")
+"""Every kind of rule a tenant can have: ``rules_for`` gives the first four, ``lifecycle.clear_presence_rule`` the
+last."""
 _NAME = re.compile(r"[^A-Za-z0-9_]")
 
 
@@ -127,14 +130,14 @@ def apply_rules(iot: Any, rules: Mapping[str, Mapping[str, Any]]) -> dict[str, s
 
 
 def delete_rules(iot: Any, tenant: str) -> list[str]:
-    """Delete every ``strands_<kind>_<tenant>`` rule of THIS tenant; the names deleted. The whole name is matched:
-    a kind carries no ``_``, so ``prod-lab``'s rules (``strands_estop_prod_lab``) are not ``lab``'s."""
-    suffix = rule_name("x", tenant)[len("strands_x") :]
-    own = re.compile(r"strands_[A-Za-z0-9]+" + re.escape(suffix))
-    names = [r["ruleName"] for r in iot.list_topic_rules().get("rules", []) if own.fullmatch(r["ruleName"])]
+    """Delete THIS tenant's rules, by the names ``rule_name`` gives it (one per kind in ``KINDS``); the names
+    deleted. Only those exact names match, however long the tenant: ``prod-lab``'s rules (``strands_estop_prod_lab``)
+    are not ``lab``'s."""
+    own = {rule_name(kind, tenant) for kind in KINDS}
+    names = sorted(r["ruleName"] for r in iot.list_topic_rules().get("rules", []) if r["ruleName"] in own)
     for name in names:
         iot.delete_topic_rule(ruleName=name)
-    return sorted(names)
+    return names
 
 
 def _norm(actions: Any) -> str:

@@ -9,10 +9,19 @@ import uuid
 import pytest
 
 from strands_robots.mesh import wire
-from strands_robots.mesh.iot import rules
+from strands_robots.mesh.iot import lifecycle, rules
 from strands_robots.mesh.transports.iot_link import FakeIotBroker, FakeLink
 
 ROLE = "arn:aws:iam::123456789012:role/strands-rules"  # placeholder: the user supplies the role
+SNS = "arn:aws:sns:us-west-2:123456789012:x"
+
+
+def _every_rule(tenant: str) -> dict:
+    """All five rules a tenant can have: estop, events, fault and telemetry (``rules_for``) and lifecycle."""
+    return {
+        **rules.rules_for(tenant, ROLE, sns_topic_arn=SNS, s3_bucket="b", telemetry=True),
+        **lifecycle.clear_presence_rule(tenant, ROLE),
+    }
 
 
 def test_rule_names_are_legal_and_sql_reads_the_tenant_keys():
@@ -50,6 +59,16 @@ def test_apply_is_idempotent_and_replaces_on_change(aws):
     assert sorted(r["ruleName"] for r in aws.list_topic_rules()["rules"]) == sorted(other)
     assert rules.delete_rules(aws, "prod-lab") == sorted(other)
     assert aws.list_topic_rules()["rules"] == []
+
+
+def test_delete_rules_deletes_every_rule_of_its_tenant_however_long_the_tenant(aws):
+    """A rule name stops at 128 characters, and the 9-letter kinds (telemetry, lifecycle) reach it first: the
+    delete still finds all five of the tenant's rules."""
+    for n in (110, 111, 115, 122, 200):
+        mine = _every_rule("t" * n)
+        rules.apply_rules(aws, mine)
+        assert rules.delete_rules(aws, "t" * n) == sorted(mine), n
+        assert aws.list_topic_rules()["rules"] == [], n
 
 
 def test_telemetry_publishes_state_envelopes_at_most_1_hz():
