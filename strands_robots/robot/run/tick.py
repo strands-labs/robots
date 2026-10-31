@@ -1,4 +1,4 @@
-"""THE step, shared by ``run`` and ``lockstep``: one read, one decision, one write."""
+"""THE step, shared by ``run`` and ``lockstep``: one read, one decision, one write (``decided``, then ``commit``)."""
 
 from __future__ import annotations
 
@@ -20,7 +20,8 @@ if TYPE_CHECKING:
 
 @dataclass
 class Tick:
-    """What one tick did: the observation it acted on and the targets it wrote, or why it ended the run."""
+    """What one tick did: the observation it acted on and the targets it decided (``commit`` writes them), or why it
+    ended the run."""
 
     obs: Observation
     targets: np.ndarray | None = None
@@ -46,8 +47,21 @@ def tick(
 
     ``gated`` (an agent's run) passes the targets through the safety chain and the operator gate first; under
     ``from_agent(confirmed=True)`` the operator step is pre-satisfied, every other step still runs.
-    ``steps=None`` in lockstep: the world steps once for everyone after every robot wrote.
     """
+    step = decided(robot, bound, instruction, images=images, gated=gated, stop_when=stop_when)
+    return step if step.ended is not None else commit(robot, step, gated=gated, steps=steps, before_write=before_write)
+
+
+def decided(
+    robot: Robot,
+    bound: Bound,
+    instruction: str | None,
+    *,
+    images: bool,
+    gated: bool,
+    stop_when: Callable[[Observation], bool] | None = None,
+) -> Tick:
+    """The tick up to its write (``commit``): lockstep decides every robot's tick before any robot writes."""
     obs = robot.observe(images=images)
     if stop_when is not None and stop_when(obs):
         return Tick(obs, ended="stop_when")
@@ -55,25 +69,48 @@ def tick(
         targets = decide(
             robot, bound, obs, instruction, clip=not gated
         )  # an agent run is refused out of range, not clipped
-        if targets is None:  # a hold: the body keeps its last target; a world still advances its period
-            idle(robot, steps)
+        if targets is None:  # a hold: nothing to gate or write; ``commit`` still advances a world its period
             return Tick(obs, held=True)
         if gated and is_confirmed():  # a dashboard run: the operator said yes once, for these targets
             targets = robot.gate(targets, confirmed=True)
         elif gated:  # an agent run the operator approved as a whole (K6): the chain every step, no per-tick ask
             targets = robot.gate(targets, approved_run=True, measured=obs.joints.positions)
+    except (RequestRefused, PolicyFault, NonFiniteTarget) as e:
+        if (ended := _ended(obs, e, gated)) is None:
+            raise  # a dashboard run (confirmed once) re-raises loudly, so the page sees the refusal as an error
+        return ended
+    return Tick(obs, targets)
+
+
+def commit(
+    robot: Robot, step: Tick, *, gated: bool, steps: int | None = None, before_write: Callable[[], None] | None = None
+) -> Tick:
+    """A decided tick's one write; a hold writes nothing and a world still advances its period. ``steps=None`` in
+    lockstep: the world steps once for everyone after every robot wrote."""
+    if step.held:  # the body keeps its last target; simulated actuators hold it through the period
+        idle(robot, steps)
+        return step
+    assert step.targets is not None, "commit writes a decided tick"
+    try:
         if before_write is not None:  # a paced body: at least one period since the previous write
             before_write()
-        robot.command(targets, steps=steps)
-    except EStopped:
+        robot.command(step.targets, steps=steps)
+    except (RequestRefused, PolicyFault, NonFiniteTarget) as e:
+        if (ended := _ended(step.obs, e, gated)) is None:
+            raise
+        return ended
+    return step
+
+
+def _ended(obs: Observation, e: Exception, gated: bool) -> Tick | None:
+    """How a tick ends on what its decision or its write raised; None: the caller raises it again."""
+    if isinstance(e, EStopped):
         return Tick(obs, ended="estop")
-    except (PolicyFault, NonFiniteTarget) as e:
+    if isinstance(e, PolicyFault | NonFiniteTarget):
         return Tick(obs, ended="fault", fault=str(e))
-    except RequestRefused as e:
-        if gated and not is_confirmed():  # an approved agent run: a refused step ends the run as a fault (K6)
-            return Tick(obs, ended="fault", fault=str(e))
-        raise  # a dashboard run (confirmed once) re-raises loudly, so the page sees the refusal as an error
-    return Tick(obs, targets)
+    if gated and not is_confirmed():  # an approved agent run: a refused step ends the run as a fault (K6)
+        return Tick(obs, ended="fault", fault=str(e))
+    return None
 
 
 def idle(robot: Robot, steps: int | None) -> None:

@@ -6,12 +6,13 @@ logged with its time, and nothing waits for real.
 
 from __future__ import annotations
 
+import contextlib
 import threading
 import time
 
 import numpy as np
 import pytest
-from test_drivers import make_driver, writes
+from test_drivers import FakeSerial, make_driver, writes
 
 from strands_robots import JointState, Robot, Simulation
 from strands_robots.description import Description
@@ -226,11 +227,13 @@ def test_k3_a_write_that_takes_time_or_a_sleep_that_overshoots_is_not_a_miss():
     assert p.misses == 1 and p.worst_late == pytest.approx(0.3 - dt, abs=0.002)
 
 
-@pytest.mark.parametrize(("eps", "healthy"), [(100e-6, 2000), (1.5e-3, 500)])
-def test_k3_lateness_is_measured_from_the_write_that_landed_not_a_grid_the_writes_left_behind(eps, healthy):
+@pytest.mark.parametrize(("eps", "healthy", "misses"), [(100e-6, 2000, 0), (1.5e-3, 500, 1)])
+def test_k3_lateness_is_measured_from_the_write_that_landed_not_a_grid_the_writes_left_behind(eps, healthy, misses):
     """One tick that nearly fills its period (17.95 ms + 2 ms write at 50 Hz, sleeps overshooting by ``eps``) used
     to tip the pacer into a regime where every later write was held to its floor and the grid stayed one overshoot
-    further behind each tick, so a 1 ms overrun hundreds of ticks later was reported as hundreds of ms late."""
+    further behind each tick, so a 1 ms overrun hundreds of ticks later was reported as hundreds of ms late. The
+    last tick's 19 ms of inference start within one late wake (``eps``) of its grid point, as on a fresh pacer:
+    late only when that wake is over 1 ms (``misses``), and by no more than the excess."""
     clock, dt = VirtualClock(), 1 / 50
     p = Pacer(dt, now=clock.now, sleep=lambda s: clock.advance(s + eps))
     writes: list[float] = []
@@ -245,15 +248,178 @@ def test_k3_lateness_is_measured_from_the_write_that_landed_not_a_grid_the_write
 
     for k in range(healthy + 2):
         tick(0.01795 if k == 0 else 0.005)  # one tick that almost saturates its period, then healthy ticks
-    tick(0.019)  # a 1 ms overrun of dt - write
-    assert p.misses == 1
-    late_ms = f"{p.worst_late * 1e3:.1f} ms reported for a 1 ms overrun"
-    assert p.worst_late == pytest.approx(0.001, abs=eps + 1e-9), late_ms
+    tick(0.019)  # 19 ms of inference: 1 ms before its deadline, less how late the tick started
+    assert p.misses == misses
+    late_ms = f"{p.worst_late * 1e3:.2f} ms reported for 19 ms of inference after a {eps * 1e3:g} ms late wake"
+    assert p.worst_late <= max(0.0, 0.019 + eps - dt) + 1e-9, late_ms
     assert min(np.diff(writes)) >= dt - 1e-9
 
 
+class LateWaking(VirtualClock):
+    """Every sleep wakes ``late`` seconds late, as a real one does; ``advance`` (inference) stays exact."""
+
+    def __init__(self, late: float) -> None:
+        super().__init__()
+        self.late = late
+
+    def sleep(self, seconds: float) -> None:
+        self.t += max(0.0, seconds) + self.late
+
+
+@pytest.mark.parametrize("late", [0.1e-3, 1.5e-3, 6e-3])
+def test_k3_a_paced_run_keeps_its_rate_and_fresh_observations_when_every_sleep_wakes_late(late):
+    """50 Hz on the fake Feetech bus, 3-8 ms of inference, every sleep waking ``late``: no miss, so the writes span
+    their periods to within one (as ``RunResult`` says), each acts on an observation one inference old (not one
+    period), and no two are closer than a period less that lateness."""
+    clock, stamps, seen = LateWaking(late), [], []
+
+    class Stamped(FakeSerial):  # each Goal_Position write stamped on the body's clock as it reaches the bus
+        def write(self, data):
+            if data[4] == ft.SYNC_WRITE and data[5] == ft.REG_GOAL_POSITION:
+                stamps.append(clock.now())
+            super().write(data)
+
+    d, _ = make_driver(serial=Stamped())
+    arm = Robot("so101", driver=d, twin=False, clock=clock)
+    work = iter(np.random.default_rng(0).uniform(0.003, 0.008, 300))
+
+    def pol(obs):
+        seen.append(obs.t)
+        clock.advance(next(work))
+        return {"shoulder_pan": 0.1}
+
+    res = arm.run(pol, steps=300, hz=50)
+    w = np.array(stamps)
+    assert res.deadline_misses == 0 and len(w) == len(seen) == 300
+    rate = f"{res.hz_achieved:.2f} Hz achieved, the bus written at {299 / (w[-1] - w[0]):.2f} Hz"
+    assert abs(res.seconds - 300 / 50) <= 1 / 50 and abs(w[-1] - w[0] - 299 / 50) <= 1 / 50, rate
+    age = w - np.array(seen)
+    assert age.max() <= 0.008 + late + 1e-9, f"writes act on observations up to {age.max() * 1e3:.1f} ms old"
+    assert np.diff(w).min() >= 1 / 50 - late - 1e-9
+
+
+@pytest.mark.parametrize("hz", [10.0, 50.0, 200.0])
+def test_k3_sleeps_that_wake_late_never_cost_a_run_its_rate_or_a_gap_more_than_one_wake(hz):
+    """100 random histories per rate (inference up to 1.2 periods, some stalls, every sleep 0..max_late late): with
+    no miss the span is n periods to within one, and no two writes are closer than a period less ``max_late``."""
+    rng, dt = np.random.default_rng(int(hz)), 1 / hz
+    spans = []
+    for _ in range(100):
+        clock, max_late = VirtualClock(), rng.uniform(0, dt / 2)
+        p = Pacer(dt, now=clock.now, sleep=lambda s, c=clock, m=max_late: c.advance(max(0.0, s) + rng.uniform(0, m)))
+        work = rng.uniform(0, rng.uniform(0.2, 1.2) * dt, rng.integers(2, 80))
+        if rng.random() < 0.25:
+            work[rng.integers(0, len(work))] = rng.uniform(0, 0.5)
+        writes = []
+        for w in work:
+            p.start()
+            clock.advance(w)
+            p.before_write()
+            writes.append(clock.now())
+            clock.advance(rng.uniform(0, dt / 10))  # the write itself
+            p.after_write()
+        assert np.diff(writes).min() >= dt - max_late - 1e-9
+        if p.misses == 0:
+            spans.append(abs(p.span() - len(work) * dt) / dt)
+    assert len(spans) > 30 and max(spans) <= 1 + 1e-9, f"a run with no miss was {max(spans):.2f} periods off its rate"
+
+
+class _Dataset:
+    """What a run's recording calls on LeRobot's dataset, with no LeRobot: frames counted, the directory made."""
+
+    def __init__(self, root) -> None:
+        from types import SimpleNamespace
+
+        self.root, self.frames, self.meta = root, 0, SimpleNamespace(total_episodes=0)
+        root.mkdir(parents=True)
+
+    def add_frame(self, frame) -> None:
+        self.frames += 1
+
+    def save_episode(self, parallel_encoding: bool = True) -> None:
+        self.meta.total_episodes += 1
+
+    def finalize(self) -> None: ...
+
+    def clear_episode_buffer(self) -> None: ...
+
+
+def _no_lerobot(monkeypatch, open_dataset) -> None:
+    """A recording whose dataset ``open_dataset`` opens: no LeRobot, PyAV or ``datasets`` imported."""
+    from strands_robots.recording import lerobot_v3
+
+    monkeypatch.setattr(lerobot_v3, "require_lerobot", lambda: None)
+    monkeypatch.setattr(lerobot_v3, "open_dataset", open_dataset)
+    monkeypatch.setattr(lerobot_v3, "quiet", contextlib.nullcontext)
+
+
+def _slow_dataset(monkeypatch, clock, seconds: float) -> list:
+    """Open a recording's dataset in ``seconds`` of the body's clock (LeRobot took 0.3-1 s in a fresh process)."""
+    made: list = []
+
+    def open_dataset(ep, first):
+        clock.advance(seconds)
+        made.append(_Dataset(ep.root))
+        return made[-1], True
+
+    _no_lerobot(monkeypatch, open_dataset)
+    return made
+
+
+def test_k3_a_recording_opens_its_dataset_before_tick_one_so_its_setup_is_no_deadline_miss(tmp_path, monkeypatch):
+    """The dataset used to open at the first frame, after tick 1's write: its setup made tick 2 late, so
+    ``on_miss="fault"`` ended a process's first recording there."""
+    robot, drv = _hw()
+    made = _slow_dataset(monkeypatch, drv.clock, 0.5)
+    res = robot.run(lambda obs: {"shoulder_pan": 0.1}, steps=30, hz=30, record=tmp_path / "ds", on_miss="fault")
+    assert (res.stopped_by, res.steps, res.deadline_misses, res.fault) == ("steps", 30, 0, None)
+    assert made[0].frames == 30 and res.recorded == str(made[0].root) and len(drv.writes) == 30
+
+
+def test_k3_a_recording_that_ends_before_its_first_frame_leaves_no_dataset(tmp_path, monkeypatch):
+    robot, drv = _hw()
+    made = _slow_dataset(monkeypatch, drv.clock, 0.5)
+    res = robot.run(lambda obs: {}, steps=30, hz=30, record=tmp_path / "ds", stop_when=lambda obs: True)
+    assert res.stopped_by == "stop_when" and res.recorded is None and drv.writes == []
+    assert not (tmp_path / "ds").exists() and all(d.frames == 0 for d in made)
+
+
+class _WithGains:
+    """A policy that carries its own PD gains (kp 33), as holosoma's checkpoint does."""
+
+    gains = ([33.0] * 6, [1.0] * 6)
+
+    def act(self, obs, *, instruction=None):
+        return {"shoulder_pan": 0.6}
+
+    def reset(self) -> None: ...
+
+
+def test_k3_a_dataset_the_run_cannot_extend_is_refused_before_a_write_or_the_policys_gains(tmp_path, monkeypatch):
+    """Opening the dataset is one of the run's checks: refused, the arm has not moved and keeps the gains it had (a
+    policy's go on after the last check). It used to open at tick 1's frame, after both."""
+
+    def refuse(ep, first):
+        raise ValueError(f"{ep.target}: the dataset there has other features")
+
+    _no_lerobot(monkeypatch, refuse)
+    arm = Robot("so101")
+
+    def body():  # shoulder_pan's position and kp
+        m = arm.sim.backend.model
+        kp = m.actuator_gainprm[m.actuator(f"{arm.id}/{arm.description.actuators[0]}").id, 0]
+        return arm.observe(images=False)["shoulder_pan"], float(kp)
+
+    found = body()
+    with pytest.raises(ValueError, match="other features"):
+        arm.run(_WithGains(), steps=3, hz=20, record=tmp_path / "ds")
+    assert body() == found  # dev: the arm moved, under kp 33
+    arm.sim.close()
+
+
 def test_k3_writes_stay_one_period_apart_across_runs_estops_and_resumes():
-    """A random history of runs, stalls, e-stops and resumes on one body: no two writes < one period apart."""
+    """A random history of runs, stalls, e-stops and resumes on one body whose sleeps are exact: no two writes < one
+    period apart (when the wait before a write wakes late, the next one may come that much closer)."""
     rng = np.random.default_rng(0)
     robot, drv = _hw()
     for _ in range(40):
@@ -422,6 +588,116 @@ def test_k7_a_start_pose_ramps_each_robot_before_the_lockstep_loop():
     q = a.observe().joints.positions
     assert q[0] == pytest.approx(0.6, abs=0.1) and q[2] == pytest.approx(-0.4, abs=0.1)
     assert abs(b.observe().joints.positions[0]) < 0.1  # b named no start_pose: not moved
+    sim.close()
+
+
+def _pan_target(sim, robot) -> float:
+    """The shoulder_pan target the world applies to ``robot`` on its next step."""
+    return float(sim.backend.data.ctrl[sim.backend._index[robot.id].actuator_ids[0]])
+
+
+def _b_decides_first(k):
+    def pb(obs):  # tick 1: 0.1, tick 2: 0.2, tick 3: 0.3
+        k["b"] += 1
+        return {"shoulder_pan": 0.1 * k["b"]}
+
+    return pb
+
+
+def test_k7_a_robot_listed_before_the_one_that_faults_writes_nothing_that_tick():
+    sim, a, b = _pair()
+    k = {"a": 0, "b": 0}
+
+    def pa(obs):
+        k["a"] += 1
+        return {"shoulder_pan": float("nan")} if k["a"] == 3 else {}
+
+    res = sim.run({b: _b_decides_first(k), a: pa}, steps=10)  # b has decided tick 3 when a refuses it
+    assert (res["b"].stopped_by, res["b"].steps, k) == ("fault", 2, {"a": 3, "b": 3})
+    assert _pan_target(sim, b) == pytest.approx(0.2)  # tick 2's target: no later step of the world applies 0.3
+    sim.close()
+
+
+@pytest.mark.parametrize("resumed", [False, True], ids=["pressed", "pressed-and-resumed"])
+def test_k7_an_estop_while_the_robots_decide_leaves_that_tick_unwritten(resumed):
+    sim, a, b = _pair()
+    k = {"a": 0, "b": 0}
+
+    def pa(obs):
+        k["a"] += 1
+        if k["a"] == 3:  # the operator stops a while it decides tick 3, after b decided it
+            a.estop()
+            if resumed:
+                a.resume(approved_by="op")
+        return {}
+
+    res = sim.run({b: _b_decides_first(k), a: pa}, steps=10)
+    assert (res["b"].stopped_by, res["b"].steps, res["b"].fault) == ("estop", 2, "e-stop engaged on a")
+    assert _pan_target(sim, b) == pytest.approx(0.2)
+    sim.close()
+
+
+def test_k7_an_estop_on_a_robot_yet_to_decide_ends_the_tick_before_it_decides():
+    sim, a, b = _pair()
+    k = {"a": 0, "b": 0}
+
+    def pa(obs):  # a decides first
+        k["a"] += 1
+        if k["a"] == 3:
+            b.estop()  # the operator stops b while a decides tick 3
+        return {"shoulder_pan": 0.1 * k["a"]}
+
+    def pb(obs):
+        k["b"] += 1
+        return {}
+
+    res = sim.run({a: pa, b: pb}, steps=10)
+    assert (res["a"].stopped_by, res["a"].fault, k) == ("estop", "e-stop engaged on b", {"a": 3, "b": 2})
+    assert _pan_target(sim, a) == pytest.approx(0.2)
+    sim.close()
+
+
+@pytest.mark.parametrize("confirmed", [False, True], ids=["agent", "dashboard"])
+def test_k7_a_lockstep_tick_the_gate_refuses_for_one_robot_is_written_for_none(confirmed):
+    """An agent's run ends as a fault at the refused step (K6), a dashboard's (one operator yes) raises it: either
+    way the robot listed before the refused one has not written that tick."""
+    from contextlib import nullcontext
+
+    from strands_robots.robot.run.source import from_agent
+    from strands_robots.robot.safety import RequestRefused
+
+    sim, a, b = _pair()
+    k = {"a": 0, "b": 0}
+
+    def third_refused(robot, request):
+        k["a"] += 1
+        if k["a"] == 3:
+            raise RequestRefused(f"{robot.id}: refused at tick 3")
+
+    a.validators.append(third_refused)  # every gated write of a passes it, after b decided the same tick
+    raised = pytest.raises(RequestRefused, match="tick 3") if confirmed else nullcontext()
+    with from_agent(confirmed=confirmed), raised:
+        res = sim.run({b: _b_decides_first(k), a: lambda o: {}}, steps=10)
+    if not confirmed:
+        assert (res["a"].stopped_by, res["a"].steps, res["a"].fault) == ("fault", 2, "a: refused at tick 3")
+    assert _pan_target(sim, b) == pytest.approx(0.2)
+    sim.close()
+
+
+def test_k7_a_robot_that_holds_in_lockstep_writes_nothing_and_the_world_still_steps_once_a_tick():
+    """In lock-step a hold writes nothing and adds no step of its own: the world steps once a tick for every robot."""
+    sim, a, b = _pair()
+    k = {"b": 0}
+
+    def pb(obs):  # ticks 2 to 4 hold: tick 1's target stays in the world
+        k["b"] += 1
+        return None if 2 <= k["b"] <= 4 else {"shoulder_pan": 0.1 * k["b"]}
+
+    t0 = sim.time
+    res = sim.run({a: lambda o: {"shoulder_pan": 0.3}, b: pb}, steps=4, hz=50)
+    assert (res["b"].stopped_by, res["b"].steps, k["b"]) == ("steps", 4, 4)
+    assert sim.time - t0 == pytest.approx(4 / 50, abs=1e-6)
+    assert (_pan_target(sim, a), _pan_target(sim, b)) == pytest.approx((0.3, 0.1))
     sim.close()
 
 

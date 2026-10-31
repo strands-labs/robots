@@ -39,7 +39,7 @@ def quiet() -> Iterator[None]:
 
     logging.getLogger("lerobot").setLevel(logging.ERROR)
     svt, bars, libav = os.environ.get("SVT_LOG"), hf.is_progress_bar_enabled(), logging.getLogger("libav")
-    level = libav.level
+    level, pyav = libav.level, av.logging.get_level()  # PyAV's own level: None, its default, drops libav's log
     os.environ["SVT_LOG"] = svt or "1"  # read by the encoder when it opens: errors only
     libav.setLevel(logging.ERROR)
     hf.disable_progress_bar()
@@ -50,7 +50,8 @@ def quiet() -> Iterator[None]:
         if svt is None:
             del os.environ["SVT_LOG"]
         libav.setLevel(level)
-        av.logging.set_libav_level(av.logging.INFO)  # libav's own default
+        av.logging.set_libav_level(av.logging.INFO)  # libav's own default: PyAV has no getter for it
+        av.logging.set_level(pyav)  # and PyAV's callback back in place of that printer, at the caller's level
         (hf.enable_progress_bar if bars else hf.disable_progress_bar)()
 
 
@@ -97,7 +98,31 @@ def _same_units(ep: Episode, root: Path, said: dict[str, Any]) -> None:
     if have is not None and have != said:
         raise ValueError(
             f"{ep.target}: the dataset there is stored in units {have['units']!r}; this run records {said['units']!r}"
+            + (_differences(have, said) if have["units"] == said["units"] else "")  # one scheme: say what differs
         )
+
+
+def _differences(have: dict[str, Any], said: dict[str, Any]) -> str:
+    """Each entry the dataset's ``meta/units.json`` states otherwise than this run's, with both values; ``none``
+    where one has no such entry (every ``mode``, in a dataset recorded before ``record=`` named them)."""
+    there, here = _entries(have), _entries(said)
+    keys = [k for k in dict.fromkeys([*here, *there]) if (k in there, there.get(k)) != (k in here, here.get(k))]
+    told = [f"{k.removeprefix('joints ')} {_shown(there, k)} (this run: {_shown(here, k)})" for k in keys]
+    return f", but meta/units.json there has {', '.join(told)}" if told else ""
+
+
+def _entries(value: Any, at: str = "") -> dict[str, Any]:
+    """A JSON value as one entry per leaf, keyed by its path: ``{"joints gripper.pos mode": "range_0_100", ...}``."""
+    if not isinstance(value, dict) or not value:
+        return {at: value}
+    flat: dict[str, Any] = {}
+    for key, sub in value.items():
+        flat.update(_entries(sub, f"{at} {key}".lstrip()))
+    return flat
+
+
+def _shown(entries: dict[str, Any], key: str) -> str:
+    return repr(entries[key]) if key in entries else "none"
 
 
 def _hub_cache(repo_id: str) -> Path:

@@ -95,7 +95,6 @@ print("time did not move for the refused run:", round(arm.sim.time, 2), "s")
 # %%
 from lerobot.datasets.lerobot_dataset import LeRobotDataset
 
-av.logging.set_libav_level(av.logging.ERROR)  # record= turns libav's notices back on when it returns (dev d19adedc)
 ds = LeRobotDataset("local/so101-waves", root=target)
 print("episodes", ds.num_episodes, "| frames", ds.num_frames, "| fps", ds.fps)
 print("state names:", ds.meta.features["observation.state"]["names"])
@@ -176,7 +175,6 @@ arm.sim.close()
 arm = so101()
 replay = Policy(f"{target}?episode=1")
 r = arm.run(replay, seconds=2, record=work / "replayed")
-av.logging.set_libav_level(av.logging.ERROR)  # again, after record=
 print(type(replay).__name__, "|", r.steps, "steps at", r.hz_target, "Hz, stopped_by", r.stopped_by)
 again = LeRobotDataset("local/replayed", root=work / "replayed")
 a = np.stack([again[i]["action"].numpy() for i in range(again.num_frames)])

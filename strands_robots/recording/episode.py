@@ -1,8 +1,9 @@
-"""One run = one episode: opened on the first frame, written by ``finish``. The run loop is the only caller."""
+"""One run = one episode: opened before step one, written by ``finish``. The run loop is the only caller."""
 
 from __future__ import annotations
 
 import shutil
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -16,7 +17,8 @@ from .target import is_repo_id, locate
 
 
 class Episode:
-    """``add(obs, action)`` per control step, in the units the policy saw and did; ``finish()`` -> the dataset path.
+    """``open(observe)`` before step one; ``add(obs, action)`` per control step, in the units the policy saw and did;
+    ``finish()`` -> the dataset path.
 
     A run that raises or ends on a policy fault records nothing (``RunResult.recorded`` is None); a run stopped by
     ``stop()`` keeps its frames. Only an integer ``hz`` can record (a LeRobot dataset has an integer fps).
@@ -60,12 +62,19 @@ class Episode:
         q = np.asarray(rad, dtype=float)
         return np.asarray(q if self.units is None else self.units.from_rad(q), dtype=np.float32)
 
-    def add(self, obs: Observation, action: Any) -> None:
+    def open(self, observe: Callable[[], Observation]) -> None:
+        """Create or resume the dataset from one observation (its joints and cameras are the features), before
+        step one: its setup is then no tick's lateness, and a dataset this run cannot append to is refused before
+        step one writes."""
         if self._writer is None:
             from .lerobot_v3 import open_dataset, quiet
 
+            first = observe()
             with quiet():
-                self._writer, self._created = open_dataset(self, obs)
+                self._writer, self._created = open_dataset(self, first)
+
+    def add(self, obs: Observation, action: Any) -> None:
+        self.open(lambda: obs)
         frame: dict[str, Any] = {
             STATE: self._in_units(obs.joints.positions),
             ACTION: self._in_units(action),
@@ -77,16 +86,16 @@ class Episode:
         self.frames += 1
 
     def finish(self) -> str | None:
-        """Save the episode (if any frame was added) and finalize; returns the dataset directory."""
-        if self._writer is None:
+        """Save the episode and finalize; returns the dataset directory (None when no frame was added)."""
+        if not self.frames:  # opened before step one, ended before a frame: no episode, and no new empty dataset
+            self.abort()
             return None
         from .lerobot_v3 import quiet
 
         with quiet():
-            if self.frames:
-                self._writer.save_episode(parallel_encoding=False)  # no process pool: a script must not re-import
+            self._writer.save_episode(parallel_encoding=False)  # no process pool: a script must not re-import
             self._writer.finalize()
-        if self.push and self.frames:
+        if self.push:
             self._writer.push_to_hub()
         return str(self._writer.root)
 
@@ -112,6 +121,9 @@ class NotRecording:
     """What a run without ``record=`` holds: every call is a no-op, so the loop has no recording branches."""
 
     wants_images = False
+
+    def open(self, observe: Callable[[], Observation]) -> None:
+        return None
 
     def add(self, obs: Observation, action: Any) -> None:
         return None

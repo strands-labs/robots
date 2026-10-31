@@ -135,10 +135,12 @@ except TypeError as e:
 **One clock, one read, one write per tick.** A hardware robot reads time from `robot.clock` (the
 monotonic clock, or `Robot(..., clock=)`); a robot in a world reads the world's time. `Observation.t`,
 the latch, the watchdog and `RunResult.seconds` all use it. Each tick of `run()` reads the bus once and
-writes once (`robot.command(targets)` writes without reading). Writes are spaced at least one period
-apart: a slow inference is a deadline miss, counted in `RunResult.deadline_misses` and `worst_late_s`,
-and the next write waits a full period instead of catching up. `run(on_miss="fault")` ends the run at
-the late tick with `stopped_by="deadline"`.
+writes once (`robot.command(targets)` writes without reading). Writes are spaced one period apart, less
+how late the host woke from the wait before the previous one, so a run keeps its rate: a write not
+held back to its period that lands past the next tick's start, after a slow inference or a late wake,
+is a deadline miss, counted in `RunResult.deadline_misses` and `worst_late_s`, and the next write
+waits a full period instead of catching up. `run(on_miss="fault")` ends the run at the late tick with
+`stopped_by="deadline"`.
 
 {{drawing:d11_estop_audit}}
 

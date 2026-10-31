@@ -112,7 +112,8 @@ def _ready(robot: Robot, pol: Any, units: str | None) -> Bound:
 
 
 def install_gains(bound: Mapping[Robot, Bound]) -> list[Robot]:
-    """Put each policy's gains on its body after the loop's last checks (rate, step count, pacer), before step one.
+    """Put each policy's gains on its body after the loop's last checks (rate, step count, pacer, a recording's
+    dataset), before step one.
 
     A latched e-stop on any of these robots ends the run at step 0, so nothing is installed: an e-stopped body keeps
     the gains it holds with. Returns those robots, and the loop ends the run on them: one read of the latches decides

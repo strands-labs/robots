@@ -119,3 +119,16 @@ def test_long_device_ids_never_collide_in_the_64_char_tool_name():
     a, b = tool_name("robot", "x" * 70 + "_left"), tool_name("robot", "x" * 70 + "_right")
     assert len(a) <= 64 and len(b) <= 64 and a != b
     assert tool_name("robot", "arm-1") == "robot_arm_1"
+
+
+def test_every_run_keyword_a_model_can_send_is_in_the_tool_spec():
+    """``Robot.run = loop.run`` keeps the loop's signature; an annotation the schema cannot read (the ``OnMiss``
+    alias) left ``on_miss`` out, so a model was never offered ending a run at a deadline miss."""
+    import inspect
+
+    from strands_robots.tools.spec import DEVELOPER_ONLY_ARGS
+
+    arm = Robot("so101")
+    run = _schema(tool_spec(arm))["properties"]["run"]["properties"]
+    assert set(run) == set(inspect.signature(arm.run).parameters) - {"stop_when", "stop_event"} - DEVELOPER_ONLY_ARGS
+    assert run["on_miss"] == {"type": "string", "enum": ["skip", "fault"], "default": "skip"}

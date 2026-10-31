@@ -1,4 +1,4 @@
-"""Several robots in one world, in lock-step: every robot runs THE ``tick``, then the world steps once."""
+"""Several robots in one world, in lock-step: every robot decides, then every robot writes, the world steps once."""
 
 from __future__ import annotations
 
@@ -16,7 +16,7 @@ from .loop import start_pose
 from .pace import Pacer
 from .result import RunResult, StoppedBy
 from .source import is_agent
-from .tick import stopped, tick
+from .tick import Tick, commit, decided, stopped
 
 if TYPE_CHECKING:
     from ...policy import PolicyLike
@@ -35,9 +35,11 @@ def lockstep(
     units: str | None = "auto",
     stop_event: threading.Event | None = None,
 ) -> dict[str, RunResult]:
-    """Drive N robots in lock-step: every robot observes, every policy acts, the world steps once.
+    """Drive N robots in lock-step: every robot observes and decides, then every robot writes, the world steps once.
 
-    One robot's fault or e-stop ends the run for all of them at that tick: no robot acts on a tick another refused.
+    A fault, a refusal or an e-stop on any robot while they decide ends the run for all of them at that tick, written
+    for none: no robot acts on a tick another refused. A press after the decisions finds robots written; one in a paced
+    run's wait for the world's step (after the writes) lets that one step go ahead, the pressed robot holding.
     """
     if seconds is None and steps is None:
         raise ValueError("Simulation.run needs seconds= or steps=")
@@ -95,14 +97,9 @@ def _lockstep(
                 break
             if pacer is not None:
                 pacer.start()
-            for r, b in bound.items():
-                step = tick(r, b, instruction, images=r.sim is None or looks(b, instruction), gated=gated)
-                if step.ended is not None:  # the robots after it do not act on this tick
-                    why, ended = step.ended, [r]
-                    if step.fault is not None:
-                        faults[r.id] = step.fault
-                    break
-            if why != limit:
+            stop = _tick(bound, stops0, instruction, gated, faults)
+            if stop is not None:  # a fault, a refusal or an e-stop ended this tick
+                why, ended = stop
                 break
             if pacer is not None:
                 pacer.before_write()  # the world's step is lockstep's write: spaced by one period
@@ -122,3 +119,35 @@ def _lockstep(
         )
         for r in bound
     }
+
+
+def _tick(
+    bound: Mapping[Robot, Bound],
+    stops0: Mapping[Robot, int],
+    instruction: str | None,
+    gated: bool,
+    faults: dict[str, str],
+) -> tuple[StoppedBy, list[Robot]] | None:
+    """One tick for every robot: all decide, then all write; None once all wrote. A fault or a refusal, or an e-stop
+    on any of them (even one resumed since) while they decide, ends the run with this tick written for none."""
+    ticks: list[tuple[Robot, Tick]] = []
+    for r, b in bound.items():
+        step = decided(r, b, instruction, images=r.sim is None or looks(b, instruction), gated=gated)
+        if step.ended is not None:  # the robots after it do not decide, and none has written this tick
+            return _stop(r, step, faults)
+        pressed = [x for x in bound if stopped(x, stops0[x])]
+        if pressed:  # pressed while they decide: the robots after do not decide, and nothing is written
+            return "estop", pressed
+        ticks.append((r, step))
+    for r, step in ticks:
+        done = commit(r, step, gated=gated)
+        if done.ended is not None:  # an e-stop landing during the writes: the robots before it have written
+            return _stop(r, done, faults)
+    return None
+
+
+def _stop(robot: Robot, step: Tick, faults: dict[str, str]) -> tuple[StoppedBy, list[Robot]]:
+    assert step.ended is not None
+    if step.fault is not None:
+        faults[robot.id] = step.fault
+    return step.ended, [robot]

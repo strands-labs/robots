@@ -1,12 +1,15 @@
-"""Pacing on hardware (or a watched world): ticks start on a grid, WRITES are spaced by at least one period.
+"""Pacing on hardware (or a watched world): ticks start on a grid, WRITES are spaced by one period.
 
 ``next_tick += dt`` never re-phased, so after a stall every missed command went out back to back. Here a tick
 starts at its grid point (``start``), observes and decides; its write waits until one period after the previous
-write (``before_write``), so consecutive writes are never closer than ``dt`` whatever the inference jitter. A
-write that lands after the next tick should have started, without having been held to that floor, is a deadline
-miss (``after_write``): counted, the worst lateness kept, and the grid re-phases to that write (so a sleep's
-overshoot after a re-phase is not another miss); ``on_miss="fault"`` ends the run instead. A held write that still
-lands past its deadline re-phases the grid as well, so lateness is always measured from the writes themselves.
+write (``before_write``), whatever the inference jitter. A write held back to that floor counts as written ON it:
+the sleep that held it wakes late on a real host, and carrying that overshoot into the next floor slowed every
+held tick by it, with no miss counted. So consecutive writes are never closer than ``dt`` less one such overshoot,
+and with no miss the writes keep the rate. A write that lands after the next tick should have started, without
+having been held to its floor, is a deadline miss (``after_write``): counted, the worst lateness kept, and the
+grid re-phases to that write (so a sleep's overshoot after a re-phase is not another miss); ``on_miss="fault"``
+ends the run instead. A held write is on its floor, never past its deadline: only a miss, or a ``hold`` longer
+than its period, re-phases the grid.
 """
 
 from __future__ import annotations
@@ -57,7 +60,7 @@ class Pacer:
         self._held = floor is not None and floor > self._now()  # a write held back to its floor is never late
         if floor is not None:
             self._until(floor)
-        self._writing = self._now()
+        self._writing = floor if self._held else self._now()  # held: on its floor, however late the sleep woke
 
     def after_write(self) -> bool:
         """Record the write; False when it missed its deadline and ``on_miss="fault"``."""
@@ -70,8 +73,8 @@ class Pacer:
             self.worst_late = max(self.worst_late, w - deadline)
             self._next = w  # re-phase onto the late write: the next tick starts now, its write still waits
             return self.on_miss != "fault"
-        self._next = max(deadline, w)  # a held write past its deadline moves the grid too: lateness is measured
-        return True  # from where the writes are, never from a grid they left behind one sleep overshoot at a time
+        self._next = max(deadline, w)  # a held write is on its floor, <= deadline: the grid never trails the writes
+        return True
 
     def hold(self) -> None:
         """This tick wrote nothing on purpose: the grid moves one period on, no write, no miss.
@@ -83,5 +86,5 @@ class Pacer:
         self._next = max(start + self.dt, self._now())
 
     def span(self) -> float:
-        """The time the body was commanded: first write to one period after the last (n * dt with no miss)."""
+        """The time the body was commanded: first write to one period after the last (no miss: n * dt, within dt)."""
         return 0.0 if self._first is None or self._last is None else self._last - self._first + self.dt

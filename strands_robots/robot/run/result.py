@@ -16,9 +16,11 @@ class RunResult:
 
     ``stopped_by`` names the limit that ended it: ``"seconds"`` / ``"steps"`` for the one the caller gave.
     ``seconds`` is on the body's clock: in a world, the sim time its steps advanced; on hardware, the commanded
-    span (first write to one period after the last), so ``hz_achieved == hz_target`` exactly when
-    ``deadline_misses == 0``. A miss is a paced write that landed after the next tick should have started
-    (re-phased, never caught up); ``worst_late_s`` is the worst. ``wall_seconds`` is the host's time for the run.
+    span (first write to one period after the last, a write held to its period counted on it), so with
+    ``deadline_misses == 0`` it is ``steps / hz_target`` to within one period, however late the host's sleeps
+    wake, plus the time a hold waited past its period. A miss is a paced write that landed after the next tick
+    should have started (re-phased, never caught up); ``worst_late_s`` is the worst. ``wall_seconds`` is the
+    host's time for the run.
     A tick whose policy returned ``None`` is a ``hold``: the body kept its last target, nothing was written, the grid
     moved on — a policy waiting for its server (``execution="sequential"``) holds on purpose, and that is not a miss.
     """

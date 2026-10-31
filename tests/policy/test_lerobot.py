@@ -131,9 +131,9 @@ def test_a_server_drives_the_arm_and_matches_the_local_checkpoint(
         assert r.stopped_by == "seconds" and r.steps == 60 and r.fault is None
         assert r.hz_target == 30.0 and 1.8 < wall < 4.0  # paced in wall time: LeRobot's clock
         assert _inside_limits(arm, r.final.joints.positions)
-        # wall-clock pacing: a late wake is a sub-period miss that re-phases the grid, never a write a period late;
-        # the exact miss and hold accounting is pinned on a virtual clock (tests/test_kernel.py k3/k5)
-        assert p.execution == execution and r.worst_late_s < 1 / r.hz_target, (r.deadline_misses, r.worst_late_s)
+        # wall-clock pacing: a late wake can make a miss nearly as late as the host overslept, more than a period on
+        # a loaded host, so lateness is pinned on a virtual clock (tests/test_kernel.py k3/k5), not here
+        assert p.execution == execution
         if coalesced:
             assert r.deadline_misses >= 1
         if execution == "sequential":  # the startup wait and every refill are holds, not misses
