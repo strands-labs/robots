@@ -79,6 +79,33 @@ def test_delete_rules_deletes_every_rule_of_its_tenant_however_long_the_tenant(a
         assert aws.list_topic_rules()["rules"] == [], n
 
 
+class _Paged:
+    """A boto3 ``iot`` client whose ``list_topic_rules`` answers ``page`` rules at a time, as the service may (moto
+    answers every rule at once)."""
+
+    def __init__(self, iot, page: int):
+        self.iot, self.page = iot, page
+
+    def list_topic_rules(self, nextToken: str = "0") -> dict:
+        everything, start = self.iot.list_topic_rules()["rules"], int(nextToken)
+        out = {"rules": everything[start : start + self.page]}
+        if start + self.page < len(everything):
+            out["nextToken"] = str(start + self.page)
+        return out
+
+    def delete_topic_rule(self, ruleName: str) -> dict:
+        return self.iot.delete_topic_rule(ruleName=ruleName)
+
+
+def test_delete_rules_reads_every_page_of_the_accounts_rules(aws):
+    """20 rules, 4 to a page: the tenant whose rules come last still finds and deletes all five, and only those."""
+    for t in ("alpha", "beta", "gamma", "zeta-lab"):
+        rules.apply_rules(aws, _every_rule(t))
+    assert rules.delete_rules(_Paged(aws, 4), "zeta-lab") == sorted(_every_rule("zeta-lab"))
+    left = sorted(r["ruleName"] for r in aws.list_topic_rules()["rules"])
+    assert left == sorted(n for t in ("alpha", "beta", "gamma") for n in _every_rule(t))
+
+
 FOLD_ALIKE = [("lab-a", "lab_a"), ("lab_a", "lab-a"), ("lab.a", "lab-a"), ("lab:a", "lab_a"), ("john.doe", "john_doe")]
 
 

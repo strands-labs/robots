@@ -146,9 +146,18 @@ def apply_rules(iot: Any, rules: Mapping[str, Mapping[str, Any]]) -> dict[str, s
 def delete_rules(iot: Any, tenant: str) -> list[str]:
     """Delete THIS tenant's rules, by the names ``rule_name`` gives it (one per kind in ``KINDS``); the names
     deleted. Only those exact names match, so another tenant's rules never do: not ``prod-lab``'s next to ``lab``,
-    nor ``lab_a``'s next to ``lab-a``, however long the tenants."""
+    nor ``lab_a``'s next to ``lab-a``, however long the tenants. The account's rules come a page at a time
+    (``nextToken``); every page is read before the first delete."""
     own = {rule_name(kind, tenant) for kind in KINDS}
-    names = sorted(r["ruleName"] for r in iot.list_topic_rules().get("rules", []) if r["ruleName"] in own)
+    found: set[str] = set()
+    token: str | None = None
+    while True:
+        page = iot.list_topic_rules(**({"nextToken": token} if token else {}))
+        found.update(r["ruleName"] for r in page.get("rules", []) if r["ruleName"] in own)
+        token = page.get("nextToken")
+        if not token:
+            break
+    names = sorted(found)
     for name in names:
         iot.delete_topic_rule(ruleName=name)
     return names
