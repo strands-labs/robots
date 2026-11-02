@@ -1,8 +1,8 @@
 ---
-description: Same code, bigger engines. Isaac Sim for photoreal worlds, Newton for thousands of worlds at once.
+description: The Isaac Sim backend for photorealistic worlds and the Newton backend for batched worlds on a CUDA GPU, behind the same Simulation API.
 ---
 
-# GPU backends
+# GPU simulation: Isaac Sim and Newton
 
 {{drawing:v04_backend}}
 
@@ -18,8 +18,8 @@ batch = Simulation(physics="newton", num_envs=1024)    # 1,024 worlds on one GPU
 ```
 
 On an L40S: Isaac holds both robots in one world at about 230 steps a second. Newton runs **1.75 million steps a
-second** across 1,024 worlds. Isaac allows one app per process, so a second `Simulation("isaac")` politely says no.
-On a machine without CUDA these backends say so and step aside.
+second** across 1,024 worlds. Isaac Sim allows one app per process, so a second `Simulation("isaac")` raises. On a machine without CUDA both
+backends raise an error that says so.
 
 <div class="sr-grid2" markdown>
 <figure><img class="sr-media" src="../assets/media/isaac_so101_g1.png" alt="so101 and G1 in Isaac"><figcaption>Isaac Sim: one world, two robots</figcaption></figure>

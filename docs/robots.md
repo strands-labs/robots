@@ -1,8 +1,8 @@
 ---
-description: What a robot is, independent of any world, and the data that flows between a world, a robot and a policy.
+description: Description loads a robot model by name or path and reads its joints, actuators, limits and keyframes. The data types that pass between a world, a robot and a policy.
 ---
 
-# Robots and their data
+# Robot descriptions
 
 {{drawing:d01_description}}
 
@@ -23,7 +23,9 @@ the `mujoco` extra is installed, through a plain XML walk when it is not. A robo
 inside its scene is read through the scene. A registry robot that ships no simulation model (hardware only)
 refuses with `FileNotFoundError` naming it; a name that is not in the registry refuses with `KeyError`.
 
-| type | what it holds |
+## Data types
+
+| Type | Contents |
 |---|---|
 | `JointState` | `names`, `positions`, `velocities`, `efforts` (rad, rad/s, N·m), read-only arrays |
 | `Pose` | `position` (m), `orientation` (w, x, y, z), optional twist |
@@ -33,5 +35,7 @@ refuses with `FileNotFoundError` naming it; a name that is not in the registry r
 | `Requirements` | what a policy needs (camera names and sizes, state length); `check(obs)` refuses naming the gap |
 | `Physics`, `Contact`, `RunResult` | engine and step sizes, one contact, what a run measured |
 
-Units: the robot speaks radians. `Units.for_robot(description, "lerobot")` maps them to the LeRobot norm
+## Units
+
+Robots use radians. `Units.for_robot(description, "lerobot")` maps them to the LeRobot norm
 modes the registry names (`hardware.lerobot_norm`; an SO-10x: body joints -100..100, gripper 0..100).

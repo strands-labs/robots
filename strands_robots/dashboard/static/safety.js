@@ -1,119 +1,126 @@
-/* The e-stop panel: one row per robot, an E-STOP button (no confirm: stopping is always allowed) and a Resume that
- * needs the operator's name. The latched state comes from the server's state frames (frame.estop), never from a
- * local guess, so the panel shows what the world says. */
+/* E-stops, placed where they never cover an input:
+ *   - STOP ALL in the top bar: one click, no confirm, e-stops every robot in this world and every mesh device;
+ *     Shift+Esc does the same from the keyboard (even while typing).
+ *   - each robot card's header: that robot's E-STOP (no confirm) and a Resume that needs the operator's name
+ *     (a real robot also needs an X-Confirm). app.js renders the slot (.estop-ctl[data-robot]); this file wires it.
+ *   - mesh devices (other peers' robots) get a row each with their own E-STOP; resume stays with the device.
+ * The latched state comes from the server's state frames (frame.estop), never from a local guess. */
 
-const panel = document.createElement("section");
-panel.id = "safety";
-panel.setAttribute("aria-label", "e-stop");
-panel.style.cssText =
-  "position:fixed;right:12px;bottom:12px;z-index:20;min-width:15rem;padding:.5rem .6rem;border-radius:var(--sr-radius);" +
-  "background:var(--sr-panel);border:1px solid var(--sr-pill-border);font:12px/1.5 var(--sr-mono);color:var(--sr-fg)";
-document.body.appendChild(panel);
-
-const rows = new Map(); // robot id -> {row, status}
+const $ = (s) => document.querySelector(s);
+const bar = $("#safety");
+const say_ = $("#safety-say");
 window.__safety = { notices: [] };
 
 async function post(path, body, confirmed) {
   const headers = { "content-type": "application/json" };
   if (confirmed) headers["X-Confirm"] = "yes";
-  const res = await fetch(path, { method: "POST", headers, body: JSON.stringify(body || {}) });
+  const res = await fetch(`${window.__state?.base || ""}${path}`, { method: "POST", headers, body: JSON.stringify(body || {}) });
   const doc = await res.json().catch(() => ({}));
   return { status: res.status, doc };
 }
 
 function say(text, bad) {
   window.__safety.notices.push(text);
-  let n = panel.querySelector(".safety-notice");
-  if (!n) { n = document.createElement("div"); n.className = "safety-notice"; panel.appendChild(n); }
-  n.textContent = text;
-  n.style.color = bad ? "var(--sr-bad)" : "var(--sr-muted)";
+  say_.textContent = text;
+  say_.title = text;
+  say_.classList.toggle("bad", Boolean(bad));
 }
 
-function rowFor(id) {
-  if (rows.has(id)) return rows.get(id);
-  const row = document.createElement("div");
-  row.dataset.robot = id;
-  row.style.cssText = "display:flex;align-items:center;gap:.4rem;margin:.2rem 0";
-  const name = document.createElement("span");
-  name.textContent = id;
-  name.style.flex = "1";
-  const status = document.createElement("span");
-  status.className = "estop-status";
-  const stop = document.createElement("button");
-  stop.className = "estop";
-  stop.textContent = "E-STOP";
-  stop.style.cssText = "background:var(--sr-bad);color:#fff;border:0;border-radius:4px;padding:.15rem .5rem;font:inherit;cursor:pointer";
-  stop.onclick = async () => {
-    const r = await post(`/api/robots/${encodeURIComponent(id)}/estop`);
-    say(r.status === 200 ? `${id}: e-stop engaged` : `${id}: ${r.doc.detail || r.status}`, r.status !== 200);
-  };
-  const resume = document.createElement("button");
-  resume.className = "resume";
-  resume.textContent = "Resume";
-  resume.style.cssText = "background:transparent;color:var(--sr-fg);border:1px solid var(--sr-pill-border);border-radius:4px;padding:.15rem .5rem;font:inherit;cursor:pointer";
-  resume.onclick = async () => {
-    const who = window.prompt(`Resume ${id}: who cleared the stop? (operator name)`) || "";
-    const real = (window.__state?.desc?.robots || []).find((x) => x.id === id)?.is_real;
-    if (real && !window.confirm(`${id} is a REAL robot. Release its e-stop (approved by ${who || "nobody"})?`)) return;
-    const r = await post(`/api/robots/${encodeURIComponent(id)}/resume`, { approved_by: who }, real);
-    say(r.status === 200 ? `${id}: resumed by ${r.doc.resumed_by}` : `${id}: ${r.doc.detail || r.status}`, r.status !== 200);
-  };
-  row.append(name, status, stop, resume);
-  panel.prepend(row);
-  const entry = { row, status };
-  rows.set(id, entry);
-  return entry;
+async function estop(id) {
+  const r = await post(`/api/robots/${encodeURIComponent(id)}/estop`);
+  say(r.status === 200 ? `${id}: e-stop engaged` : `${id}: ${r.doc.detail || r.status}`, r.status !== 200);
+  return r.status === 200;
 }
 
-function paint(estop) {
-  for (const [id, latched] of Object.entries(estop || {})) {
-    const { row, status } = rowFor(id);
-    status.textContent = latched ? "LATCHED" : "armed";
-    status.style.color = latched ? "var(--sr-bad)" : "var(--sr-accent)";
-    row.dataset.latched = latched ? "yes" : "no";
+async function resume(id) {
+  const who = window.prompt(`Resume ${id}: who cleared the stop? (operator name)`) || "";
+  const real = (window.__state?.desc?.robots || []).find((x) => x.id === id)?.is_real;
+  if (real && !window.confirm(`${id} is a REAL robot. Release its e-stop (approved by ${who || "nobody"})?`)) return;
+  const r = await post(`/api/robots/${encodeURIComponent(id)}/resume`, { approved_by: who }, real);
+  say(r.status === 200 ? `${id}: resumed by ${r.doc.resumed_by}` : `${id}: ${r.doc.detail || r.status}`, r.status !== 200);
+}
+
+async function meshEstop(id) {
+  const r = await post(`/api/mesh/${encodeURIComponent(id)}/estop`);
+  say(r.status === 200 ? `${id}: e-stop sent over the mesh` : `${id}: ${r.doc.detail || r.status}`, r.status !== 200);
+  return r.status === 200;
+}
+
+/** Every robot the page knows, then every remote mesh device, all at once: a stop is never queued behind another. */
+async function stopAll() {
+  const robots = (window.__state?.desc?.robots || []).map((r) => r.id);
+  const devices = remote.map((d) => d.id);
+  const got = await Promise.all([...robots.map(estop), ...devices.map(meshEstop)]);
+  const ok = got.filter(Boolean).length;
+  say(`STOP ALL: ${ok}/${got.length} stopped${got.length - ok ? ` · ${got.length - ok} refused` : ""}`, ok !== got.length);
+  window.__safety.stopAll = { robots, devices, ok };
+}
+
+// One delegated listener: the cards are re-rendered on every scene revision, the listener is not.
+document.addEventListener("click", (e) => {
+  const ctl = e.target.closest(".estop-ctl[data-robot]");
+  if (!ctl) return;
+  if (e.target.closest("button.estop")) { e.stopPropagation(); estop(ctl.dataset.robot); }
+  else if (e.target.closest("button.resume")) { e.stopPropagation(); resume(ctl.dataset.robot); }
+});
+$("#stop-all").addEventListener("click", stopAll);
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape" && e.shiftKey && !bar.hidden) { e.preventDefault(); stopAll(); }
+});
+
+function paint(estopMap) {
+  let any = false;
+  for (const ctl of document.querySelectorAll(".estop-ctl[data-robot]")) {
+    const id = ctl.dataset.robot;
+    if (!(id in (estopMap || {}))) continue;
+    const latched = Boolean(estopMap[id]);
+    any ||= latched;
+    const flag = latched ? "yes" : "no";
+    if (ctl.dataset.latched !== flag) {
+      ctl.dataset.latched = flag;
+      ctl.querySelector(".estop-status").textContent = latched ? "LATCHED" : "armed";
+      ctl.closest(".card")?.setAttribute("data-latched", flag);
+    }
   }
-  for (const [id, { row }] of rows) if (!(id in (estop || {}))) { row.remove(); rows.delete(id); }
+  $("#stop-all").dataset.latched = any ? "yes" : "no";
 }
 
-/* Only a server has something to stop: in standalone, static or offline mode the panel is hidden and never polls. */
-panel.hidden = true;
+/* Only a server has something to stop: in standalone, static or offline mode the bar's stop is hidden and never polls. */
+bar.hidden = true;
 let meshTimer = 0;
 setInterval(() => {
   const st = window.__state;
-  panel.hidden = st?.mode !== "server";
-  if (!panel.hidden && !meshTimer) { pollMesh(); meshTimer = setInterval(pollMesh, 2000); }
+  bar.hidden = st?.mode !== "server";
+  if (!bar.hidden && !meshTimer) { pollMesh(); meshTimer = setInterval(pollMesh, 2000); }
   if (st?.lastFrame?.estop) paint(st.lastFrame.estop);
 }, 50);
 
-/* Mesh devices (other peers' robots): listed under the world's, each with its own E-STOP (resume stays with the
- * device's resume authority, never this page). Hidden when the server has no mesh. */
-const meshBox = document.createElement("div");
-meshBox.id = "mesh-devices";
-meshBox.hidden = true;
-panel.appendChild(meshBox);
+/* Mesh devices (other peers' robots): listed under the world's cards, each with its own E-STOP. Hidden when the server
+ * has no mesh. */
+const meshBox = $("#mesh-devices");
+let remote = [];
+const esc = (v) => String(v ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
 
 async function pollMesh() {
-  const doc = await fetch("/api/mesh").then((r) => (r.ok ? r.json() : null), () => null);
-  const remote = (doc?.devices || []).filter((d) => !d.local);
+  const doc = await fetch(`${window.__state?.base || ""}/api/mesh`).then((r) => (r.ok ? r.json() : null), () => null);
+  remote = (doc?.devices || []).filter((d) => !d.local);
   window.__mesh = doc;
   meshBox.hidden = remote.length === 0;
-  meshBox.innerHTML = remote.length ? `<div style="color:var(--sr-muted);margin-top:.3rem">mesh · ${String(doc.tenant ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c])}</div>` : "";
+  const key = JSON.stringify(remote.map((d) => [d.id, d.device_type]));
+  if (meshBox.__key === key) return;
+  meshBox.__key = key;
+  meshBox.innerHTML = remote.length ? `<div class="section-title"><span>mesh · ${esc(doc.tenant)}</span><span>${remote.length}</span></div>` : "";
   for (const d of remote) {
     const row = document.createElement("div");
+    row.className = "device";
     row.dataset.device = d.id;
-    row.style.cssText = "display:flex;align-items:center;gap:.4rem;margin:.2rem 0";
-    const name = document.createElement("span");
-    name.textContent = `${d.id} · ${d.device_type}`;
-    name.style.flex = "1";
+    row.innerHTML = `<span>${esc(d.id)} <small>${esc(d.device_type)}</small></span>`;
     const stop = document.createElement("button");
     stop.className = "estop";
+    stop.type = "button";
     stop.textContent = "E-STOP";
-    stop.style.cssText = "background:var(--sr-bad);color:#fff;border:0;border-radius:4px;padding:.15rem .5rem;font:inherit;cursor:pointer";
-    stop.onclick = async () => {
-      const r = await post(`/api/mesh/${encodeURIComponent(d.id)}/estop`);
-      say(r.status === 200 ? `${d.id}: e-stop sent over the mesh` : `${d.id}: ${r.doc.detail || r.status}`, r.status !== 200);
-    };
-    row.append(name, stop);
+    stop.onclick = () => meshEstop(d.id);
+    row.append(stop);
     meshBox.appendChild(row);
   }
 }

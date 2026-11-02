@@ -1,6 +1,7 @@
-"""The routes: GET / · /api/scene · /api/assets/{path} · /api/policies · /api/mesh · WS /ws/state · /ws/chat ·
-POST /api/robots · POST|GET /api/robots/{id}/run · POST /api/robots/{id}/{act,stop,estop,resume} ·
-POST /api/mesh/{id}/estop · GET /api/cameras · /api/cameras/{name}.png · POST /api/world."""
+"""The routes: GET / · /api/scene · /api/assets/{path} · /api/policies · /api/mesh · /api/panels ·
+WS /ws/state · /ws/chat · POST /api/robots · POST|GET /api/robots/{id}/run ·
+POST /api/robots/{id}/{act,stop,estop,resume} · POST /api/mesh/{id}/estop · GET /api/cameras ·
+/api/cameras/{name}.png · POST /api/world · /api/connect/* (connect_routes)."""
 
 from __future__ import annotations
 
@@ -13,13 +14,14 @@ from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconn
 from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 
-from . import cameras, runs
+from . import cameras, connect_routes, runs
 from .guard import SameOrigin
 
 if TYPE_CHECKING:
     from .dashboard import Dashboard
 
 STATIC = Path(__file__).parent / "static"
+_FEATURE_MODULES = ("connect.js", "record.js", "voice.js")
 _MEDIA = {".stl": "model/stl", ".obj": "text/plain", ".png": "image/png", ".xml": "application/xml"}
 
 
@@ -90,9 +92,19 @@ def build_app(dash: Dashboard) -> FastAPI:
         except Exception as exc:  # noqa: BLE001 — an unknown verb or argument is a 4xx with the reason
             raise http_error(exc) from exc
 
+    @app.get("/api/panels")
+    async def panels() -> JSONResponse:
+        # Front-end modules that add a side-column tab or slot (SR.registerPanel / SR.registerSlot in app.js): every
+        # static/panels/*.js, plus the feature modules that live next to app.js when they are installed.
+        names = [f"panels/{p.name}" for p in sorted((STATIC / "panels").glob("*.js"))]
+        names += [n for n in _FEATURE_MODULES if (STATIC / n).is_file()]
+        return JSONResponse({"panels": names})
+
     @app.get("/api/policies")
     async def policies() -> JSONResponse:
-        return JSONResponse(await asyncio.to_thread(runs.policies_json))
+        out = await asyncio.to_thread(runs.policies_json)
+        out["policies"] += list(dash.connections.policies.values())  # connected from the Connect panel
+        return JSONResponse(out)
 
     @app.post("/api/robots/{rid}/run")
     async def run(rid: str, request: Request) -> JSONResponse:
@@ -208,6 +220,8 @@ def build_app(dash: Dashboard) -> FastAPI:
                     await ws.send_json(ev)
         except WebSocketDisconnect:
             return
+
+    connect_routes.register(app, dash)
 
     app.mount("/", StaticFiles(directory=STATIC), name="static")
     return app

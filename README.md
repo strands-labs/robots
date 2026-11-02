@@ -1,77 +1,56 @@
-<p align="center"><img src="docs/assets/img/mark.svg" width="56" alt="strands frog"></p>
+<p align="center"><img src="docs/assets/img/mark.svg" width="56" alt="Strands logo"></p>
 
 <h1 align="center">strands-robots</h1>
 
-<p align="center"><b>A world. A robot. A brain.</b><br>
-Robots your agents can drive, in sim and for real.</p>
+<p align="center">A Python library for building robots: simulation, real hardware, policies and agents.</p>
 
 <p align="center"><img src="docs/assets/media/agent_duck.gif" width="520" alt="An agent walks, turns and rolls the microduck"></p>
 
-## The idea
+## Overview
 
-There are three things, and that's the whole library:
+strands-robots is built on three classes:
 
-- a **`Simulation`** is the world (MuJoCo here; Isaac Sim and Newton on a GPU),
-- a **`Robot`** is a body in that world, or on your desk,
-- a **`Policy`** is the brain that decides what the body does next.
+- **`Simulation`** is a world. MuJoCo runs on the CPU; Isaac Sim and Newton run on a CUDA GPU.
+- **`Robot`** is a body in a world, or a real robot on a serial bus or network link.
+- **`Policy`** turns an observation into an action: a Python function, an ONNX skill or a LeRobot checkpoint.
 
 <!-- test: network -->
 ```python
 from strands_robots import Policy, Robot
 
 duck = Robot("microduck")
-duck.run(Policy("microduck?vx=0.3"), seconds=10)   # it walks about 1.3 m
+duck.run(Policy("microduck?vx=0.3"), seconds=10)   # walks about 1.3 m
 ```
 
-## What that unlocks
+## Features
 
-**🤖 Any robot, by name.** 76 robots in the registry (arms, hands, humanoids, quadrupeds, a duck), MuJoCo Menagerie
-and `robot_descriptions` models, or your own MJCF/URDF. `Robot("g1")`, `Robot("panda")`, `Robot("my_arm.xml")`: same
-verbs for all of them, and on a USB port the same `Robot` drives a real SO-101.
+| Area | What the library provides |
+|---|---|
+| Robot registry | 76 robots by name (arms, hands, humanoids, quadrupeds), MuJoCo Menagerie and `robot_descriptions` models, or your own MJCF/URDF. `Robot("g1")`, `Robot("panda")` and `Robot("my_arm.xml")` share one API. |
+| Simulation | Several robots in one world with shared physics; agents can add robots, objects and cameras through `sim.tool`. |
+| Hardware | The same `Robot` drives a real SO-101 over a Feetech bus, with a digital twin in simulation. |
+| Policies | Python functions, ONNX skills, and LeRobot checkpoints in-process or served from another machine over Zenoh. Joint names, cameras and units are matched before anything moves, and a mismatch is refused by name. |
+| Recording | `run(record=...)` writes a LeRobot v3 dataset, in simulation or on hardware. |
+| Safety | Every robot generates a manifest, checks every outside command through one safety chain, and has an e-stop that latches in about 10 ms. |
+| Mesh | Robots discover each other over Zenoh on a LAN, or over AWS IoT Core, accept remote commands, stream state, and stop on one broadcast e-stop. |
+| Agent tools | `robot.tool`, `sim.tool` and `mesh.tool` for Strands agents, generated from each robot's manifest. |
+| Dashboard | A browser view of a world with a live 3D twin, joint controls, an agent chat and e-stops. |
 
-**🌍 Worlds an agent can build.** `sim.tool` lets an agent add robots, objects and cameras, step time and look at
-the result. Describe a scene in words and the agent can put it together, then run policies in it.
-
-**🧠 Any brain, here or there.** Your own function, an ONNX skill, or any LeRobot checkpoint: in your process, or
-served from a GPU across the room over Zenoh. 13 LeRobot policy families measured driving our robots, same actions
-locally and served.
-
-**📼 Every episode is a dataset.** Add `record=` to a run and you get a LeRobot v3 dataset, in sim or on a real arm
-(it's the same loop). Collect, train, run the new policy, repeat.
-
-**🕸️ Robots that find each other.** Put them on a mesh and they discover one another with zero setup, take commands
-from anywhere, stream their state, and all stop on one e-stop. Hand the whole room to an agent with `mesh.tool`.
-
-**🛑 Safe enough to share.** Every robot generates its own manifest, checks every outside command through one safety
-chain, and has an e-stop that stops it in ~10 ms and can't be overridden.
-
-## Talk to it
+## Agents
 
 ```python
 from strands import Agent
 
-Agent(tools=[duck.tool])("walk forward a bit, turn left, do a roll, then chill")
+Agent(tools=[duck.tool])("walk forward a bit, turn left, do a roll, then stand still")
 ```
 
-The agent picks skills (Pollen Robotics' open microduck policies), the skills move the motors, the loop keeps it
-safe. That GIF up top is a real Claude turn doing exactly this.
+The agent selects skills (Pollen Robotics' open microduck policies), the skills drive the motors, and the run loop
+enforces the safety chain. The animation above is a recorded agent turn.
 
-The same works for a world the agent builds itself: [`notebooks/examples/agent_builds_a_scene.py`](notebooks/examples/agent_builds_a_scene.py)
-hands `sim.tool` and `arm.tool` to one agent, which places three cubes and a camera, moves the arm and looks at the result.
+[`notebooks/examples/agent_builds_a_scene.py`](notebooks/examples/agent_builds_a_scene.py) gives one agent `sim.tool`
+and `arm.tool`; it places three cubes and a camera, moves the arm and renders the result.
 
-## What's in the box
-
-| | |
-|---|---|
-| 🧠 **Any policy, any robot** | a function you write, an ONNX skill, or any LeRobot checkpoint, on whichever robot it was made for; joints, cameras and units are matched for you, and a mismatch is refused by name before anything moves |
-| 🤖 **LeRobot, natively** | in your process, or served from a GPU over Zenoh: 13 policy families measured driving our robots |
-| 🛑 **Safety** | a generated manifest, one safety chain for every outside command, an e-stop in ~10 ms |
-| 🕸️ **Mesh** | robots find each other on a LAN with zero setup (or over AWS IoT), one call stops them all |
-| 📼 **Recording** | `run(record=...)` writes LeRobot v3 datasets |
-| 🖥️ **Dashboard** | the world in a browser tab, with a live 3D twin, sliders, chat and e-stops |
-| 🪶 **Small** | ~16,500 lines of Python, no file over 250; the v0.5 it replaces was 258,000 |
-
-## Try it
+## Installation
 
 ```bash
 uv venv -p 3.12 && source .venv/bin/activate
@@ -80,24 +59,17 @@ uv pip install "lerobot[remote,feetech,dataset] @ git+https://github.com/hugging
 pytest -q tests
 ```
 
-Then read along:
+## Documentation
 
-- **Docs:** [`docs/`](docs/), the site for v1 (`pip install -r docs/requirements.txt && mkdocs serve`, then open
-  http://127.0.0.1:8000). Start a dashboard on port 8090 and the home page shows it live.
-- **Notebooks:** [`notebooks/`](notebooks/) walks one arm from "hello robot" to "an agent drives it over the mesh".
-  They're saved with their videos, so you can just read them.
-- **Status:** [`docs/status.md`](docs/status.md) lists every part, its gate, and what still needs a real arm.
-
-## Where it's going
-
-v1 is built on this `dev` branch, one pull request per part; `main` carries v0.5.x until `dev` becomes `main` at
-v1.0.0. The design is [#4749](https://github.com/strands-labs/robots/issues/4749), the schedule (a checkbox per part)
-is [#3818](https://github.com/strands-labs/robots/issues/3818).
+- **Docs site:** [`docs/`](docs/). Build it with `pip install -r docs/requirements.txt && mkdocs serve` and open
+  http://127.0.0.1:8000. With a dashboard running on port 8090, the home page embeds it live.
+- **Notebooks:** [`notebooks/`](notebooks/) take one arm from a first observation to an agent driving it over the
+  mesh. They are saved with their outputs and videos.
 
 ## Contributing
 
-One PR per change, against `dev`, with a test that is red before and green after, and a `changelog.d/` fragment
-([how](changelog.d/README.md)). Before you push:
+Open one pull request per change, with a test that fails before the change and passes after it, and a `changelog.d/`
+fragment ([how](changelog.d/README.md)). Before you push:
 
 ```bash
 pip install hatch

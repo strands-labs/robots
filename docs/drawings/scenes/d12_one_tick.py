@@ -19,7 +19,7 @@ def scene() -> Scene:
     s.section(60, 122, "one tick")
     s.box(60, 134, 300, 130, "observe()", "the only read of the body", size=14, subsize=12, id="obs")
     s.box(450, 134, 300, 130, "decide", "joints left out hold that read", size=14, subsize=12, id="decide")
-    s.section(840, 122, "v1", accent=True)
+    s.section(840, 122, "the write", accent=True)
     s.box(840, 134, 300, 130, "command()", "the write; it never reads", accent=True, size=14, subsize=12,
           id="write")
     s.arrow([(360, 199), (450, 199)], label="obs", label_dx=-14, label_dy=-8, id="w1")

@@ -1,14 +1,14 @@
 ---
-description: The ten names you import from strands_robots, and where everything else lives.
+description: The classes exported from strands_robots, and the subpackages that hold the rest of the API.
 ---
 
-# API
+# API reference
 
 ```python
 from strands_robots import Robot, Simulation, Policy, Body, Description, Observation, Action, JointState, Pose
 ```
 
-That's the whole top level. Everything else lives with the thing it belongs to: `strands_robots.mesh`,
+These are the top-level exports. Everything else is imported from its subpackage: `strands_robots.mesh`,
 `strands_robots.robot.safety`, `strands_robots.recording`, `strands_robots.dashboard`, `strands_robots.policy.lerobot`.
 
 ## Robot
