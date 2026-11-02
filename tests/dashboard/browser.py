@@ -11,7 +11,7 @@ import pytest
 
 
 @contextmanager
-def page_on(url: str, *, timeout_ms: int = 60_000) -> Iterator[Any]:
+def page_on(url: str, *, timeout_ms: int = 60_000, viewport: tuple[int, int] = (1400, 860)) -> Iterator[Any]:
     sync_api = pytest.importorskip("playwright.sync_api")
     with sync_api.sync_playwright() as p:
         try:
@@ -20,7 +20,7 @@ def page_on(url: str, *, timeout_ms: int = 60_000) -> Iterator[Any]:
             )
         except Exception as exc:  # noqa: BLE001 — no browser installed is a skip, not a failure
             pytest.skip(f"chromium unavailable: {exc}")
-        page = browser.new_page(viewport={"width": 1400, "height": 860})
+        page = browser.new_page(viewport={"width": viewport[0], "height": viewport[1]})
         errors: list[str] = []
         requests: list[tuple[float, str]] = []  # (monotonic s, url): every request the page makes, from load
         page.on("pageerror", lambda e: errors.append(str(e)))

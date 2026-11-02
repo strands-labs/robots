@@ -93,3 +93,16 @@ def test_a_robot_written_g1_is_served_at_its_own_name(served) -> None:
     g1 = Robot("g1", sim=sim, position=[1.0, 0.0, 0.0])
     r = httpx.post(f"{server.url}/api/robots/g1/estop", json={})
     assert r.status_code == 200 and g1.estopped, r.text  # was 404: "robots are ['so101', 'unitree_g1']"
+
+
+def test_only_loopback_pages_and_the_docs_site_may_frame_it_and_a_framing_page_cannot_press(served) -> None:
+    """The docs hero embeds the dashboard in an iframe from another loopback port. The frame is allowed; a request
+    the docs page itself makes is another origin, so pressing a button from there is refused like any site's."""
+    _, arm, _, server = served
+    for path in ("/", "/api/scene", "/embed.svg"):
+        csp = httpx.get(f"{server.url}{path}").headers["content-security-policy"]
+        assert csp.startswith("frame-ancestors 'self' http://127.0.0.1:*") and "https://strands-labs.github.io" in csp
+        assert "*.github.io" not in csp and " * " not in f"{csp} "
+    docs = {"Origin": "http://127.0.0.1:8000", "Content-Type": "application/json"}
+    r = httpx.post(f"{server.url}/api/robots/so101/estop", json={}, headers=docs)
+    assert r.status_code == 403 and "Origin" in r.json()["detail"] and not arm.estopped

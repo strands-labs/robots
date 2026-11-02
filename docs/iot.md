@@ -1,13 +1,13 @@
 ---
-description: If you decide to use AWS IoT, the mesh speaks it natively — shadows, rules, certificates and fleet claims, without changing the robot.
+description: Run the mesh over AWS IoT Core and make each robot an IoT thing with named shadows, per-robot certificates, fleet provisioning, rules, Greengrass and Kinesis Video Streams.
 ---
 
-# AWS IoT
+# AWS IoT Core
 
 `Mesh("iot://us-west-2")` already runs the mesh over AWS IoT Core: discover, invoke, subscribe and e-stop work as on a
 LAN, a command takes about 200 ms, and an e-stop to an offline robot comes back 404 instead of waiting in a queue.
-This page is the next step: if your fleet lives in AWS IoT anyway, one option on `mount` makes a robot a proper
-IoT device.
+If a fleet is already managed in AWS IoT, the `iot=` option on `mount` also makes each robot an IoT thing with
+shadows, a certificate and rules.
 
 {{drawing:d08_iot_core}}
 
@@ -22,8 +22,7 @@ cloud = Mesh("iot://us-west-2?client=arm-1&cert=~/.strands/iot/arm-1/cert.pem&ke
 cloud.mount(Robot("so101"), device_id="arm-1", iot=IotOptions(shadow_hz=0.5))
 ```
 
-Nothing changes for the robot: `Robot`, `Driver`, `Simulation` and the safety chain are untouched. What changes is
-what the cloud sees.
+`Robot`, `Driver`, `Simulation` and the safety chain are unchanged; the option only adds what AWS IoT sees.
 
 ## Shadows: the device's last known state, and targets that go through the safety chain
 
@@ -67,7 +66,7 @@ out = provision.register(iot, record, "~/.strands/iot")   # thing = device id, t
 Mesh(f"iot://us-west-2?{out['query']}", tenant="lab-a")
 ```
 
-The thing *is* the device id; the thing type is the device type; the tenant is a thing group and a thing attribute.
+The thing *is* the device id; the thing type is the device's `device_type`; the tenant is a thing group and a thing attribute.
 There is one policy for every robot, 1.9 KB, written with policy variables (`${iot:Connection.Thing.ThingName}`,
 `${iot:Connection.Thing.Attributes[tenant]}`): a robot may connect only as itself, publish only on its own keys and
 its own presence, and read only inside its tenant. Measured: a publish on another robot's presence is refused at the
@@ -146,6 +145,20 @@ so a tenant with `_ - . :` or more than 110 characters keeps at most its first 9
 the first 12 hex digits of its SHA-256: `lab-a`'s e-stop rule is `strands_estop_lab_a_1c327e55b394`, `lab_a` gets
 rules of its own, and `rules.delete_rules(iot, tenant)` deletes only the tenant's.
 
+## AWS IoT Core limits that apply
+
+These AWS IoT Core quotas (us-west-2 defaults) determine what goes over IoT and at what rate:
+
+| Quota | Default | Consequence |
+|---|---|---|
+| MQTT payload size | 128 KB | camera images do not go over MQTT; cameras use Kinesis Video Streams |
+| Publish requests per second per connection | 100 (not adjustable) | state streams at high rates need one connection per device |
+| Requests per second per thing (shadow and registry) | 20 | the `state` shadow is limited to 1 Hz |
+| JSON shadow document size | 8 KB | the `manifest` shadow is a compact document, under 8 KB for every registry robot |
+| Retained message publishes per topic | 1 per second (not adjustable) | only the manifest and the e-stop are retained, never live state |
+| Slashes in a topic | 7 | named shadow delta topics use exactly 7 |
+| Keep-alive maximum | 1,200 s | liveness comes from the 3 s presence heartbeat, not lifecycle events |
+
 ## Setup checklist
 
 1. `pip install 'strands-robots[iot]'` (awsiotsdk, boto3, cryptography).
@@ -164,8 +177,8 @@ stays up until SIGTERM. Robot to robot traffic stays on zenoh, so the mesh does 
 (measured on an ec2 L40S box: invoke `act` p50 0.78 ms with the cloud link cut for 45 s; a local deployment reaches
 RUNNING in 11.4 s, a cloud deployment of five components in 48 s).
 
-```python
 <!-- test: skip, needs a provisioned Greengrass core and an S3 artifact -->
+```python
 from strands_robots.mesh.iot import greengrass
 
 r = greengrass.recipe(

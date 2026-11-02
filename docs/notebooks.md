@@ -1,8 +1,8 @@
 ---
-description: Eleven notebooks, one arm, start to finish. Already run, so you can just read them.
+description: Eleven notebooks that take one SO-101 from a first observation to an agent driving it over the mesh, saved with their outputs.
 ---
 
-# Notebooks
+# Example notebooks
 
 [`notebooks/`](https://github.com/strands-labs/robots/tree/dev/notebooks) in the repo walks one SO-101 (with a G1 next to it) from "hello robot" to "an agent drives it over the
 mesh". Every notebook is saved with its videos and numbers, so you can read it on GitHub without installing anything.
@@ -21,4 +21,4 @@ mesh". Every notebook is saved with its videos and numbers, so you can read it o
 | [09 · mesh](https://github.com/strands-labs/robots/blob/dev/notebooks/09_mesh.ipynb) | robots across processes |
 | [10 · GPU backends](https://github.com/strands-labs/robots/blob/dev/notebooks/10_gpu_backends.ipynb) | Isaac Sim and MuJoCo-Warp, measured on an L40S |
 
-Want to run them? `uv pip install -e ".[all]" ipykernel nbconvert av` (plus LeRobot, see the [quickstart](quickstart.md)) and open the folder.
+To run them, install `uv pip install -e ".[all]" ipykernel nbconvert av` (plus LeRobot, see the [quickstart](quickstart.md)) and open the folder.

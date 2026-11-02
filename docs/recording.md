@@ -1,8 +1,8 @@
 ---
-description: Add record= to any run and you get a LeRobot dataset.
+description: Pass record= to any run to write a LeRobot v3 dataset, locally or under a Hugging Face Hub name.
 ---
 
-# Recording
+# Recording a dataset
 
 ```python
 from strands_robots import Robot
@@ -13,13 +13,13 @@ for _ in range(3):
     arm.run(my_policy, seconds=3, record="datasets/so101-wave")   # one episode each time
 ```
 
-That's a LeRobot v3 dataset, written by LeRobot's own writer, so anything that trains on LeRobot data can use it.
-Run again on the same folder and it adds episodes. A `meta/units.json` says what units the joints are in, so you
-never have to guess later.
+The directory is a LeRobot v3 dataset written by LeRobot's own writer, so any training code that reads LeRobot data
+can use it. Each run on the same directory appends an episode. `meta/units.json` records the units of the joint
+columns.
 
 <img class="sr-media" src="../assets/media/recording.gif" alt="frames read back from a recorded dataset">
 
-A run that crashes leaves nothing behind. A run you stop (or e-stop) keeps what it got. Use
+An episode whose run raises is discarded. A run that is stopped or e-stopped keeps the frames recorded so far. Use
 `record="hf://you/so101-wave"` to record under a Hub name; nothing uploads unless you also pass `push=True`.
 
-Recording is quiet: the video encoder reports errors only. Set `SVT_LOG=3` to see its full banner again.
+The video encoder logs errors only. Set `SVT_LOG=3` to see its full banner again.

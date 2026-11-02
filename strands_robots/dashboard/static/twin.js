@@ -92,7 +92,9 @@ export class Twin {
     this._ro = new ResizeObserver(() => this.resize());
     this._ro.observe(canvas.parentElement);
     this.resize();
-    canvas.addEventListener("dblclick", () => { this.framed = false; this.frame(); });
+    // The view re-frames whenever the canvas changes size (side column / bottom sheet / rotation) until the user orbits.
+    this.controls.addEventListener("start", () => { this.userMoved = true; });
+    canvas.addEventListener("dblclick", () => { this.userMoved = false; this.framed = false; this.frame(); });
     canvas.addEventListener("click", (e) => this._pick(e));
     this._raycaster = new THREE.Raycaster();
     this._raf = requestAnimationFrame(() => this.tick());
@@ -251,7 +253,8 @@ export class Twin {
     return null;
   }
 
-  /** Point the camera at everything once. */
+  /** Point the camera at everything: the bounding box of every visible robot geom, fitted to the canvas aspect (so a
+   *  small arm next to a humanoid, or a portrait phone, still shows every robot). */
   frame() {
     const box = new THREE.Box3();
     for (const obj of this.geoms) {
@@ -260,20 +263,31 @@ export class Twin {
       box.expandByObject(obj);
     }
     if (box.isEmpty()) return;
-    const sphere = box.getBoundingSphere(new THREE.Sphere());
-    const center = sphere.center, radius = sphere.radius || 0.5;
-    // Distance that fits the sphere in the narrower of the vertical / horizontal fov, plus margin.
-    const vfov = THREE.MathUtils.degToRad(this.camera.fov);
-    const visible = Math.max(0.2, 1 - (this.insetRight || 0) / Math.max(1, this.canvas.clientWidth)); // share not under the drawer
-    const hfov = 2 * Math.atan(Math.tan(vfov / 2) * this.camera.aspect * visible);
-    const dist = (radius / Math.sin(Math.min(vfov, hfov) / 2)) * 1.15;
-    this.controls.target.copy(center);
+    const center = box.getCenter(new THREE.Vector3());
+    const corners = [];
+    for (const x of [box.min.x, box.max.x]) for (const y of [box.min.y, box.max.y]) for (const z of [box.min.z, box.max.z]) corners.push(new THREE.Vector3(x, y, z));
     // Look from MuJoCo -y (three +z), slightly above: robots placed along x spread left→right instead of
-    // hiding behind each other, and a small arm next to a humanoid stays visible.
-    this.camera.position.copy(center).add(new THREE.Vector3(0.25, 0.55, 1).normalize().multiplyScalar(dist));
-    this.camera.near = Math.max(0.01, dist / 100);
-    this.camera.far = dist * 50;
-    this.camera.updateProjectionMatrix();
+    // hiding behind each other.
+    const dir = new THREE.Vector3(0.25, 0.55, 1).normalize();
+    const cam = this.camera;
+    let dist = Math.max(0.5, box.getSize(new THREE.Vector3()).length() * 1.5);
+    const p = new THREE.Vector3();
+    for (let i = 0; i < 12; i++) { // shrink / grow until the farthest corner sits at 80 % of the half-screen
+      cam.position.copy(center).addScaledVector(dir, dist);
+      cam.lookAt(center);
+      cam.near = Math.max(0.01, dist / 100); cam.far = dist * 50;
+      cam.updateProjectionMatrix(); cam.updateMatrixWorld(true);
+      let worst = 0;
+      for (const c of corners) { p.copy(c).project(cam); worst = Math.max(worst, Math.abs(p.x), Math.abs(p.y)); }
+      if (!Number.isFinite(worst) || worst <= 0) break;
+      const next = dist * Math.min(2, Math.max(0.5, worst / 0.8));
+      if (Math.abs(next - dist) < dist * 0.01) { dist = next; break; }
+      dist = next;
+    }
+    this.controls.target.copy(center);
+    cam.position.copy(center).addScaledVector(dir, dist);
+    cam.near = Math.max(0.01, dist / 100); cam.far = dist * 50;
+    cam.updateProjectionMatrix();
     this.framed = true;
   }
 
@@ -301,6 +315,7 @@ export class Twin {
     // A drawer covers the right `insetRight` px of the canvas: shift the view so the scene centres in what is visible.
     if (this.insetRight > 0) this.camera.setViewOffset(w, h, this.insetRight / 2, 0, w, h); else this.camera.clearViewOffset();
     this.camera.updateProjectionMatrix();
+    if (!this.userMoved && (w !== this._lastW || h !== this._lastH)) { this._lastW = w; this._lastH = h; this.framed = false; if (this.pose) this.frame(); }
   }
 
   /** Tell the twin how many pixels on the right are covered by UI (0 = nothing); re-frames if it changes. */

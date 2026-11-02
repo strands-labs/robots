@@ -6,6 +6,11 @@ Three checks, on every request and WebSocket handshake:
 - an ``Origin``, when present, must be this server's own origin;
 - a POST must be ``Content-Type: application/json``, which a cross-site page cannot send without a CORS preflight
   (and this server answers no preflight).
+
+Every HTTP response also says who may frame the page (``Content-Security-Policy: frame-ancestors``): this machine's own
+pages (the docs served on another loopback port embed it in their hero) and the published docs site, nobody else, so a
+random site cannot overlay the page to trick a click. A framing page never presses a button itself: it is another
+origin, so it cannot script the frame, and the frame's own requests carry the dashboard's origin.
 """
 
 from __future__ import annotations
@@ -16,6 +21,7 @@ from typing import Any
 from starlette.responses import JSONResponse
 
 _LOOPBACK = ("127.0.0.1", "localhost", "[::1]")
+FRAME_ANCESTORS = "frame-ancestors 'self' http://127.0.0.1:* http://localhost:* https://strands-labs.github.io"
 Scope = MutableMapping[str, Any]
 
 
@@ -56,4 +62,14 @@ class SameOrigin:
                     return
                 await JSONResponse({"detail": why}, status_code=403)(scope, receive, send)
                 return
-        await self.app(scope, receive, send)
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+
+        async def framed(message: MutableMapping[str, Any]) -> None:
+            if message["type"] == "http.response.start":
+                csp = (b"content-security-policy", FRAME_ANCESTORS.encode())
+                message["headers"] = [*message.get("headers", []), csp]
+            await send(message)
+
+        await self.app(scope, receive, framed)

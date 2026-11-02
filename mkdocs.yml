@@ -1,5 +1,5 @@
 site_name: strands-robots
-site_description: A world. A robot. A brain. Robots your agents can drive, in sim and for real.
+site_description: "A Python library for building robots: simulation, real hardware, policies and agents."
 repo_url: https://github.com/strands-labs/robots
 repo_name: strands-labs/robots
 site_url: https://strands-labs.github.io/robots/
@@ -9,7 +9,6 @@ docs_dir: docs
 exclude_docs: |
   /hooks/
   /drawings/
-  /iot/
   /requirements.txt
 
 theme:
@@ -90,22 +89,24 @@ markdown_extensions:
 
 nav:
   - Home: index.md
-  - Quickstart: quickstart.md
-  - Build:
-      - Robots: robots.md
-      - One world: simulation.md
-      - A robot: robot.md
+  - Get started:
+      - Installation: install.md
+      - Quickstart: quickstart.md
+  - Guides:
+      - Robot descriptions: robots.md
+      - Simulation: simulation.md
+      - Observe, act and run: robot.md
       - Policies: policies.md
-      - Hardware: hardware.md
-      - GPU backends: gpu.md
-  - Operate:
-      - Device and safety: device.md
-      - Mesh: mesh.md
-      - AWS IoT: iot.md
-      - Recording: recording.md
+      - Running a LeRobot policy: lerobot.md
+      - Recording a dataset: recording.md
       - Agent tools: tools.md
       - Dashboard: dashboard.md
+  - Hardware and fleets:
+      - Connecting hardware: hardware.md
+      - Safety and e-stop: safety.md
+      - Mesh networking: mesh.md
+      - AWS IoT Core: iot.md
+      - GPU simulation: gpu.md
   - Reference:
-      - Status: status.md
-      - Notebooks: notebooks.md
-      - API: api.md
+      - API reference: api.md
+      - Example notebooks: notebooks.md
