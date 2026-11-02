@@ -69,7 +69,7 @@ hands `sim.tool` and `arm.tool` to one agent, which places three cubes and a cam
 | 🕸️ **Mesh** | robots find each other on a LAN with zero setup (or over AWS IoT), one call stops them all |
 | 📼 **Recording** | `run(record=...)` writes LeRobot v3 datasets |
 | 🖥️ **Dashboard** | the world in a browser tab, with a live 3D twin, sliders, chat and e-stops |
-| 🪶 **Small** | ~10,600 lines of Python, no file over 250; the v0.5 it replaces was 258,000 |
+| 🪶 **Small** | ~16,500 lines of Python, no file over 250; the v0.5 it replaces was 258,000 |
 
 ## Try it
 
