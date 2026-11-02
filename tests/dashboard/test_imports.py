@@ -11,7 +11,12 @@ import strands_robots
 
 PKG = Path(strands_robots.__file__).parent
 WEB = {"fastapi", "starlette", "uvicorn"}
-WEB_FILES = {"dashboard/app.py", "dashboard/guard.py", "dashboard/server.py"}
+WEB_FILES = {
+    "dashboard/app.py",
+    "dashboard/connect_routes.py",
+    "dashboard/guard.py",
+    "dashboard/server.py",
+}
 
 
 def _imports(path: Path) -> set[str]:
