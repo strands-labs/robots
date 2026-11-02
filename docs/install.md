@@ -34,6 +34,7 @@ The core needs only `numpy` and `robot_descriptions`. If you use a feature witho
 | `mesh` | The Zenoh robot mesh |
 | `iot` | The mesh over AWS IoT Core |
 | `dashboard` | The browser dashboard |
+| `voice` | Voice in the dashboard |
 | `isaac` | Isaac Sim (CUDA, not in `[all]`) |
 | `newton` | Newton GPU worlds (CUDA, not in `[all]`) |
 | `dev` | Tests and linters |
