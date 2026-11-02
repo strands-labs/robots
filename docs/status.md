@@ -11,9 +11,10 @@ request per part, each with its own gate. The plan and its decisions live in
 [#4749](https://github.com/strands-labs/robots/issues/4749); the schedule, with a checkbox per part, in
 [#3818](https://github.com/strands-labs/robots/issues/3818).
 
-**The whole suite:** `pytest -q tests` → **589 passed, 25 skipped** on a Mac (the skips: Isaac and Newton need CUDA,
-live Bedrock turns are opt-in, the hardware tests need a real SO-101, and five docs examples need one of those or serve a page). Plus ruff, ruff format, mypy, `lint-imports` (8
-contracts) and a 250-line cap on every file. The package is 10,647 lines of Python in 131 files; v0.5 was 258,503.
+**The whole suite:** `pytest -q tests` collects **1,546 tests**; without a GPU, a real SO-101 or opt-in live
+Bedrock, the Isaac, Newton, hardware and Bedrock tests skip, along with five docs examples that need one of those or
+serve a page. Plus ruff, ruff format, mypy, `lint-imports` (8 contracts) and a 250-line cap on every file. The package
+is 16,452 lines of Python in 169 files; v0.5 was 258,503.
 
 **The acceptance suite** is what 1.0 means: 15 checks. `pytest tests/acceptance -rs` runs 14 of them, green anywhere
 with the extras installed; check 9 (`tests_integ/acceptance`) needs a real SO-101.
