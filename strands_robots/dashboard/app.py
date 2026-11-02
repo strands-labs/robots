@@ -1,7 +1,7 @@
-"""The routes: GET / · /api/scene · /api/assets/{path} · /api/policies · /api/mesh · /api/panels ·
-WS /ws/state · /ws/chat · POST /api/robots · POST|GET /api/robots/{id}/run ·
+"""The routes: GET / · /api/scene · /api/assets/{path} · /api/policies · /api/mesh · /api/voice ·
+WS /ws/state · /ws/chat · /ws/voice · POST /api/robots · POST|GET /api/robots/{id}/run ·
 POST /api/robots/{id}/{act,stop,estop,resume} · POST /api/mesh/{id}/estop · GET /api/cameras ·
-/api/cameras/{name}.png · POST /api/world · /api/connect/* (connect_routes) · POST /api/record/{start,stop} ·
+/api/cameras/{name}.png · POST /api/world · GET /api/panels · POST /api/record/{start,stop} ·
 POST /api/record/episode/{save,discard} · GET /api/record/{status,options}."""
 
 from __future__ import annotations
@@ -15,7 +15,7 @@ from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconn
 from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 
-from . import cameras, connect_routes, record_routes, runs
+from . import cameras, connect_routes, record_routes, runs, voice_routes
 from .guard import SameOrigin
 
 if TYPE_CHECKING:
@@ -225,6 +225,7 @@ def build_app(dash: Dashboard) -> FastAPI:
             return
 
     connect_routes.register(app, dash)
+    voice_routes.mount(app, dash)
 
     app.mount("/", StaticFiles(directory=STATIC), name="static")
     return app
