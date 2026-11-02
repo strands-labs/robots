@@ -17,6 +17,7 @@ WEB_FILES = {
     "dashboard/guard.py",
     "dashboard/record_routes.py",
     "dashboard/server.py",
+    "dashboard/voice_routes.py",
 }
 
 

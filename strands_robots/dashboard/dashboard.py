@@ -26,7 +26,8 @@ if TYPE_CHECKING:
 
 
 class Dashboard:
-    """A browser twin of ``sim``; ``robots=`` are hardware robots (their twins get a real card); ``model=`` chats."""
+    """A browser twin of ``sim``; ``robots=`` are hardware robots (their twins get a real card); ``model=`` chats;
+    ``voice=`` talks (``"openai"`` | ``"nova"`` | ``"auto"`` | a BidiModel factory, see ``dashboard.voice``)."""
 
     def __init__(
         self,
@@ -37,6 +38,7 @@ class Dashboard:
         model: Any = None,
         agent: Any = None,
         mesh: Any = None,
+        voice: Any = None,
     ) -> None:
         if hz <= 0:
             raise ValueError(f"hz must be > 0, got {hz}")
@@ -48,6 +50,9 @@ class Dashboard:
         self.model = model
         self.mesh = mesh  # a strands_robots.mesh.Mesh: its devices are listed (and e-stoppable) next to the world's
         self._agent = agent
+        if isinstance(voice, str) and voice not in ("openai", "nova", "auto"):  # voice.PROVIDERS; strands loads later
+            raise ValueError(f"voice must be 'openai', 'nova', 'auto' or a BidiModel factory, got {voice!r}")
+        self.voice = voice  # a fresh BidiModel per /ws/voice conversation
         self._agent_revision: int | None = None
 
     @property
