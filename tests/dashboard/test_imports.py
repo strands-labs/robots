@@ -15,6 +15,7 @@ WEB_FILES = {
     "dashboard/app.py",
     "dashboard/connect_routes.py",
     "dashboard/guard.py",
+    "dashboard/record_routes.py",
     "dashboard/server.py",
 }
 
