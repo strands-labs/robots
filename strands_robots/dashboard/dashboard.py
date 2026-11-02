@@ -10,9 +10,11 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Iterable
+from functools import cached_property
 from typing import TYPE_CHECKING, Any
 
 from .._extras import hint
+from .connect import Connections
 from .twin_scene import SceneXml, robot_cards, scene_to_mjcf
 
 log = logging.getLogger(__name__)
@@ -195,6 +197,10 @@ class Dashboard:
         if self.mesh is None:
             raise KeyError("this dashboard has no mesh (Dashboard(sim, mesh=Mesh(...)))")
         return self.mesh.invoke(device_id, "estop")
+
+    @cached_property
+    def connections(self) -> Any:  # the Connect panel's meshes, remote robots and policies (dashboard/connect.py)
+        return Connections(self)
 
     @property
     def agent(self) -> Any:

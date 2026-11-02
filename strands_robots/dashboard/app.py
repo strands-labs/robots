@@ -1,7 +1,7 @@
 """The routes: GET / · /api/scene · /api/assets/{path} · /api/policies · /api/mesh · /api/panels ·
 WS /ws/state · /ws/chat · POST /api/robots · POST|GET /api/robots/{id}/run ·
 POST /api/robots/{id}/{act,stop,estop,resume} · POST /api/mesh/{id}/estop · GET /api/cameras ·
-/api/cameras/{name}.png · POST /api/world."""
+/api/cameras/{name}.png · POST /api/world · /api/connect/* (connect_routes)."""
 
 from __future__ import annotations
 
@@ -14,7 +14,7 @@ from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconn
 from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 
-from . import cameras, runs
+from . import cameras, connect_routes, runs
 from .guard import SameOrigin
 
 if TYPE_CHECKING:
@@ -102,7 +102,9 @@ def build_app(dash: Dashboard) -> FastAPI:
 
     @app.get("/api/policies")
     async def policies() -> JSONResponse:
-        return JSONResponse(await asyncio.to_thread(runs.policies_json))
+        out = await asyncio.to_thread(runs.policies_json)
+        out["policies"] += list(dash.connections.policies.values())  # connected from the Connect panel
+        return JSONResponse(out)
 
     @app.post("/api/robots/{rid}/run")
     async def run(rid: str, request: Request) -> JSONResponse:
@@ -218,6 +220,8 @@ def build_app(dash: Dashboard) -> FastAPI:
                     await ws.send_json(ev)
         except WebSocketDisconnect:
             return
+
+    connect_routes.register(app, dash)
 
     app.mount("/", StaticFiles(directory=STATIC), name="static")
     return app
