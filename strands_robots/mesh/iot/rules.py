@@ -10,6 +10,7 @@ message has no MQTT topic, the tenant and device id travel in the envelope itsel
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 from collections.abc import Callable, Mapping
@@ -18,12 +19,28 @@ from typing import Any
 from .. import wire
 
 MAX_TELEMETRY_HZ = 1.0
+KINDS = ("estop", "events", "fault", "telemetry", "lifecycle")
+"""Every kind of rule a tenant can have: ``rules_for`` gives the first four, ``lifecycle.clear_presence_rule`` the
+last."""
+_ROOM = 128 - len("strands__") - max(len(kind) for kind in KINDS)
+"""110: what a rule name, at most 128 characters, leaves for the tenant after the longest kind."""
 _NAME = re.compile(r"[^A-Za-z0-9_]")
+_PLAIN = re.compile(r"[A-Za-z0-9]+")
 
 
 def rule_name(kind: str, tenant: str) -> str:
-    """``strands_<kind>_<tenant>``: a rule name allows only ``[A-Za-z0-9_]``; other id characters become ``_``."""
-    return f"strands_{kind}_{_NAME.sub('_', wire.check_id(tenant, 'tenant'))}"[:128]
+    """``strands_<kind>_<tenant>``, within what a rule name allows: ``[A-Za-z0-9_]``, at most 128 characters. A tenant
+    of letters and digits, at most 110 of them, is used as it is. Any other tenant keeps at most its first 97
+    characters, with ``_`` for ``- . :``, then ``_`` and the first 12 hex digits of its SHA-256. So ``lab-a`` and
+    ``lab_a``, or two long tenants that start alike, get rules of their own: that tenant part has a ``_``, which a
+    plain one never has, and two of them are equal only if the two SHA-256 digests begin with the same 48 bits."""
+    if kind not in KINDS:
+        raise ValueError(f"unknown rule kind {kind!r}; known: {list(KINDS)}")
+    t = wire.check_id(tenant, "tenant")
+    if len(t) <= _ROOM and _PLAIN.fullmatch(t):
+        return f"strands_{kind}_{t}"
+    head = _NAME.sub("_", t)[: _ROOM - 13]  # room for "_" and the 12 hex digits
+    return f"strands_{kind}_{head}_{hashlib.sha256(t.encode()).hexdigest()[:12]}"
 
 
 def basic_ingest_topic(tenant: str, device_id: str) -> str:
@@ -127,14 +144,23 @@ def apply_rules(iot: Any, rules: Mapping[str, Mapping[str, Any]]) -> dict[str, s
 
 
 def delete_rules(iot: Any, tenant: str) -> list[str]:
-    """Delete every ``strands_<kind>_<tenant>`` rule of THIS tenant; the names deleted. The whole name is matched:
-    a kind carries no ``_``, so ``prod-lab``'s rules (``strands_estop_prod_lab``) are not ``lab``'s."""
-    suffix = rule_name("x", tenant)[len("strands_x") :]
-    own = re.compile(r"strands_[A-Za-z0-9]+" + re.escape(suffix))
-    names = [r["ruleName"] for r in iot.list_topic_rules().get("rules", []) if own.fullmatch(r["ruleName"])]
+    """Delete THIS tenant's rules, by the names ``rule_name`` gives it (one per kind in ``KINDS``); the names
+    deleted. Only those exact names match, so another tenant's rules never do: not ``prod-lab``'s next to ``lab``,
+    nor ``lab_a``'s next to ``lab-a``, however long the tenants. The account's rules come a page at a time
+    (``nextToken``); every page is read before the first delete."""
+    own = {rule_name(kind, tenant) for kind in KINDS}
+    found: set[str] = set()
+    token: str | None = None
+    while True:
+        page = iot.list_topic_rules(**({"nextToken": token} if token else {}))
+        found.update(r["ruleName"] for r in page.get("rules", []) if r["ruleName"] in own)
+        token = page.get("nextToken")
+        if not token:
+            break
+    names = sorted(found)
     for name in names:
         iot.delete_topic_rule(ruleName=name)
-    return sorted(names)
+    return names
 
 
 def _norm(actions: Any) -> str:
