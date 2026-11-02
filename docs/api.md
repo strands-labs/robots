@@ -8,8 +8,15 @@ description: The classes exported from strands_robots, and the subpackages that 
 from strands_robots import Robot, Simulation, Policy, Body, Description, Observation, Action, JointState, Pose
 ```
 
-These are the top-level exports. Everything else is imported from its subpackage: `strands_robots.mesh`,
-`strands_robots.robot.safety`, `strands_robots.recording`, `strands_robots.dashboard`, `strands_robots.policy.lerobot`.
+These are the main classes. Import the rest from their subpackages:
+
+| Subpackage | Holds |
+|---|---|
+| `strands_robots.mesh` | `Mesh`, `authority` |
+| `strands_robots.robot.safety` | `RequestRefused` |
+| `strands_robots.recording` | Dataset recording |
+| `strands_robots.dashboard` | `Dashboard` |
+| `strands_robots.policy` | `Perturb`, LeRobot policies |
 
 ## Robot
 

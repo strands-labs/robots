@@ -1,79 +1,69 @@
 ---
-description: Robot.observe, Robot.act and Robot.run. One control loop for simulated and real bodies, returning a RunResult with what it measured.
+description: Robot.observe, Robot.act and Robot.run. One control loop for simulated and real robots.
 ---
 
 # Observe, act and run
 
+A `Robot` is one body in a world or on a bus. You read it with `observe()`, move it with `act()`, and run a
+policy on it with `run()`.
+
 {{drawing:d03_one_loop}}
 
 ```python
-from strands_robots import Robot, Policy
+from strands_robots import Robot
 
-arm = Robot("so101")                        # a body in Simulation.default(); arm.sim is that world
-g1 = Robot("g1", position=[1, 0, 0])        # the same world: arm.sim is g1.sim
-arm.observe()                               # Observation: joints, base pose, images of cameras attached to it
-arm.act({"shoulder_pan": 0.3})              # write targets for THIS body, then one control step for the world
-arm.act({"gripper": 1.0}, seconds=1.0)      # reach the pose: ramp there from the measured one, then read back
-res = arm.run(lambda obs: {"elbow_flex": 0.4}, hz=50, steps=60)   # RunResult(steps, seconds, ..., final)
-res.stopped_by                              # "steps" here; "seconds" for run(seconds=), else stop_when/estop/fault...
-task = arm.start(my_policy, seconds=30)     # the same loop in the background; arm.stop() returns its RunResult
-arm.sim.run({arm: my_policy, g1: my_policy}, steps=20)   # many robots in lock-step, each policy bound as run() binds it
+arm = Robot("so101")
+obs = arm.observe()                 # joints, pose, camera images
+arm.act({"shoulder_pan": 0.3})      # one control step
+arm.act({"gripper": 1.0}, seconds=1.0)  # move there over 1 s
+res = arm.run(lambda obs: {"elbow_flex": 0.4}, hz=50, steps=60)
+print(res.stopped_by)               # "steps"
 ```
 
-`Robot(name)` loads the `Description` and joins `Simulation.default()`, or the world passed as `sim=`;
-`position`, `orientation`, `keyframe` and `id` place it. Its `id` is unique in the world (a second
-`so101` is `so101_2`). The `Body` is the only thing that differs between bodies: `SimBody` is a handle
-into a world, and the loop never knows which one it has.
+`Robot(name)` joins the default world, or the world you pass as `sim=`. Use `position`, `orientation` and
+`keyframe` to place it.
 
 ## act()
 
-An `Action` is a vector in `action_keys` order or a `{joint: target}` mapping: a joint it leaves out keeps
-its last commanded target, so `act({"elbow_flex": 0.4})` holds the other five against gravity (`act({})` holds
-all six). Before the first write, and after `hold()`, an e-stop, `calibrate()` or `sim.reset()`, that target is
-the measured pose. An unknown joint raises `KeyError`, a vector of the wrong length raises `ValueError`, and every
-target is clipped to the joint limits. `set_pose` teleports, `set_gains(kp, kd)` sets the PD gains of
-its actuators, `describe()` is JSON-safe, `close()` removes it from its world (a removed robot raises
-`RuntimeError` on its next `observe`).
+Pass a `{joint: target}` dict or a vector in `action_keys` order. Joints you leave out keep their last
+target, so `act({})` holds the pose. Targets are clipped to the joint limits.
 
-`act(action, seconds=)` reaches a pose instead of taking one step toward it: the targets ramp from the
-measured pose to `action` at 30 Hz, settle there, and the returned `Observation` is the pose reached. Through
-an agent tool (`confirm_act`) the operator gate is asked once, for the target. To stand
-still, call `hold()`; there is no `"hold"` policy. On a Feetech arm every write is also capped at `max_speed`
-(default 2 rad/s, `Robot(..., max_speed=None)` to opt out): a goal 50° away becomes a ramp, a trained chunk's
-steps pass as written, and `extras()["slewed"]` counts the writes the cap shortened. The first write after
-construction or after torque goes off reads the arm first, so the cap never depends on the caller having read.
+With `seconds=`, the robot moves smoothly from its current pose and returns the pose it reached.
 
-A policy that declares a `start_pose` is moved there before the first step; see
-[Running a LeRobot policy](lerobot.md#start-pose).
+| Method | Does |
+|---|---|
+| `hold()` | Stand still at the current pose |
+| `set_pose(position, orientation)` | Teleport (simulation) |
+| `set_gains(kp, kd)` | Set the PD gains |
+| `close()` | Remove the robot from its world |
+
+On a Feetech arm each write is capped at `max_speed` (default 2 rad/s). Pass `max_speed=None` to turn the cap off.
 
 ## run()
 
-`run(policy, hz=, seconds=|steps=|stop_when=)` takes a `Policy` subclass, anything with `act(obs)` and
-`reset()`, or a bare callable (it receives `instruction=` when it declares it). In a world, `hz` sets how
-many physics steps each `act()` advances and time is sim time; `realtime=True` also paces the loop to the
-wall clock. Before the first inference `policy.requirements()` is checked against a real observation, so a
-missing camera or a wrong state length is refused by name. The policy's optional hooks (`hz`, `realtime`,
-`gains`, `attach`, `detach`, `requirements`, `needs_observation`) are read once there too, and one of the
-wrong type is a `TypeError` naming it. Once `attach` has run, any refusal calls `detach` before it reaches you. `stop(timeout=)` raises `TimeoutError` while the run is still
-going, and the error of a run whose policy raised, once. `units="auto"` converts joints between the
-robot's radians and the units the policy declares (`policy.units`, for example `"lerobot"`, or `units_for`).
-`units="rad"` or a scheme name says what a policy that declares nothing speaks; against one that declares its
-units, a scheme that agrees keeps the policy's own norm modes and any other is refused, naming both.
+`run()` takes a `Policy`, any object with `act(obs)` and `reset()`, or a plain function. Stop it with one of:
+
+| Argument | Stops after |
+|---|---|
+| `steps=` | That many control steps |
+| `seconds=` | That much simulated time |
+| `stop_when=` | Your function returns true |
+
+Pass `realtime=True` to match the wall clock in simulation. Before the first step, `run()` names any camera the
+policy needs and the robot lacks.
+
+```python
+task = arm.start(lambda obs: {"elbow_flex": 0.2}, seconds=30)  # in the background
+res = arm.stop()                                               # returns the RunResult
+```
+
+To run several robots together, pass a dict: `arm.sim.run({arm: p1, g1: p2}, steps=20)`.
 
 {{drawing:d08_policy_hooks}}
 
-{{drawing:d13_bind_releases}}
-
 ## Recording and replay
 
-`run(record="data/wave")` appends the run as one episode of a LeRobot v3 dataset; it needs LeRobot with its
-`dataset` extra, which the one LeRobot install line carries. `Policy("data/wave?episode=0")` replays that
-episode: the recorded `action` column, at the dataset's fps, in the units `meta/units.json` names, with each
-joint's LeRobot norm mode as recorded (a dataset without that file needs `units="rad"` or `norm=`; one that has it
-refuses a `units=` or `norm=` that disagrees; a real body refuses LeRobot units whose modes neither the file nor
-`norm=` names, where the registry's would be a guess; a `norm=` names each joint the registry gives a mode of its
-own, an SO arm's gripper in `range_0_100`, unless its `"*"` is that mode: `norm={"*": "degrees"}` alone is refused).
-`episode` is the query's only key: `?ep=1` or `?episode` is refused by name, never episode 0 by default. A path that
-exists is never sent to the Hub: a directory with neither `config.json` nor `meta/info.json` is a `ValueError`.
+`run(record="data/wave")` adds the run as one episode of a LeRobot v3 dataset.
+`Policy("data/wave?episode=0")` replays episode 0. See [Recording a dataset](recording.md).
 
 {{drawing:d09_record_replay}}
