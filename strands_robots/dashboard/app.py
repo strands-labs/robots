@@ -1,7 +1,8 @@
 """The routes: GET / · /api/scene · /api/assets/{path} · /api/policies · /api/mesh · /api/panels ·
 WS /ws/state · /ws/chat · POST /api/robots · POST|GET /api/robots/{id}/run ·
 POST /api/robots/{id}/{act,stop,estop,resume} · POST /api/mesh/{id}/estop · GET /api/cameras ·
-/api/cameras/{name}.png · POST /api/world · /api/connect/* (connect_routes)."""
+/api/cameras/{name}.png · POST /api/world · /api/connect/* (connect_routes) · POST /api/record/{start,stop} ·
+POST /api/record/episode/{save,discard} · GET /api/record/{status,options}."""
 
 from __future__ import annotations
 
@@ -14,7 +15,7 @@ from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconn
 from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 
-from . import cameras, connect_routes, runs
+from . import cameras, connect_routes, record_routes, runs
 from .guard import SameOrigin
 
 if TYPE_CHECKING:
@@ -180,6 +181,8 @@ def build_app(dash: Dashboard) -> FastAPI:
         except Exception as exc:  # noqa: BLE001 — every refusal is an HTTP status with its reason
             raise http_error(exc) from exc
         return JSONResponse(out)
+
+    record_routes.add(app, dash)  # POST /api/record/*, GET /api/record/{status,options}
 
     @app.websocket("/ws/state")
     async def ws_state(ws: WebSocket) -> None:
