@@ -152,20 +152,26 @@ function mount() {
   root.id = "voice";
   root.dataset.state = "off";
   root.dataset.panel = "voice";
-  root.innerHTML = `<button id="voice-mic" type="button" aria-label="voice" aria-pressed="false"></button>`
+  root.innerHTML = `<button id="voice-mic" class="sr-btn" type="button" aria-label="voice" aria-pressed="false"></button>`
     + `<span id="voice-level" aria-hidden="true"></span>`
-    + `<button id="voice-mute" type="button" aria-pressed="false" hidden>mute</button>`;
+    + `<button id="voice-mute" class="sr-btn" type="button" aria-pressed="false" hidden>mute</button>`;
   const style = document.createElement("style");
   style.textContent = `
-    #voice{display:flex;align-items:center;gap:8px;padding:6px 0;font-size:.85em}
-    #voice button{font:inherit;cursor:pointer;display:inline-flex;align-items:center;gap:5px}
+    #voice{display:flex;align-items:center;gap:.5rem;padding:.15rem 0 .1rem}
+    #voice .sr-btn{height:2rem;padding:0 .85rem;gap:.4rem;transition:background 120ms ease,border-color 120ms ease,color 120ms ease}
+    #voice .sr-btn svg{width:14px;height:14px;flex:none}
+    #voice-mute[hidden]{display:none}
     #voice-mic:disabled{opacity:.45;cursor:not-allowed}
-    #voice[data-state=live] #voice-mic{background:var(--sr-accent,#1f9d55);color:#fff}
-    #voice[data-state=connecting] #voice-mic{opacity:.6}
-    #voice-level{flex:1;max-width:140px;height:6px;border-radius:3px;background:var(--sr-line,#8884);overflow:hidden;position:relative;--level:0}
-    #voice-level::after{content:"";position:absolute;inset:0;transform-origin:left;transform:scaleX(var(--level));background:var(--sr-accent,#1f9d55);transition:transform 60ms linear}
-    #voice[data-state=off] #voice-level{opacity:.35}
-    #voice[data-muted=true] #voice-level::after{background:var(--sr-muted,#999)}
+    #voice-mic:disabled:hover{border-color:var(--sr-pill-border)}
+    #voice[data-state=connecting] #voice-mic{border-color:var(--sr-accent);color:var(--sr-accent)}
+    #voice[data-state=live] #voice-mic{background:var(--sr-accent);border-color:var(--sr-accent);color:var(--sr-on-accent)}
+    #voice[data-state=live] #voice-mic::before{content:"";width:7px;height:7px;border-radius:50%;background:currentColor;animation:voice-pulse 1.2s ease-in-out infinite}
+    @keyframes voice-pulse{50%{opacity:.25}}
+    #voice-mute[aria-pressed=true]{border-color:var(--sr-bad);color:var(--sr-bad)}
+    #voice-level{flex:1;min-width:2rem;height:4px;border-radius:999px;background:var(--sr-line);overflow:hidden;position:relative;--level:0}
+    #voice-level::after{content:"";position:absolute;inset:0;border-radius:inherit;transform-origin:left;transform:scaleX(var(--level));background:var(--sr-accent);transition:transform 60ms linear}
+    #voice[data-state=off] #voice-level{opacity:.4}
+    #voice[data-muted=true] #voice-level::after{background:var(--sr-muted)}
     .msg.voice.sys{opacity:.7;font-size:.9em}`;
   document.head.appendChild(style);
   const ui = { root, mic: root.querySelector("#voice-mic"), level: root.querySelector("#voice-level"), mute: root.querySelector("#voice-mute") };

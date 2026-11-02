@@ -29,8 +29,16 @@ python -m strands_robots.dashboard                       # the microduck on http
 python -m strands_robots.dashboard so101 g1 --port 8091  # an SO-101 arm and a G1 humanoid side by side
 ```
 
-Open `http://127.0.0.1:8090`. The chat panel needs the `tools` extra and a Bedrock model id passed with
-`--model` (or `model=` to `Dashboard`).
+Open `http://127.0.0.1:8090`. Chat and voice are off unless you turn them on; the page says so in the chat panel.
+
+```bash
+python -m strands_robots.dashboard so101 g1 --model <bedrock model id> --voice auto
+```
+
+| Flag | Turns on | Needs |
+|---|---|---|
+| `--model <id>` | the chat agent (`model=` to `Dashboard`) | the `tools` extra, AWS credentials |
+| `--voice auto` · `openai` · `nova` | speech to speech, the talk button (`voice=` to `Dashboard`) | the `voice` extra; `OPENAI_API_KEY` for `openai`, AWS credentials for `nova` |
 
 ## Live view on the docs home page
 

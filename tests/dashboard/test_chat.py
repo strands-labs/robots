@@ -50,11 +50,16 @@ def test_chat_without_a_model_says_so() -> None:
     server = Dashboard(sim).start()
     try:
         with page_on(server.url) as page:
-            page.fill("#prompt", "hello")
-            page.press("#prompt", "Enter")
-            page.wait_for_function("(window.__chatEvents || []).some(e => e.type === 'done')", timeout=10_000)
-            errors = [e for e in page.evaluate("window.__chatEvents") if e["type"] == "error"]
-            assert errors and "model=" in errors[0]["message"]
+            page.wait_for_selector(".msg.sys.off", timeout=30_000)  # said on the page before anything is sent
+            assert "--model" in page.inner_text(".msg.sys.off")
+            assert page.is_disabled("#chatform button")
+            reply = page.evaluate(
+                """() => new Promise((ok) => { const ws = new WebSocket(`ws://${location.host}/ws/chat`);
+                     ws.onopen = () => ws.send(JSON.stringify({ prompt: "hello" }));
+                     ws.onmessage = (e) => { const ev = JSON.parse(e.data);
+                       if (ev.type === "error") ok(ev.message); }; })"""
+            )
+            assert "--model" in reply and "model=" in reply  # the server says the same if a client sends anyway
     finally:
         server.stop()
         sim.close()
