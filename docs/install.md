@@ -41,6 +41,15 @@ uv pip install -e ".[mujoco,onnx,mesh]"
 
 `isaac` and `newton` are not part of `[all]`; install them on a machine with CUDA.
 
+The dashboard needs `dashboard` and a simulation backend. From a clone:
+
+```bash
+uv pip install -e ".[dashboard,mujoco]"
+python -m strands_robots.dashboard
+```
+
+Its chat also needs `tools`, plus a Bedrock model passed with `--model`.
+
 ## LeRobot
 
 LeRobot policies use LeRobot's remote inference, which is on LeRobot's main branch. A wheel cannot depend on a git
@@ -75,5 +84,5 @@ uv pip install -r docs/requirements.txt
 mkdocs serve
 ```
 
-The site is served at `http://127.0.0.1:8000`. If a dashboard is listening on `127.0.0.1:8090`, the home page embeds it
+The site is served at `http://127.0.0.1:8000`. If a dashboard is listening on `127.0.0.1:8090` or `127.0.0.1:8091`, the home page embeds it
 live; see [Dashboard](dashboard.md).

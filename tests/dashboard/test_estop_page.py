@@ -20,7 +20,7 @@ def test_estop_button_stops_the_run_latches_and_resume_needs_approval() -> None:
     server = Dashboard(sim).start()
     try:
         with page_on(server.url) as page:
-            row = page.locator('#safety [data-robot="so101"]')
+            row = page.locator('.card .estop-ctl[data-robot="so101"]')
             row.wait_for(timeout=10_000)
             assert row.locator(".estop-status").inner_text() == "armed"
             task = arm.start(lambda obs: {"shoulder_pan": 0.2}, hz=50, seconds=60, realtime=True)
@@ -29,7 +29,7 @@ def test_estop_button_stops_the_run_latches_and_resume_needs_approval() -> None:
             page.wait_for_function("window.__safety.notices.length > 0", timeout=10_000)
             assert arm.estopped, page.evaluate("window.__safety.notices")
             page.wait_for_function(
-                "document.querySelector('#safety [data-robot=\"so101\"]').dataset.latched === 'yes'", timeout=10_000
+                "document.querySelector('.estop-ctl[data-robot=\"so101\"]').dataset.latched === 'yes'", timeout=10_000
             )
             assert row.locator(".estop-status").inner_text() == "LATCHED"
             result = task.stop(timeout=5.0)
@@ -44,7 +44,7 @@ def test_estop_button_stops_the_run_latches_and_resume_needs_approval() -> None:
             page.once("dialog", lambda d: d.accept("cagatay"))
             row.locator("button.resume").click()
             page.wait_for_function(
-                "document.querySelector('#safety [data-robot=\"so101\"]').dataset.latched === 'no'", timeout=5_000
+                "document.querySelector('.estop-ctl[data-robot=\"so101\"]').dataset.latched === 'no'", timeout=5_000
             )
             assert not arm.estopped and arm.estop_latch.resumed_by == "cagatay"
             assert not page.errors, page.errors
