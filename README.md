@@ -49,10 +49,12 @@ The agent picks skills. The skills move the motors, and the safety chain checks 
 
 ```bash
 uv venv -p 3.12 && source .venv/bin/activate
-uv pip install -e ".[all]"
+uv pip install "strands-robots[all] @ git+https://github.com/strands-labs/robots@dev"
 uv pip install "lerobot[remote,feetech,dataset] @ git+https://github.com/huggingface/lerobot@53feaef37b67e8f4c23b6953e880ff535e39d6fe"  # LeRobot main
-pytest -q tests
 ```
+
+To work on the library itself, clone it and install it editable: `uv pip install -e ".[all,dev]"`, then
+`pytest -q tests`.
 
 ## Documentation
 

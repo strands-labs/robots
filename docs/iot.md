@@ -24,7 +24,7 @@ With `iot=`, the robot also becomes an IoT thing with shadows.
 
 ## Setup
 
-1. Install the extra: `pip install 'strands-robots[iot]'`.
+1. Install the extra: `uv pip install "strands-robots[iot] @ git+https://github.com/strands-labs/robots@dev"`.
 2. Run `provision.setup_tenant` once per tenant.
 3. Run `provision.register` once per robot. Files go in `~/.strands/iot/<id>/`.
 4. Attach `policy.operator_policy(tenant, things=[...])` to each operator's IAM identity.

@@ -7,17 +7,18 @@ description: Install strands-robots from source with uv, choose extras, and add 
 strands-robots needs Python 3.10 or newer. LeRobot and Isaac Sim need Python 3.12.
 
 ```bash
-git clone https://github.com/strands-labs/robots.git
-cd robots
 uv venv -p 3.12 && source .venv/bin/activate
-uv pip install -e ".[all]"
+uv pip install "strands-robots[all] @ git+https://github.com/strands-labs/robots@dev"
 ```
 
 `[all]` installs every extra that works on a CPU machine. To install only some, name them:
 
 ```bash
-uv pip install -e ".[mujoco,onnx,mesh]"
+uv pip install "strands-robots[mujoco,onnx,mesh] @ git+https://github.com/strands-labs/robots@dev"
 ```
+
+These docs follow the `dev` branch on GitHub, so install from there. The `strands-robots` release on PyPI is
+an older API.
 
 The core needs only `numpy` and `robot_descriptions`. If you use a feature without its extra, the
 `ImportError` tells you what to install.
@@ -57,9 +58,12 @@ import strands_robots
 print(strands_robots.__version__)
 ```
 
-Run the tests:
+## Work on the library
+
+Clone it, install it editable, and run the tests:
 
 ```bash
+git clone https://github.com/strands-labs/robots.git && cd robots
 uv pip install -e ".[all,dev]"
 pytest -q tests
 ```
