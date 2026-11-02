@@ -6,6 +6,7 @@
 Robots are registry names, placed one metre apart along x; with none, the one preset that declares a ``browser``
 block (the robot the docs page shows) is used. The page's chat needs a model: ``--model`` takes a
 Bedrock model id (it also needs the ``[tools]`` extra and AWS credentials); without one the chat says so.
+``--voice`` turns on speech to speech (``openai`` needs OPENAI_API_KEY, ``nova`` AWS credentials; ``auto`` picks).
 """
 
 from __future__ import annotations
@@ -20,6 +21,7 @@ def parse(argv: Sequence[str] | None = None) -> argparse.Namespace:
     p.add_argument("--port", type=int, default=8090, help="loopback port (default 8090)")
     p.add_argument("--host", default="127.0.0.1", help="127.0.0.1 · localhost · ::1 (loopback only)")
     p.add_argument("--model", default=None, help="a Bedrock model id for the page's chat (optional)")
+    p.add_argument("--voice", default=None, choices=("openai", "nova", "auto"), help="speech to speech (optional)")
     return p.parse_args(argv)
 
 
@@ -38,7 +40,7 @@ def main(argv: Sequence[str] | None = None) -> None:
         Robot(name, sim=sim, position=[float(i), 0.0, 0.0])
     url = f"http://{args.host}:{args.port}/"
     print(f"strands-robots dashboard: {url}  ({', '.join(args.robots)}; Ctrl-C stops)", flush=True)
-    Dashboard(sim, model=args.model).serve(host=args.host, port=args.port)
+    Dashboard(sim, model=args.model, voice=args.voice).serve(host=args.host, port=args.port)
 
 
 if __name__ == "__main__":

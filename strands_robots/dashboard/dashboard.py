@@ -19,6 +19,8 @@ from .twin_scene import SceneXml, robot_cards, scene_to_mjcf
 
 log = logging.getLogger(__name__)
 
+NO_CHAT = "chat is off: start the dashboard with --model <bedrock model id>, or pass Dashboard(sim, model=...)"
+
 if TYPE_CHECKING:
     from ..robot import Robot
     from ..simulation import Simulation
@@ -214,7 +216,7 @@ class Dashboard:
 
         if self._agent is None:
             if self.model is None:
-                raise RuntimeError("chat needs Dashboard(sim, model=...) or Dashboard(sim, agent=...)")
+                raise RuntimeError(NO_CHAT)
             self._agent = chat.build_agent(self.sim, self.model, self.real.values())
         elif self._agent_revision != self.revision:
             chat.refresh_tools(self._agent, self.sim, self.real.values())

@@ -44,8 +44,19 @@ Dashboard(Simulation.default()).serve(port=8090)
 
 ## Voice
 
-With `voice=`, you can talk to the page. The voice agent has the same tools as the chat. `"openai"` uses
-gpt-realtime-2 and needs `OPENAI_API_KEY`. `"nova"` uses Amazon Nova Sonic on Bedrock. Install the `voice` extra.
+Chat and voice are off unless you turn them on. The chat panel says how.
+
+```bash
+python -m strands_robots.dashboard so101 g1 --model <bedrock model id> --voice auto
+```
+
+| Flag | Turns on | Needs |
+|---|---|---|
+| `--model <id>` | the chat agent (`model=` to `Dashboard`) | the `tools` extra, AWS credentials |
+| `--voice auto` · `openai` · `nova` | talking to the page (`voice=` to `Dashboard`) | the `voice` extra; `OPENAI_API_KEY` for `openai`, AWS credentials for `nova` |
+
+The voice agent has the same tools as the chat. `"openai"` uses gpt-realtime-2. `"nova"` uses Amazon Nova Sonic
+on Bedrock.
 
 ## Security
 
