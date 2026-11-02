@@ -34,7 +34,7 @@
 <rect id="fault" class="card" x="60" y="134" width="320" height="130" rx="8"/>
 <text class="mono fg" x="74.0" y="160.0" font-size="14" text-anchor="start" font-weight="500">stopped_by = "fault"</text>
 <text class="grot text" x="74.0" y="179.0" font-size="12" text-anchor="start">a lost server, a NaN target, a stale frame</text>
-<text class="mono accent" x="470.0" y="122.0" font-size="10.5" text-anchor="start" letter-spacing="0.05em">V1</text>
+<text class="mono accent" x="470.0" y="122.0" font-size="10.5" text-anchor="start" letter-spacing="0.05em">THEN</text>
 <rect id="apply" class="card accent-card" x="470" y="134" width="340" height="130" rx="8"/>
 <text class="mono fg" x="484.0" y="160.0" font-size="14" text-anchor="start" font-weight="500">on_disconnect</text>
 <text class="grot text" x="484.0" y="179.0" font-size="12" text-anchor="start">each control's declared target, once</text>
@@ -56,6 +56,6 @@
 <rect id="lockstep" class="card layer" x="60" y="452" width="1080" height="100" rx="8"/>
 <text class="mono fg" x="74.0" y="478.0" font-size="14" text-anchor="start" font-weight="500">lock-step</text>
 <text class="grot text" x="74.0" y="497.0" font-size="12" text-anchor="start">only the robot that faulted is moved to its on_disconnect state; the rest keep running</text>
-<text class="grot muted" x="600.0" y="580.0" font-size="12.5" text-anchor="middle">Before, the body stayed at its last command, so a real arm held wherever the policy left it.</text>
+<text class="grot muted" x="600.0" y="580.0" font-size="12.5" text-anchor="middle">A real arm is never left holding wherever a failed policy happened to put it.</text>
 <g class="mark" aria-label="STRANDS" transform="translate(1050.0 565.1) scale(0.05952)"><path d="M30.2558 216.833V186.914H0V148.926H36.9794V179.182H121.023V127.075H30.2558V97.1548H0V29.9197H30.2558V0H127.747V29.9197H158.339V67.5714H121.023V37.9879H36.9794V89.759H127.747V119.006H158.339V186.914H127.747V216.833H30.2558Z"/><path d="M252.894 216.833V37.9879H229.361V67.5714H192.382V29.9197H222.638V0H320.129V29.9197H350.721V67.5714H313.405V37.9879H289.873V216.833H252.894Z"/><path d="M377.87 216.833V29.9197H408.125V0H505.617V29.9197H536.208V127.075H505.617V156.994H490.825V179.182H520.744V216.833H484.101V186.914H453.509V156.994H414.849V216.833H377.87ZM414.849 119.006H498.893V37.9879H414.849V119.006Z"/><path d="M576.818 216.833V59.5031H607.073V29.9197H637.329V0H674.309V29.9197H704.564V59.5031H735.156V216.833H697.841V156.994H613.797V216.833H576.818ZM613.797 119.006H697.841V67.5714H667.921V37.9879H643.717V67.5714H613.797V119.006Z"/><path d="M775.765 216.833V0H812.745V29.9197H842.664V59.5031H873.256V148.926H896.789V0H934.104V216.833H896.789V186.914H866.869V156.994H836.277V67.5714H812.745V216.833H775.765Z"/><path d="M974.713 216.833V0H1072.2V29.9197H1102.46V59.5031H1133.05V156.994H1102.46V186.914H1072.2V216.833H974.713ZM1011.69 179.182H1065.82V148.926H1095.74V67.5714H1065.82V37.9879H1011.69V179.182Z"/><path d="M1203.92 216.833V186.914H1173.66V148.926H1210.64V179.182H1294.68V127.075H1203.92V97.1548H1173.66V29.9197H1203.92V0H1301.41V29.9197H1332V67.5714H1294.68V37.9879H1210.64V89.759H1301.41V119.006H1332V186.914H1301.41V216.833H1203.92Z"/></g>
 </svg>

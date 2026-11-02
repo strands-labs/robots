@@ -1,11 +1,11 @@
 ---
-description: Five minutes, one duck. Then two robots, a recording, and an agent.
+description: Walk a simulated robot with an ONNX policy, put two robots in one world, record a dataset, and hand a robot to an agent.
 cta: true
 ---
 
 # Quickstart
 
-## Install
+This page assumes the [installation](install.md) is done:
 
 ```bash
 uv venv -p 3.12 && source .venv/bin/activate
@@ -13,10 +13,7 @@ uv pip install -e ".[all]"
 uv pip install "lerobot[remote,feetech,dataset] @ git+https://github.com/huggingface/lerobot@53feaef37b67e8f4c23b6953e880ff535e39d6fe"  # LeRobot main
 ```
 
-`import strands_robots` only needs numpy. Everything heavier loads the first time you use it, and tells you which
-extra to install if it's missing.
-
-## Make a duck walk
+## Run a walking policy
 
 <div class="sr-pair" markdown>
 <div markdown>
@@ -28,11 +25,12 @@ from strands_robots import Policy, Robot
 duck = Robot("microduck")
 walk = Policy("microduck?vx=0.3")
 duck.run(walk, seconds=10)
-print(duck.pose.position)  # ~1.3 m
+print(duck.pose.position)  # about 1.3 m forward
 ```
 
-That's a real ONNX walking policy from Pollen Robotics, running in MuJoCo. Swap `vx` for `wz=1.0` and it turns.
-Swap the skill and it does something else:
+`Robot("microduck")` loads the microduck model into the default MuJoCo world. `Policy("microduck?vx=0.3")` loads
+Pollen Robotics' ONNX walking policy from the Hugging Face Hub with a forward velocity command of 0.3 m/s. Use
+`wz=1.0` to turn in place, or select another skill:
 
 ```python
 roll = Policy("microduck?skill=roulade")
@@ -45,25 +43,27 @@ duck.run(roll, seconds=3)  # a forward roll
 </div>
 </div>
 
-## Two robots, one world
+## Two robots in one world
 
 ```python
 arm, g1 = Robot("so101"), Robot("g1", position=[1, 0, 0])
 arm.sim.run({arm: lambda obs: {"shoulder_pan": 0.4}, g1: Policy("holosoma")}, seconds=5)
 ```
 
-Both share the same physics and the same clock. A policy can be a whole neural network or a one-line function.
+Both robots share the same physics and the same clock. A policy can be a neural network or a function that returns
+joint targets.
 
-## Keep what happened
+## Record a dataset
 
 ```python
 arm.sim.camera("front", size=(320, 240), attach=arm)
 arm.run(lambda obs: {"elbow_flex": 0.4}, seconds=3, record="datasets/so101-wave")
 ```
 
-That folder is now a LeRobot v3 dataset. Run it again and you get a second episode.
+`datasets/so101-wave` is now a LeRobot v3 dataset. Each run on the same directory appends one episode. See
+[Recording a dataset](recording.md).
 
-## Let an agent drive
+## Give a robot to an agent
 
 ```python
 from strands import Agent
@@ -71,14 +71,16 @@ from strands import Agent
 Agent(tools=[arm.tool, arm.sim.tool])("look at the arm, then open its gripper")
 ```
 
-You need Amazon Bedrock credentials in your environment.
+The default Strands model runs on Amazon Bedrock, so AWS credentials must be available in the environment. See
+[Agent tools](tools.md).
 
-## See it
+## Open the dashboard
 
 ```python
 from strands_robots.dashboard import Dashboard
 
-Dashboard(arm.sim).serve(port=8090)   # open http://127.0.0.1:8090
+Dashboard(arm.sim).serve(port=8090)   # http://127.0.0.1:8090
 ```
 
-Leave it running and the [home page](index.md) of these docs shows it live.
+While it runs, the [home page](index.md) of a locally served copy of these docs shows the live dashboard. See
+[Dashboard](dashboard.md).

@@ -6,7 +6,7 @@ def scene() -> Scene:
     s = Scene(
         "d05_bench",
         "The arm on the bench",
-        "Acceptance check 9 drives a physical SO-101 through the v1 surface: four checks, one hold, torque off "
+        "Acceptance check 9 drives a physical SO-101 through the public Robot API: four checks, one hold, torque off "
         "at exit.",
         "Left, the one green element: STRANDS_SO101_PORT, the follower arm's serial port, opened as "
         "Robot(\"so101\", port=...). Wires run right to four checks visited in turn: observe() reads six measured "

@@ -51,7 +51,6 @@ def scene() -> Scene:
     s.box(60, 498, 1080, 70, "the docs hero", "the browser runs mj_step and an ONNX policy on onnxruntime-web at 50 "
                                               "Hz itself: the duck stands and walks with no Python anywhere",
           size=14, subsize=12)
-    s.footnote(606, "Strands Robots v0.5.3 needed 20,470 lines and a process per card for this; the v1 dashboard is "
-                    "623 lines of Python.")
+    s.footnote(606, "One server process for every robot in the world; the browser draws, the server owns the physics.")
     s.motion.insert(0, ("browser", "pulse"))
     return s
