@@ -10,6 +10,7 @@ import numpy as np
 
 from ...types import Observation
 from ...units import Units
+from ...units.lerobot import norm_hint
 from ..requirements import Requirements
 from .contract import Contract, lerobot, server_config
 from .quiet import quiet_load
@@ -54,8 +55,8 @@ class LeRobotPolicy:
         if robot.is_real and not self._kw["semantics"] and not self._kw["norm"]:
             raise ValueError(  # a checkpoint stores no norm mode: on a real body the registry's default is a guess
                 f"{self!r} does not say which LeRobot norm mode its data was recorded in, and {robot.id} is a real "
-                "body: pass norm={'*': 'degrees' | 'range_m100_100', ...} (LeRobot's SO arms default to degrees "
-                "since 0.4.4, range_m100_100 before) or semantics= (see units/semantics.json)"
+                f"body: pass {norm_hint(robot.description)} (LeRobot's SO arms default to degrees since 0.4.4, "
+                "range_m100_100 before) or semantics= (see units/semantics.json)"
             )
         lerobot()
         from lerobot.remote_inference.deployment import load_deployment

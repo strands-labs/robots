@@ -54,7 +54,9 @@ missing camera or a wrong state length is refused by name. The policy's optional
 `gains`, `attach`, `detach`, `requirements`, `needs_observation`) are read once there too, and one of the
 wrong type is a `TypeError` naming it. Once `attach` has run, any refusal calls `detach` before it reaches you. `stop(timeout=)` raises `TimeoutError` while the run is still
 going, and the error of a run whose policy raised, once. `units="auto"` converts joints between the
-robot's radians and the units the policy declares (`policy.units`, for example `lerobot_so10x`).
+robot's radians and the units the policy declares (`policy.units`, for example `"lerobot"`, or `units_for`).
+`units="rad"` or a scheme name says what a policy that declares nothing speaks; against one that declares its
+units, a scheme that agrees keeps the policy's own norm modes and any other is refused, naming both.
 
 {{drawing:d08_policy_hooks}}
 
@@ -65,8 +67,9 @@ robot's radians and the units the policy declares (`policy.units`, for example `
 episode: the recorded `action` column, at the dataset's fps, in the units `meta/units.json` names, with each
 joint's LeRobot norm mode as recorded (a dataset without that file needs `units="rad"` or `norm=`; one that has it
 refuses a `units=` or `norm=` that disagrees; a real body refuses LeRobot units whose modes neither the file nor
-`norm=` names, where the registry's would be a guess). `episode` is the query's
-only key: `?ep=1` or `?episode` is refused by name, never episode 0 by default. A path that exists is never sent
-to the Hub: a directory with neither `config.json` nor `meta/info.json` is a `ValueError`.
+`norm=` names, where the registry's would be a guess; a `norm=` names each joint the registry gives a mode of its
+own, an SO arm's gripper in `range_0_100`, unless its `"*"` is that mode: `norm={"*": "degrees"}` alone is refused).
+`episode` is the query's only key: `?ep=1` or `?episode` is refused by name, never episode 0 by default. A path that
+exists is never sent to the Hub: a directory with neither `config.json` nor `meta/info.json` is a `ValueError`.
 
 {{drawing:d09_record_replay}}

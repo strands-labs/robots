@@ -109,7 +109,7 @@ can no longer act safely leaves the arm somewhere declared safe rather than froz
 
 **One yes per run.** An agent's `run()` on a real body is not a single `act`: instead of asking `confirm=`
 on every tick (30 dialogs a second), it asks `Robot(approve=callable(RunPlan) -> bool)` once, with the whole
-plan (robot, policy, instruction, rate, duration), before anything is acquired; without `approve=` the run is
+plan (robot, policy, instruction, rate, duration, units), before anything is acquired; without `approve=` the run is
 refused and nothing is written. The safety chain (the e-stop, the joint range, the soft `safe` band, the
 interlocks and the validators) still runs on every step, and a target outside `safe` inside an approved run is
 refused, never re-asked each tick. `confirm=` stays the per-command gate (`confirm_act`, the dashboard).

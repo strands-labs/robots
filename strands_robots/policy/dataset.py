@@ -11,6 +11,7 @@ import numpy as np
 
 from .._extras import LEROBOT
 from ..units import Units, lerobot_units
+from ..units.lerobot import norm_hint, unnamed
 from .sequence import SequencePolicy
 
 if TYPE_CHECKING:
@@ -67,8 +68,15 @@ class ReplayPolicy(SequencePolicy):
 
     def units_for(self, description: Description) -> Units | None:
         """The recorded units for this robot: LeRobot's in the modes the dataset or ``norm=`` names (else the
-        registry's, which ``attach`` refuses on a real body); any other scheme by its name."""
+        registry's, which ``attach`` refuses on a real body); any other scheme by its name. A ``norm=`` whose ``"*"``
+        would give a joint the registry names (the gripper) another mode is refused: the joint must be named."""
         if self.units == "lerobot":
+            if self.norm is not None and (left := unnamed(description, self.norm)):
+                gives = ", ".join(f"{k} {m!r}" for k, m in left.items())
+                raise ValueError(  # LeRobot's SO gripper is range_0_100 in both modes: its 50 % is not 50 degrees
+                    f"{self!r}: norm= leaves {', '.join(left)} to its '*' mode {self.norm['*']!r}, but "
+                    f"{description.name}'s LeRobot convention gives {gives}: name each, norm={ {**self.norm, **left} }"
+                )
             return lerobot_units(description, self.norm)
         return Units.for_robot(description, str(self.units))  # never None: __init__ refuses a dataset without units
 
@@ -77,8 +85,8 @@ class ReplayPolicy(SequencePolicy):
         if robot.is_real and self.units == "lerobot" and self.norm is None:
             raise ValueError(  # the registry's modes would be a guess, and a wrong one moves a real arm off target
                 f"{self!r} does not say which LeRobot norm mode each joint was recorded in, and {robot.id} is a real "
-                "body: pass norm={'*': 'degrees' | 'range_m100_100', ...} with the modes it was recorded in "
-                "(record= names them in meta/units.json)"
+                f"body: pass {norm_hint(robot.description)} with the modes it was recorded in (record= names them "
+                "in meta/units.json)"
             )
         missing = [k for k in robot.action_keys if k not in self.names]
         if missing:

@@ -85,16 +85,33 @@ def declared_units(policy: Any) -> str | None:
 
 
 def resolve_units(policy: Any, requested: str | None, description: Description) -> Units | None:
-    """``requested``: "auto" (``policy.units_for(d)``, its declaration, or radians), "rad", a scheme, or None."""
-    if requested is None or requested == RAD:
-        return None
+    """``requested``: "auto" (``policy.units_for(d)``, its declaration, or radians), "rad", a scheme, or None (rad).
+
+    A scheme says what a policy that cannot say speaks. One that declares its units keeps them: a scheme that agrees
+    gets the policy's own map, in its norm modes, and any other ("rad" and None too) is refused, naming both.
+    """
     if requested == "auto":
-        units_for = getattr(policy, "units_for", None)
-        if callable(units_for):  # a policy whose units depend on the robot (a LeRobot checkpoint's semantics)
-            u = units_for(description)
-            return None if u is None or u.is_identity else u
-        name = declared_units(policy)
-        if name is None or name == RAD:
-            return None
-        return Units.for_robot(description, name)
-    return Units.for_robot(description, requested)
+        return _own(policy, description)[1]
+    want = None if requested is None or requested == RAD else Units.for_robot(description, requested)
+    said, own = _own(policy, description)
+    if not said:
+        return want
+    said_as = RAD if own is None else own.name
+    if said_as != (RAD if want is None else want.name):
+        raise ValueError(
+            f"{policy!r} declares units {said_as!r}, but units={requested!r} was passed; drop "
+            "units= (the policy says what it speaks)"
+        )
+    return own
+
+
+def _own(policy: Any, description: Description) -> tuple[bool, Units | None]:
+    """Whether the policy says what it speaks on this robot, and the map it says (None: radians)."""
+    units_for = getattr(policy, "units_for", None)
+    if callable(units_for):  # a policy whose units depend on the robot (a LeRobot checkpoint's semantics)
+        u = units_for(description)
+        return True, None if u is None or u.is_identity else u
+    name = declared_units(policy)
+    if name is None:
+        return False, None
+    return True, None if name == RAD else Units.for_robot(description, name)

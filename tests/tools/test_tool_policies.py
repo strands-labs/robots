@@ -114,3 +114,34 @@ def test_a_remote_handle_runs_on_a_real_arm_through_the_approved_gate_but_a_type
     assert attached == ["so101"] and len(goal_writes(serial)) >= 3 and plans[0].instruction == "pick up an x"
     assert refused["status"] == "error" and "developer" in refused["content"][0]["text"]
     assert "registered: ['d_ttt']" in refused["content"][0]["text"] and attached == ["so101"]
+
+
+class _Pick:
+    """A developer's policy in LeRobot units: shoulder_pan 1.0 of its -100..100, every other joint held."""
+
+    units = "lerobot"
+
+    def act(self, obs, *, instruction=None):
+        return {"shoulder_pan": 1.0}
+
+    def reset(self):
+        pass
+
+
+@pytest.mark.parametrize("units", ["rad", None])
+def test_the_models_units_never_reread_a_registered_policy_on_a_real_arm(units):
+    """``units="rad"`` read the policy's 1.0 % as 1.0 rad: one approved plan, the same as without it, drove
+    shoulder_pan to +0.9993 rad instead of +0.0187. The units are the developer's, as record and push are."""
+    d, serial = make_driver()
+    plans: list = []
+    real = Robot("so101", driver=d, twin=False, approve=lambda plan: plans.append(plan) or True)
+    tool = real.tool(policies={"pick": _Pick()})
+    before = len(goal_writes(serial))
+    (r,) = _turn(tool, [_run(policy="pick", units=units)])
+    assert r["status"] == "error" and "developer" in r["content"][0]["text"], (r, real.observe()["shoulder_pan"])
+    assert plans == [] and len(goal_writes(serial)) == before  # refused before the operator is asked or a write
+    assert "units" not in tool.tool_spec["inputSchema"]["json"]["properties"]["run"]["properties"]  # not offered
+    (ok,) = _turn(tool, [_run(policy="pick")])
+    assert ok["status"] == "success" and plans[0].units == "auto", ok  # the plan: the policy's own units
+    assert real.observe()["shoulder_pan"] == pytest.approx(0.0187, abs=1e-3)
+    real.close()
