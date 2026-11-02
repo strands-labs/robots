@@ -38,9 +38,13 @@ mesh = ["eclipse-zenoh>=1.9.0,<1.11.0", "cryptography>=42"]
 iot = ["awsiotsdk>=1.31", "boto3>=1.43.17", "cryptography>=42"]  # cryptography: the local CSR with CN=<device id>
 # The dashboard: a loopback web server and the world in a browser tab (the page's chat also needs [tools]).
 dashboard = ["fastapi>=0.115", "uvicorn>=0.35", "websockets>=13"]
+# The dashboard's voice (WS /ws/voice): a strands BidiAgent (strands.bidi, 1.62+) on OpenAI gpt-realtime-2. Amazon Nova
+# Sonic also needs `strands-agents[bidi]` (Bedrock's event stream), installed by hand: it pins an awscrt older than
+# awsiotsdk's, so with [iot] put `awscrt>=0.36` back after it.
+voice = ["strands-agents>=1.62", "websockets>=13"]
 # Everything that installs from PyPI on any machine (the GPU extras isaac/newton are their own lines, LeRobot is
 # _extras.LEROBOT): `uv pip install -e ".[all]"`.
-all = ["strands-robots[mujoco,feetech,onnx,lerobot,tools,mesh,iot,dashboard]"]
+all = ["strands-robots[mujoco,feetech,onnx,lerobot,tools,mesh,iot,dashboard,voice]"]
 dev = ["pytest>=8", "pytest-timeout", "ruff>=0.6", "mypy>=1.10", "import-linter>=2.1", "onnx>=1.16", "moto[iot]>=5"]
 
 [tool.hatch.version]

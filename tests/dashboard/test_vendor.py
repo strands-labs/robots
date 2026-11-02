@@ -34,4 +34,4 @@ def test_the_browser_scene_carries_no_attribute_newer_than_the_pinned_build() ->
     with Simulation() as sim:
         Robot("so101", sim=sim)
         xml = Dashboard(sim).scene_json()["xml"]
-    assert ' input="' not in xml  # python mujoco 3.16 writes it; 3.14 WASM rejects it (journal iteration 1)
+    assert ' input="' not in xml  # python mujoco 3.16 writes it; 3.14 WASM rejects it
