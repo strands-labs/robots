@@ -1,8 +1,8 @@
 ---
-description: A Robot is a body in a world. observe, act, run; the loop is written once and returns what it measured.
+description: Robot.observe, Robot.act and Robot.run. One control loop for simulated and real bodies, returning a RunResult with what it measured.
 ---
 
-# A robot
+# Observe, act and run
 
 {{drawing:d03_one_loop}}
 
@@ -25,6 +25,8 @@ arm.sim.run({arm: my_policy, g1: my_policy}, steps=20)   # many robots in lock-s
 `so101` is `so101_2`). The `Body` is the only thing that differs between bodies: `SimBody` is a handle
 into a world, and the loop never knows which one it has.
 
+## act()
+
 An `Action` is a vector in `action_keys` order or a `{joint: target}` mapping: a joint it leaves out keeps
 its last commanded target, so `act({"elbow_flex": 0.4})` holds the other five against gravity (`act({})` holds
 all six). Before the first write, and after `hold()`, an e-stop, `calibrate()` or `sim.reset()`, that target is
@@ -41,10 +43,10 @@ still, call `hold()`; there is no `"hold"` policy. On a Feetech arm every write 
 steps pass as written, and `extras()["slewed"]` counts the writes the cap shortened. The first write after
 construction or after torque goes off reads the arm first, so the cap never depends on the caller having read.
 
-A policy that names where its episodes begin (`start_pose`, in its own units; `Policy("zenoh://…",
-start_pose={"shoulder_pan": 20.0})`, or the server's own word) is taken there first: `run()` ramps to it over
-`start_seconds` (default 3) before step one, so a chunked model plans its first chunk from the pose it was trained
-from instead of from wherever the arm was left.
+A policy that declares a `start_pose` is moved there before the first step; see
+[Running a LeRobot policy](lerobot.md#start-pose).
+
+## run()
 
 `run(policy, hz=, seconds=|steps=|stop_when=)` takes a `Policy` subclass, anything with `act(obs)` and
 `reset()`, or a bare callable (it receives `instruction=` when it declares it). In a world, `hz` sets how
@@ -61,6 +63,8 @@ units, a scheme that agrees keeps the policy's own norm modes and any other is r
 {{drawing:d08_policy_hooks}}
 
 {{drawing:d13_bind_releases}}
+
+## Recording and replay
 
 `run(record="data/wave")` appends the run as one episode of a LeRobot v3 dataset; it needs LeRobot with its
 `dataset` extra, which the one LeRobot install line carries. `Policy("data/wave?episode=0")` replays that

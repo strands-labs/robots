@@ -1,8 +1,8 @@
 ---
-description: One world, many robots. A Simulation owns time and the scene; a Backend steps the physics.
+description: A Simulation owns the scene, the robots in it and the time; a Backend steps the physics. MuJoCo by default, Isaac Sim and Newton on a GPU.
 ---
 
-# One world
+# Simulation
 
 {{drawing:d02_one_world}}
 

@@ -1,17 +1,17 @@
 {% set install = "uv pip install -e \".[mujoco,onnx,lerobot,mesh]\"" %}
 {% set columns = [
-  ("Start", [("Quickstart", "quickstart/"), ("Status", "status/"), ("Notebooks", "notebooks/")]),
-  ("Build", [("Robots", "robots/"), ("One world", "simulation/"), ("Policies", "policies/"), ("Hardware", "hardware/"), ("GPU backends", "gpu/")]),
-  ("Operate", [("Device and safety", "device/"), ("Mesh", "mesh/"), ("Recording", "recording/"), ("Agent tools", "tools/"), ("Dashboard", "dashboard/")]),
-  ("Reference", [("API", "api/"), ("Design (#4749)", "https://github.com/strands-labs/robots/issues/4749"), ("Roadmap (#3818)", "https://github.com/strands-labs/robots/issues/3818")]),
+  ("Get started", [("Installation", "install/"), ("Quickstart", "quickstart/"), ("Example notebooks", "notebooks/")]),
+  ("Guides", [("Robot descriptions", "robots/"), ("Simulation", "simulation/"), ("Policies", "policies/"), ("Running a LeRobot policy", "lerobot/"), ("Recording a dataset", "recording/"), ("Dashboard", "dashboard/")]),
+  ("Hardware and fleets", [("Connecting hardware", "hardware/"), ("Safety and e-stop", "safety/"), ("Mesh networking", "mesh/"), ("AWS IoT Core", "iot/"), ("GPU simulation", "gpu/")]),
+  ("Reference", [("API reference", "api/"), ("Agent tools", "tools/")]),
   ("Community", [("GitHub", config.repo_url), ("Strands Agents", "https://strandsagents.com/"), ("Strands Labs", "https://github.com/strands-labs")]),
 ] %}
 <div class="sr-cta"><div class="sr-cta__panel">
-  <p class="sr-cta__title">A world. A robot. A brain.</p>
+  <p class="sr-cta__title">Build robots in Python.</p>
   <p class="sr-cta__links">
     <a href="{{ 'quickstart/' | url }}">Quickstart &rarr;</a>
     <a href="{{ 'notebooks/' | url }}">Notebooks &rarr;</a>
-    <a href="{{ 'status/' | url }}">Status &rarr;</a>
+    <a href="{{ 'install/' | url }}">Installation &rarr;</a>
   </p>
 </div></div>
 <footer class="md-footer sr-footer">

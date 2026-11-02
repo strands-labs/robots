@@ -18,7 +18,7 @@ def scene() -> Scene:
     s.section(60, 122, "a run ends")
     s.box(60, 134, 320, 130, 'stopped_by = "fault"', "a lost server, a NaN target, a stale frame",
           size=14, subsize=12, id="fault")
-    s.section(470, 122, "v1", accent=True)
+    s.section(470, 122, "then", accent=True)
     s.box(470, 134, 340, 130, "on_disconnect", "each control's declared target, once", accent=True,
           size=14, subsize=12, id="apply")
     s.section(900, 122, "the body")
@@ -33,6 +33,6 @@ def scene() -> Scene:
     s.box(60, 452, 1080, 100, "lock-step", "only the robot that faulted is moved to its on_disconnect state; the "
           "rest keep running", dashed=True, size=14, subsize=12, id="lockstep")
 
-    s.footnote(580, "Before, the body stayed at its last command, so a real arm held wherever the policy left it.")
+    s.footnote(580, "A real arm is never left holding wherever a failed policy happened to put it.")
     s.motion = [("apply", "pulse"), ("w1", "flow"), ("w2", "flow"), ("w3", "flow"), ("lockstep", "visit")]
     return s

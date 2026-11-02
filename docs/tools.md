@@ -1,5 +1,5 @@
 ---
-description: robot.tool, sim.tool and mesh.tool. Generated from the robot, so they're never out of date.
+description: robot.tool, sim.tool and mesh.tool give a Strands agent a robot, a world or a whole mesh. They are generated from the manifest.
 ---
 
 # Agent tools
@@ -27,20 +27,26 @@ Calls on one world run in the order the model sent them, even under strands' def
 call of one message at once: `camera c`, `act`, `render c` in one message renders from `c` after the arm moved. No
 `SequentialToolExecutor()` needed.
 
-Nobody writes these by hand. They're generated from the robot's manifest and method signatures, so a new skill or a
+## How the tools are generated
+
+The tools are not written by hand. They're generated from the robot's manifest and method signatures, so a new skill or a
 new joint shows up in the tool automatically. Each `act` joint carries its unit and range from the manifest, each
 rpc reads its docstring's first paragraph and its arguments the rest. A `policy` argument lists the shipped presets
 that drive that robot (`holosoma` for `g1`, `microduck` for `microduck`, none for `so101`) and every spec form
 an agent can send, so its first `run` names a real policy.
 
-A policy the developer built — a remote one included — is handed to the agent as a **handle**:
+## Policy handles
+
+A policy the developer built, including a remote one, is handed to the agent as a **handle**:
 `arm.tool(policies=[ttt])` is the same tool with `run(policy="ttt", instruction=..., seconds=...)` resolving to that
 object (named by `.name`, a remote policy's deployment, or the keys of a dict; with exactly one handle, `policy` may be
-left out). The model never types a network address — `policy="zenoh://..."` from a model stays refused — and on a real
+left out). The model never supplies a network address (`policy="zenoh://..."` from a model is refused), and on a real
 arm the run still goes through `approve=` once and the safety chain every step.
 
-What an agent **can't** do: approve its own run on a real robot (the operator says yes once, to the whole plan),
+## What an agent cannot do
+
+An agent cannot approve its own run on a real robot (the operator approves the whole plan once),
 choose what a run records or uploads or the units a policy's numbers are read in (`record`, `push`, `units` are
 the developer's), resume after an e-stop, calibrate (that turns the torque off), or plug in hardware through
-`sim.tool`. It *can* hit e-stop. That one's always allowed.
-See the duck taking orders on the [policies page](policies.md#skills-an-agent-a-robot-that-listens).
+`sim.tool`. An agent can always call e-stop.
+See [Skills driven by an agent](policies.md#skills-driven-by-an-agent) for an agent driving the microduck.
