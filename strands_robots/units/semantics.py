@@ -66,7 +66,7 @@ def units_for_semantics(semantics: str, description: Description) -> Units | Non
             raise ValueError(
                 f"unknown LeRobot semantics {semantics!r}, and {description.name} declares no hardware.lerobot_norm "
                 f"to derive it from: add a row to strands_robots/units/semantics.json "
-                f"(known: {', '.join(sorted(table()))}) or pass units= explicitly"
+                f"(known: {', '.join(sorted(table()))})"
             )
         what = "radians" if entry.get("units") == "rad" else f"LeRobot modes {entry['lerobot_norm']}"
         warnings.warn(

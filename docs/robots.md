@@ -33,5 +33,5 @@ refuses with `FileNotFoundError` naming it; a name that is not in the registry r
 | `Requirements` | what a policy needs (camera names and sizes, state length); `check(obs)` refuses naming the gap |
 | `Physics`, `Contact`, `RunResult` | engine and step sizes, one contact, what a run measured |
 
-Units: the robot speaks radians. `Units.for_robot(description, "lerobot_so10x")` maps them to the
-Feetech bus range a LeRobot SO-10x checkpoint was trained on (body joints -100..100, gripper 0..100).
+Units: the robot speaks radians. `Units.for_robot(description, "lerobot")` maps them to the LeRobot norm
+modes the registry names (`hardware.lerobot_norm`; an SO-10x: body joints -100..100, gripper 0..100).

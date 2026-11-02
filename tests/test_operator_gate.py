@@ -250,3 +250,21 @@ def test_k6_start_carries_the_agent_mark_to_its_thread():
     with pytest.raises(RequestRefused, match="approve="):
         _ = task.result
     real.close()
+
+
+def test_k6_two_runs_that_read_one_policy_in_other_units_never_ask_the_operator_the_same():
+    """The plan names the units: a policy that cannot say is moved elsewhere by ``units="lerobot"`` (0.5 % of the
+    range, not 0.5 rad), so the operator's one yes must see which."""
+    from strands_robots.robot.run import from_agent
+
+    plans: list = []
+    at = {}
+    for units in ("auto", "lerobot"):
+        d, _ = make_driver()
+        real = Robot("so101", driver=d, twin=False, approve=lambda p: plans.append(p) or True)
+        with from_agent():
+            real.run(lambda obs: {"shoulder_pan": 0.5}, steps=3, hz=50, units=units)
+        at[units] = real.observe()["shoulder_pan"]
+        real.close()
+    assert abs(at["auto"] - at["lerobot"]) > 0.4, at
+    assert plans[0] != plans[1] and [p.units for p in plans] == ["auto", "lerobot"], plans

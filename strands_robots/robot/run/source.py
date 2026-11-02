@@ -50,7 +50,8 @@ def is_confirmed() -> bool:
 
 @dataclass(frozen=True)
 class RunPlan:
-    """What the operator approves for an agent's run on a REAL body: who, with what, for how long, at what rate.
+    """What the operator approves for an agent's run on a REAL body: who, with what, for how long, at what rate, and
+    the units its numbers are read in (``"auto"``: the policy's own).
 
     An agent's run on hardware asks ``Robot(approve=callable(RunPlan) -> bool)`` once, with this whole plan, before
     anything is acquired (K6); every step then still passes the safety chain, without asking the operator again.
@@ -62,3 +63,4 @@ class RunPlan:
     hz: float | None
     seconds: float | None
     steps: int | None
+    units: str | None = "auto"

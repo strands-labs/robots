@@ -106,7 +106,10 @@ def test_a_real_arm_refuses_a_checkpoint_that_does_not_say_its_norm_mode(tmp_pat
     d, s = make_driver()
     real = Robot("so101", driver=d, twin=False)
     s.frames.clear()
-    names = r"so101 is a real body: pass norm=\{'\*': 'degrees' \| 'range_m100_100', \.\.\.\}.* or semantics="
+    names = (  # whole: a "*" alone gives the gripper the body's mode, a norm no semantics label matches
+        r"so101 is a real body: pass norm=\{'\*': 'degrees', 'gripper': 'range_0_100'\} "
+        r"or norm=\{'\*': 'range_m100_100', 'gripper': 'range_0_100'\}.* or semantics="
+    )
     with pytest.raises(ValueError, match=names):  # an empty label falls back to the registry's, an empty norm to rad
         real.run(Policy(str(tmp_path), **said), steps=1)
     assert s.frames == []  # nothing on the wire, not even a read

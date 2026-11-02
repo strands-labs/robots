@@ -4,8 +4,9 @@
     q_policy = conv.from_rad(obs.joints.positions)     # what the policy should see
     q_rad    = conv.to_rad(policy_action)              # what Robot.act should receive
 
-``Robot.run(policy, units="auto")`` does this around every ``act``; ``units="rad"`` disables it; a
-scheme name forces it when the policy cannot say.
+``Robot.run(policy, units="auto")`` does this around every ``act``. ``units="rad"`` or a scheme name says
+what a policy that cannot say speaks; a policy that declares its units keeps them (a scheme that agrees gets
+the policy's own map, a different one is refused).
 """
 
 from __future__ import annotations
