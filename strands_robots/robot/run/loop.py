@@ -62,7 +62,7 @@ def run(
     if hz is not None and not 0 < hz < float("inf"):  # at an inf or nan hz no tick sleeps: the bus free-runs
         raise ValueError(f"hz must be a finite number > 0, got {hz}")  # before bind: a bad hz loads no checkpoint
     if is_agent() and robot.is_real and not is_confirmed():  # a real agent run asks the operator ONCE (K6),
-        approve_run(robot, RunPlan(robot.id, label(policy), instruction, hz, seconds, steps))  # before any acquire
+        approve_run(robot, RunPlan(robot.id, label(policy), instruction, hz, seconds, steps, units))  # before acquire
     bound = bind(robot, policy, units)
     try:
         if not start_pose(robot, bound):  # a policy that names where its episodes begin is taken there first

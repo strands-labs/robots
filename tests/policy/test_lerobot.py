@@ -72,6 +72,25 @@ def test_a_real_arm_runs_a_checkpoint_only_once_its_norm_mode_is_declared(tiny_a
     real.close()
 
 
+def test_run_units_never_replace_the_norm_a_checkpoint_declares(tiny_act):
+    """``units="lerobot"`` read a degrees checkpoint in the registry's range modes; ``"rad"`` would skip the map."""
+
+    def goals(units):
+        d, s = make_driver()
+        d.images = lambda: {"front": np.zeros((48, 64, 3), np.uint8)}
+        real = Robot("so101", driver=d, twin=False)
+        try:
+            real.run(Policy(tiny_act, device="cpu", norm=DEG_NORM), steps=1, units=units)
+        finally:
+            real.close()
+        at = slice(ft.REG_GOAL_POSITION, ft.REG_GOAL_POSITION + 2)
+        return [int.from_bytes(s.regs[i][at], "little") for i in sorted(s.regs)]
+
+    assert goals("lerobot") == goals("auto")
+    with pytest.raises(ValueError, match="declares units 'lerobot', but units='rad' was passed"):
+        goals("rad")
+
+
 def test_a_missing_camera_is_refused_by_name_before_a_session(deployment):
     cfg, server = deployment()
     with server as url:

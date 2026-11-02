@@ -60,6 +60,24 @@ def lerobot_units(description: Description, norm: Mapping[str, str] | None = Non
     return Units("lerobot", keys, lo, hi, np.array(lo_u), np.array(hi_u), tuple(modes))
 
 
+def _named(description: Description) -> dict[str, str]:
+    """The joints the registry gives a mode of their own (``hardware.lerobot_norm`` but ``"*"``): an SO arm's gripper
+    is ``range_0_100`` whether LeRobot recorded its body in degrees or in range."""
+    return {k: m for k, m in (description.hardware.lerobot_norm or {}).items() if k != "*"}
+
+
+def unnamed(description: Description, norm: Mapping[str, str]) -> dict[str, str]:
+    """The joints ``norm`` leaves to a ``"*"`` other than the mode the registry names for them: joint -> that mode."""
+    star, named = norm.get("*"), _named(description)
+    left = [k for k in description.action_keys if k not in norm and k in named]
+    return {k: named[k] for k in left if star is not None and named[k] != star}
+
+
+def norm_hint(description: Description) -> str:
+    """The ``norm=`` a real body's refusal asks for, whole: each body mode with the joints the registry names."""
+    return " or ".join("norm=" + str({"*": body, **_named(description)}) for body in ("degrees", "range_m100_100"))
+
+
 def calibrated(units: Units, calibration: Any, *, resolution: int) -> Units:
     """Exact hardware ``degrees``: LeRobot's ``(counts - mid) * 360 / (resolution - 1)`` at the calibrated ends.
 

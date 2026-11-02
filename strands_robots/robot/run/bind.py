@@ -69,8 +69,8 @@ def bind(robot: Robot, policy: PolicyLike | Callable[[Observation], Any], units:
         from ..safety import RequestRefused
 
         raise RequestRefused(f"{robot.id} cannot hold position between ticks, and {pol!r} requires a body that can")
-    if units != "auto":  # a named scheme needs no session: an unknown one is refused before attach opens one
-        resolve_units(pol, units, robot.description)
+    if units is not None and units != "auto":  # an unknown scheme is refused before attach opens a session; whether
+        Units.for_robot(robot.description, units)  # it agrees with the policy may need attach (a checkpoint's)
     attach = getattr(pol, "attach", None)
     if attach is not None:  # connect / load / admit against THIS robot, before units and requirements
         attach(robot)

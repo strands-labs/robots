@@ -14,8 +14,9 @@ from .schema import parameters
 # Only the operator may call these; a model never sees them: ``resume`` after an e-stop, and ``calibrate``
 # (on a real bus it turns torque off and rewrites the servos' offsets).
 OPERATOR_ONLY = frozenset({"resume", "calibrate"})
-# Arguments only the developer's own code passes: a model never decides what is recorded or uploaded.
-DEVELOPER_ONLY_ARGS = frozenset({"record", "push"})
+# Arguments only the developer's own code passes: a model never decides what is recorded or uploaded, nor the units
+# a policy's numbers are read in (a policy's 1.0 % read as 1.0 rad is another place for the arm, under the same yes).
+DEVELOPER_ONLY_ARGS = frozenset({"record", "push", "units"})
 
 
 def rpc_names(device: Any) -> tuple[str, ...]:

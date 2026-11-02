@@ -40,6 +40,7 @@ left out). The model never types a network address — `policy="zenoh://..."` fr
 arm the run still goes through `approve=` once and the safety chain every step.
 
 What an agent **can't** do: approve its own run on a real robot (the operator says yes once, to the whole plan),
-resume after an e-stop, calibrate (that turns the torque off), or plug in hardware through `sim.tool`. It *can* hit
-e-stop. That one's always allowed.
+choose what a run records or uploads or the units a policy's numbers are read in (`record`, `push`, `units` are
+the developer's), resume after an e-stop, calibrate (that turns the torque off), or plug in hardware through
+`sim.tool`. It *can* hit e-stop. That one's always allowed.
 See the duck taking orders on the [policies page](policies.md#skills-an-agent-a-robot-that-listens).
