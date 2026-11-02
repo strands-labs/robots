@@ -54,7 +54,7 @@ the operator's `X-Confirm` header. Voice never sends that header, so voice canno
 
 ## Live view in these docs
 
-When you serve these docs locally, the home page looks for a dashboard on port 8090 or 8091 and shows it live.
+Serve these docs locally and the home page shows a dashboard running on port 8090 or 8091.
 Add `?live=http://127.0.0.1:<port>/` to the home page URL to use another port.
 
 <div class="sr-grid2" markdown>

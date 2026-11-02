@@ -9,7 +9,7 @@ title: strands-robots
 <div class="sr-hero" markdown>
 <div markdown>
 <p class="sr-hero__title">Build robots<br>in <em>Python</em>.</p>
-<p class="sr-hero__lead">strands-robots is a Python library for building robots. The same code drives a simulated robot and a real one, and any robot can be a tool for an agent.</p>
+<p class="sr-hero__lead">strands-robots is a Python library for building robots. The same code drives a simulated robot and a real one. Any robot can be a tool for an agent.</p>
 <div class="sr-hero__actions">
 <a class="sr-btn sr-btn--primary" href="quickstart/">Quickstart</a>
 <a class="sr-btn" href="install/">Installation</a>

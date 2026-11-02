@@ -5,7 +5,7 @@ description: Run a LeRobot checkpoint in this process, or on a GPU machine with 
 # Running a LeRobot policy
 
 You can run any LeRobot checkpoint on a robot. LeRobot runs the model. strands-robots matches joint names, cameras
-and units, and stops with a clear error if they do not fit. Install LeRobot first, see
+and units. It stops with a clear error if they do not fit. Install LeRobot first, see
 [Installation](install.md#lerobot).
 
 <!-- test: skip, downloads a LeRobot checkpoint and needs LeRobot installed -->
@@ -34,7 +34,7 @@ arm.run(Policy("zenoh://gpu-box:7447/smolvla"), instruction="pick up the cube", 
 `server_config(robot.description, "lerobot/smolvla_base")` writes the server config for your robot.
 For a server on another network, name the link: `zenoh://tls/host:7447/smolvla`.
 
-If the server stops answering, the robot holds its last target for 1 s, then the run stops with a fault.
+If the server stops answering, the robot holds its last target for 1 s. Then the run stops with a fault.
 
 ## Options
 
