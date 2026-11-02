@@ -26,6 +26,7 @@ function setMode(mode, label) {
   const pill = $("#mode");
   pill.dataset.mode = mode;
   pill.textContent = label || mode;
+  emit("mode", { mode, label });
 }
 // Every string the server sends (robot ids, names, cameras, policies, chat tool names) is text, never markup:
 // an agent chooses some of them (sim.tool add_robot id=, camera name=), and a script in this page could set X-Confirm.
@@ -39,48 +40,197 @@ function highlight(robotId) {
   state.picked = robotId;
   if (robotId && [...$("#run-robot").options].some((o) => o.value === robotId)) { $("#run-robot").value = robotId; renderTasks(state.tasks); }
   for (const el of document.querySelectorAll(".card")) el.classList.toggle("picked", el.dataset.id === robotId);
-  if (robotId && matchMedia("(max-width: 56em)").matches) showDrawer(true, "robots");
+  if (robotId && matchMedia("(max-width: 56em)").matches && !$("#app").dataset.side) showTab("robots");
 }
+const small = () => matchMedia("(max-width: 56em)").matches;
+/** Open or close the side column (desktop: a grid column; phones: a bottom sheet). It never floats over the chat. */
 function showDrawer(on, tab) {
-  const d = $("#drawer");
-  d.hidden = !on;
+  if (on) delete $("#app").dataset.side; else $("#app").dataset.side = "closed";
   $("#toggle").setAttribute("aria-pressed", String(on));
-  if (tab) { d.dataset.tab = tab; for (const b of document.querySelectorAll("#tabs button")) b.setAttribute("aria-selected", String(b.dataset.tab === tab)); }
-  $("#notice").classList.toggle("lowered", !on);
-  inset();
+  if (tab) showTab(tab);
+  emit("layout", { open: on });
 }
-// Desktop: the drawer covers the right side of the stage → the twin frames into what is left. Phones: a bottom sheet, no inset.
-function inset() {
-  const d = $("#drawer");
-  const covered = !d.hidden && !matchMedia("(max-width: 56em)").matches ? innerWidth - d.getBoundingClientRect().left : 0;
-  twin.setInset(covered);
+/** Select a tab of the side column: "robots", "chat" (phones), or a registered panel id. */
+function showTab(tab) {
+  const side = $("#side");
+  if (!document.querySelector(`#tabs button[data-tab="${CSS.escape(tab)}"]`)) tab = "robots";
+  if (tab === "chat" && !small()) { $("#prompt").focus(); return; } // desktop: the chat is docked, always there
+  side.dataset.tab = tab;
+  for (const b of document.querySelectorAll("#tabs button")) b.setAttribute("aria-selected", String(b.dataset.tab === tab));
+  for (const p of document.querySelectorAll("#panes > .pane")) p.hidden = p.dataset.pane !== tab;
+  if ($("#app").dataset.side) showDrawer(true);
+  try { sessionStorage.setItem("sr.dashboard.tab", tab); } catch { /* storage blocked */ }
+  const panel = SR.panels.get(tab);
+  if (panel && !panel.shown) { panel.shown = true; }
+  emit("tab", { id: tab });
 }
-addEventListener("resize", () => requestAnimationFrame(inset));
-$("#toggle").addEventListener("click", () => showDrawer($("#drawer").hidden));
-$("#tabs").addEventListener("click", (e) => { const b = e.target.closest("button[data-tab]"); if (b) showDrawer(true, b.dataset.tab); });
-document.addEventListener("keydown", (e) => {
-  const typing = /^(INPUT|TEXTAREA)$/.test(document.activeElement?.tagName || "");
-  if ((e.key === "k" && (e.metaKey || e.ctrlKey)) || (e.key === "/" && !typing)) { e.preventDefault(); showDrawer(true, "chat"); $("#prompt").focus(); }
-  else if (e.key === "d" && !typing && !e.metaKey && !e.ctrlKey) showDrawer($("#drawer").hidden);
-  else if (e.key === "Escape" && typing) document.activeElement.blur();
+// The stage is its own grid cell now: nothing covers the twin, so no view offset.
+function inset() { twin.setInset(0); }
+$("#toggle").addEventListener("click", () => showDrawer(Boolean($("#app").dataset.side)));
+$("#tabs").addEventListener("click", (e) => {
+  const b = e.target.closest("button[data-tab]");
+  if (!b) return;
+  // phones: the tab row is the sheet's dock; tapping the tab that is already open folds the sheet
+  if (small() && !$("#app").dataset.side && $("#side").dataset.tab === b.dataset.tab) { showDrawer(false); return; }
+  showTab(b.dataset.tab);
 });
-// Follow the docs site's palette when embedded there (Material stores it in localStorage as /.__palette).
-function syncScheme() {
-  try {
-    // Only the docs site's explicit choice flips the stage to paper; on its own the dashboard is dark (a 3D stage).
-    const raw = Object.keys(localStorage).filter((k) => k.endsWith("__palette")).map((k) => localStorage.getItem(k))[0];
-    const scheme = raw ? JSON.parse(raw)?.color?.scheme : null;
-    document.documentElement.dataset.scheme = scheme === "paper" ? "paper" : "dark";
-    twin.setScheme?.(document.documentElement.dataset.scheme);
-  } catch { /* keep dark */ }
+document.addEventListener("keydown", (e) => {
+  const typing = /^(INPUT|TEXTAREA|SELECT)$/.test(document.activeElement?.tagName || "");
+  if ((e.key === "k" && (e.metaKey || e.ctrlKey)) || (e.key === "/" && !typing)) { e.preventDefault(); showDrawer(true, "chat"); $("#prompt").focus(); }
+  else if (e.key === "d" && !typing && !e.metaKey && !e.ctrlKey) showDrawer(Boolean($("#app").dataset.side));
+  else if (e.key === "t" && !typing && !e.metaKey && !e.ctrlKey) setScheme(document.documentElement.dataset.scheme === "dark" ? "paper" : "dark", true);
+  else if (e.key === "Escape" && typing && !e.shiftKey) document.activeElement.blur();
+});
+
+/* Light / dark: the docs site's two schemes (paper · dark). index.html picks one before first paint (?theme= · this
+   toggle's own choice · the docs palette · the OS); the toggle stores its choice; the docs palette is followed live
+   when the page is embedded there and the reader has not chosen here. */
+function setScheme(scheme, remember = false) {
+  document.documentElement.dataset.scheme = scheme;
+  twin.setScheme?.(scheme);
+  if (remember) try { localStorage.setItem("sr.dashboard.scheme", scheme); } catch { /* storage blocked */ }
+  emit("scheme", { scheme });
 }
-if (params.get("theme") !== "dark") { syncScheme(); addEventListener("storage", syncScheme); }
-if (matchMedia("(max-width: 56em)").matches) showDrawer(false); else inset();
+// Embedded in the docs hero (another origin, so no shared storage): the docs page posts its palette changes. Only a
+// scheme name is read from the message; nothing else in it is used, so any sender can at most flip light/dark.
+addEventListener("message", (e) => {
+  const m = e.data;
+  if (window.top === window || !m || m.type !== "sr:scheme" || (m.scheme !== "paper" && m.scheme !== "dark")) return;
+  setScheme(m.scheme);
+});
+$("#theme").addEventListener("click", () => setScheme(document.documentElement.dataset.scheme === "dark" ? "paper" : "dark", true));
+twin.setScheme?.(document.documentElement.dataset.scheme);
+addEventListener("storage", (e) => {
+  if (!e.key || !e.key.endsWith("__palette") || params.get("theme")) return;
+  try { if (localStorage.getItem("sr.dashboard.scheme")) return; const m = JSON.parse(e.newValue || "null")?.color?.scheme; if (m) setScheme(m === "slate" ? "dark" : m); } catch { /* ignore */ }
+});
+
+if (window.top !== window) $(".brand").target = "_blank"; // embedded: the wordmark opens the full page, not a nested one
+// Embedded: tell the parent "sr:hello" now and "sr:painted" once the twin has drawn a frame with the robots in view, so
+// the docs hero keeps its recording until then. Only these two names are sent (no state), to the embedding docs'
+// origin when ?docs= names it, else to any parent.
+if (window.top !== window) {
+  const to = (() => { try { return new URL(params.get("docs") || "").origin; } catch { return "*"; } })();
+  const say = (type) => { try { window.parent.postMessage({ type }, to); } catch { /* parent gone */ } };
+  document.documentElement.dataset.embed = "yes";
+  say("sr:hello");
+  const painted = () => {
+    if (!(twin.framed && twin.pose)) { requestAnimationFrame(painted); return; }
+    requestAnimationFrame(() => requestAnimationFrame(() => { say("sr:painted"); window.__painted = true; })); // drawn, then shown
+  };
+  requestAnimationFrame(painted);
+}
+
+/* Docs: the public site, or the reader's local docs when this page is embedded in them (the hero) or ?docs= names one. */
+(() => {
+  const local = (u) => { try { const x = new URL(u); return /^https?:$/.test(x.protocol) ? x : null; } catch { return null; } };
+  const explicit = params.get("docs") && local(params.get("docs"));
+  const ref = window.top !== window && document.referrer ? local(document.referrer) : null;
+  const base = explicit || (ref && ["127.0.0.1", "localhost"].includes(ref.hostname) ? new URL("/", ref) : null);
+  if (base) $("#docs-link").href = new URL("dashboard/", base.href.endsWith("/") ? base : `${base.href}/`).href;
+})();
+
+/* ---------- panel slot API ----------
+ * Other front-end modules add a tab to the side column without editing this file:
+ *   window.SR.registerPanel({ id, title, icon?, order?, badge?, mount(el, ctx) })
+ * mount runs once, with a fresh <section> and ctx = { state, base, esc, log, chip, notice, on, api, robots, select }.
+ * Server mode also imports every module listed by GET /api/panels (static/panels/*.js), so a feature module only adds a file.
+ */
+const listeners = new Map(); // event -> Set(fn)
+function emit(ev, data) { for (const fn of listeners.get(ev) || []) { try { fn(data); } catch (err) { console.error(`SR ${ev} listener`, err); } } }
+function on(ev, fn) { if (!listeners.has(ev)) listeners.set(ev, new Set()); listeners.get(ev).add(fn); return () => listeners.get(ev).delete(fn); }
+const SR = window.SR = Object.assign(window.SR || {}, {
+  version: 1,
+  panels: new Map(),
+  on, emit,
+  registerPanel(spec) {
+    const { id, title, icon = "", order = 100, mount } = spec || {};
+    if (!/^[a-z][a-z0-9-]{0,31}$/.test(id || "")) throw new Error(`SR.registerPanel: id must be a short lowercase slug, got ${id}`);
+    if (id === "robots" || id === "chat" || SR.panels.has(id)) throw new Error(`SR.registerPanel: ${id} is taken`);
+    if (typeof mount !== "function") throw new Error(`SR.registerPanel(${id}): mount(el, ctx) is required`);
+    const tab = document.createElement("button");
+    tab.setAttribute("role", "tab"); tab.dataset.tab = id; tab.dataset.order = String(order); tab.setAttribute("aria-selected", "false");
+    tab.textContent = `${icon ? `${icon} ` : ""}${title || id}`;
+    const badge = document.createElement("span"); badge.className = "badge"; tab.appendChild(badge);
+    const before = [...document.querySelectorAll("#tabs button[data-tab]")].find((b) => b.dataset.tab !== "robots" && (b.dataset.tab === "chat" || +b.dataset.order > order));
+    $("#tabs").insertBefore(tab, before || null);
+    const el = document.createElement("section");
+    el.className = "pane"; el.dataset.pane = id; el.dataset.panel = id; el.setAttribute("role", "tabpanel"); el.hidden = true;
+    $("#panes").appendChild(el);
+    const panel = { ...spec, el, tab, setBadge: (v) => { badge.textContent = v === null || v === undefined ? "" : String(v); } };
+    SR.panels.set(id, panel);
+    try { mount(el, ctx(panel)); } catch (err) { el.textContent = `panel ${id} failed: ${err.message}`; console.error(err); }
+    let want = null; try { want = sessionStorage.getItem("sr.dashboard.tab"); } catch { /* storage blocked */ }
+    if (want === id) showTab(id);
+    emit("panel", { id });
+    return panel;
+  },
+  /** A fixed slot outside the tabs: "chat-input" (a row right above the chat input, e.g. a mic) or "bar" (the top
+   *  bar, left of Docs, e.g. a REC dot). mount(el, ctx) gets an empty element; it may also return an element to append. */
+  registerSlot(slot, mount, { id = slot } = {}) {
+    const host = { "chat-input": $("#chat-slot"), bar: $("#bar-slot") }[slot];
+    if (!host) throw new Error(`SR.registerSlot: no slot ${slot} (chat-input · bar)`);
+    if (typeof mount !== "function") throw new Error(`SR.registerSlot(${slot}): mount(el, ctx) is required`);
+    const el = document.createElement("div");
+    el.className = "slot"; el.dataset.slot = slot; el.dataset.panel = id;
+    host.appendChild(el); host.hidden = false;
+    const panel = { id, el, setBadge: () => {} };
+    try { const out = mount(el, ctx(panel)); if (out instanceof Element) el.appendChild(out); } catch (err) { el.textContent = `${id} failed: ${err.message}`; console.error(err); }
+    emit("panel", { id, slot });
+    return panel;
+  },
+  select: (id) => showTab(id),
+  open: (on_ = true) => showDrawer(on_),
+});
+// Alias names for the same two functions.
+window.srPanels = { register: (spec) => SR.registerPanel(spec) };
+window.strandsSlots = { register: (slot, mount) => SR.registerSlot(slot, mount) };
+function ctx(panel) {
+  return {
+    get state() { return state; },
+    get base() { return state.base; },
+    get robots() { return state.desc?.robots || []; },
+    esc, log, chip, notice, on,
+    setBadge: panel.setBadge,
+    select: () => showTab(panel.id),
+    /** fetch against this dashboard; JSON in, JSON out; a POST is always application/json (the guard requires it). */
+    api: async (path, { method = "GET", body, confirm: confirmed = false } = {}) => {
+      const headers = { "content-type": "application/json" };
+      if (confirmed) headers["X-Confirm"] = "yes";
+      const res = await fetch(`${state.base}${path}`, { method, headers, body: body === undefined ? undefined : JSON.stringify(body) });
+      const text = await res.text();
+      let doc = null; try { doc = text ? JSON.parse(text) : null; } catch { doc = { detail: text }; }
+      if (!res.ok) { const err = new Error(doc?.detail || `HTTP ${res.status}`); err.status = res.status; err.doc = doc; throw err; }
+      return doc;
+    },
+  };
+}
+/** Server mode: import every panel module the server lists (static/panels/*.js). A missing route is a quiet no-op. */
+async function loadPanels() {
+  const doc = await fetch(`${state.base}/api/panels`).then((r) => (r.ok ? r.json() : null), () => null);
+  for (const name of doc?.panels || []) {
+    if (!/^(panels\/)?[a-z][a-z0-9_-]*\.js$/.test(name)) continue;
+    try { await import(`${state.base || "."}/${name}`); /* "panels/x.js" or a feature module next to app.js */ } catch (err) { console.error(`panel ${name}`, err); chip(`panel-${name}`, `panel ${esc(name)} failed`, "warn"); }
+  }
+  window.__panelsLoaded = true; // modules may register later (after their own probe): read SR.panels / window.__panels
+}
+Object.defineProperty(window, "__panels", { get: () => [...SR.panels.keys()] });
+if (small()) showDrawer(false); else inset();
 
 /* ---------- cards ---------- */
 
 function fmt(v) { return (Math.abs(v) < 1e-9 ? 0 : v).toFixed(3); }
 
+const CHEV = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 9l5 6 5-6z"/></svg>';
+const collapsed = (() => { try { return new Set(JSON.parse(localStorage.getItem("sr.dashboard.collapsed") || "[]")); } catch { return new Set(); } })();
+function setCollapsed(card, on) {
+  card.dataset.collapsed = on ? "yes" : "no";
+  card.querySelector(".chev")?.setAttribute("aria-expanded", String(!on));
+  if (on) collapsed.add(card.dataset.key); else collapsed.delete(card.dataset.key);
+  try { localStorage.setItem("sr.dashboard.collapsed", JSON.stringify([...collapsed])); } catch { /* storage blocked */ }
+}
+/** One card per robot. The header carries the robot's own E-STOP / Resume slot (.estop-ctl, painted by safety.js
+ *  from the state frames) and a collapse chevron; the body holds one readable slider per joint. */
 function renderCards(desc) {
   const root = $("#cards");
   root.innerHTML = "";
@@ -88,33 +238,52 @@ function renderCards(desc) {
     const card = document.createElement("div");
     card.className = "card";
     card.dataset.id = r.id;
+    card.dataset.key = `robot:${r.id}`;
     const tag = r.is_twin_of ? `<span class="tag real">twin of ${esc(r.is_twin_of)}</span>` : r.is_real ? '<span class="tag real">real</span>' : '<span class="tag sim">sim</span>';
-    card.innerHTML = `<h3><span>${esc(r.id)}<small>${esc(r.name)}</small></span>${tag}</h3>`;
+    card.innerHTML = `<h3><button class="chev" type="button" aria-label="show or hide ${esc(r.id)}'s joints" aria-expanded="true">${CHEV}</button>` +
+      `<span class="name"><span>${esc(r.id)}</span><small>${esc(r.name)}</small></span>${tag}` +
+      `<span class="estop-ctl" data-robot="${esc(r.id)}" data-latched="no"><span class="estop-status">armed</span>` +
+      `<button class="estop" type="button" title="E-stop ${esc(r.id)}: stops it now, no confirm">E-STOP</button>` +
+      `<button class="resume" type="button" title="release the latch (needs an operator name)">Resume</button></span></h3><div class="body"></div>`;
+    const body = card.querySelector(".body");
     r.joints.forEach((jname, i) => {
       const label = (r.labels && r.labels[i]) || jname.split("/").pop();
       const lim = (r.limits && r.limits[label]) || [-3.14, 3.14];
       const row = document.createElement("div");
       row.className = "joint";
       row.innerHTML = `<span title="${esc(jname)}">${esc(label)}</span><span class="val" data-joint="${esc(jname)}">–</span>` +
-        `<input type="range" min="${esc(lim[0])}" max="${esc(lim[1])}" step="0.001" data-robot="${esc(r.id)}" data-label="${esc(label)}" ${state.mode === "server" ? "" : "disabled"}>`;
-      card.appendChild(row);
+        `<input type="range" min="${esc(lim[0])}" max="${esc(lim[1])}" step="0.001" aria-label="${esc(r.id)} ${esc(label)}" data-robot="${esc(r.id)}" data-label="${esc(label)}" ${state.mode === "server" ? "" : "disabled"}>`;
+      body.appendChild(row);
     });
-    card.addEventListener("click", () => highlight(r.id));
+    card.querySelector("h3").addEventListener("click", (e) => {
+      if (e.target.closest(".estop-ctl")) return; // the e-stop buttons are their own click
+      if (e.target.closest(".chev")) { setCollapsed(card, card.dataset.collapsed !== "yes"); return; }
+      highlight(r.id);
+    });
+    body.addEventListener("click", () => highlight(r.id));
+    setCollapsed(card, collapsed.has(card.dataset.key));
     root.appendChild(card);
   }
   for (const c of desc.cameras || []) {  // what a policy sees: the world's own render, refreshed once a second
     const card = document.createElement("div");
     card.className = "card cam";
-    card.innerHTML = `<h3><span>${esc(c.name)}<small>camera ${esc(c.size[0])}x${esc(c.size[1])}</small></span><span class="tag sim">eyes</span></h3><img alt="camera ${esc(c.name)}" data-src="${esc(state.base)}${esc(c.url)}">`;
+    card.dataset.key = `camera:${c.name}`;
+    card.innerHTML = `<h3><button class="chev" type="button" aria-label="show or hide camera ${esc(c.name)}" aria-expanded="true">${CHEV}</button>` +
+      `<span class="name"><span>${esc(c.name)}</span><small>camera ${esc(c.size[0])}x${esc(c.size[1])}</small></span><span class="tag sim">eyes</span></h3>` +
+      `<div class="body"><img alt="camera ${esc(c.name)}" data-src="${esc(state.base)}${esc(c.url)}"></div>`;
+    card.querySelector("h3").addEventListener("click", () => setCollapsed(card, card.dataset.collapsed !== "yes"));
+    setCollapsed(card, collapsed.has(card.dataset.key));
     root.appendChild(card);
   }
+  $("#robot-count").textContent = desc.robots.length ? String(desc.robots.length) : "";
   refreshCams();
   if (!root.__wired) { root.addEventListener("change", onSlider); root.__wired = true; setInterval(refreshCams, 1000); }
+  emit("scene", desc);
 }
 
 function refreshCams() {
   if (state.mode !== "server" || document.hidden) return;
-  for (const img of document.querySelectorAll(".card.cam img")) img.src = `${img.dataset.src}?t=${Date.now()}`;
+  for (const img of document.querySelectorAll('.card.cam:not([data-collapsed="yes"]) img')) img.src = `${img.dataset.src}?t=${Date.now()}`;
 }
 
 async function onSlider(e) {
@@ -147,6 +316,7 @@ function applyFrame(frame) {
   }
   if (frame.tasks !== undefined && JSON.stringify(frame.tasks) !== JSON.stringify(state.tasks || {})) renderTasks(frame.tasks);
   state.lastFrame = frame;
+  emit("frame", frame);
 }
 
 /* ---------- run a policy · add a robot (server mode) ----------
@@ -242,7 +412,7 @@ function renderTasks(tasks) {
   for (const card of document.querySelectorAll(".card")) {
     const t = state.tasks[card.dataset.id];
     let tag = card.querySelector(".running");
-    if (t && !tag) { tag = document.createElement("span"); tag.className = "running"; card.querySelector("h3").appendChild(tag); }
+    if (t && !tag) { tag = document.createElement("span"); tag.className = "running"; card.querySelector("h3").insertBefore(tag, card.querySelector(".estop-ctl")); }
     if (tag) { if (t) tag.textContent = `▸ ${t.policy}`; else tag.remove(); }
   }
   const rid = $("#run-robot").value, go = $("#run-go");
@@ -465,6 +635,7 @@ async function probe() {
       await loadScene();
       connectState();
       connectChat();
+      loadPanels();
       return;
     }
     // No server anywhere: standalone, said on screen. A server that answers later wins: re-probe (5 s, doubling to 60 s), stop the

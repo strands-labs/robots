@@ -21,14 +21,16 @@ server shows up about 27 ms later. Each robot gets a card with joint sliders and
 
 ## Start a dashboard locally
 
-With the `dashboard` extra installed (it is part of `[all]`), one command serves an SO-101 in a MuJoCo world:
+With the `dashboard` and `mujoco` extras installed (both are part of `[all]`), one command serves a robot in a
+MuJoCo world:
 
 ```bash
-python -c "from strands_robots import Robot; from strands_robots.dashboard import Dashboard; Dashboard(Robot('so101').sim).serve(port=8090)"
+python -m strands_robots.dashboard                       # the microduck on http://127.0.0.1:8090
+python -m strands_robots.dashboard so101 g1 --port 8091  # an SO-101 arm and a G1 humanoid side by side
 ```
 
-Open `http://127.0.0.1:8090`. The chat panel needs the `tools` extra and model credentials (Amazon Bedrock by
-default, or pass `model=`).
+Open `http://127.0.0.1:8090`. The chat panel needs the `tools` extra and a Bedrock model id passed with
+`--model` (or `model=` to `Dashboard`).
 
 ## Live view on the docs home page
 

@@ -248,7 +248,7 @@
 .sr-hero__lead { font-size: 0.95rem; color: var(--md-default-fg-color--light); margin: 0 0 1.5rem; max-width: 30rem; }
 .sr-hero__actions { display: flex; gap: 0.6rem; flex-wrap: wrap; align-items: center; margin-bottom: 1.2rem; }
 .sr-btn { display: inline-flex; align-items: center; justify-content: center; gap: 0.35rem; padding: 0.5rem 1.1rem; border-radius: 999px; font-family: var(--sr-mono); font-weight: 600; font-size: 0.76rem; background: var(--sr-pill-bg); border: 1px solid var(--sr-pill-border); color: var(--sr-fg) !important; }
-.sr-hero__actions .sr-btn { min-width: 9.5rem; }
+.sr-hero__actions .sr-btn { min-width: 9.5rem; white-space: nowrap; }
 .sr-btn::after { content: "\2192"; }
 .sr-btn:hover { opacity: 0.8; }
 .sr-install { display: inline-flex; align-items: center; gap: 0.6rem; font-family: var(--sr-mono); font-size: 0.64rem; white-space: nowrap; max-width: 100%; overflow-x: auto; scrollbar-width: none; color: var(--sr-fg); background: var(--sr-pill-bg); border: 1px solid var(--sr-pill-border); border-radius: 999px; padding: 0.4rem 0.5rem 0.4rem 1rem; }
@@ -315,7 +315,7 @@
   .sr-pager__link--next { grid-column: 1; }
   .sr-grid, .sr-proof { gap: 0.8rem; }
   .sr-proof strong { font-size: 1.5rem; }
-  .sr-hero__actions .sr-btn { flex: 1 1 0; min-width: 0; }
+  .sr-hero__actions .sr-btn { flex: 1 1 100%; min-width: 0; }
   .sr-install { flex: 1 1 100%; font-size: 0.6rem; -webkit-mask-image: linear-gradient(to right, #000 92%, transparent); mask-image: linear-gradient(to right, #000 92%, transparent); }
   .sr-prompt { flex-direction: column; align-items: flex-start; }
   .md-typeset h1 { font-size: 1.7em; overflow-wrap: anywhere; }
@@ -354,7 +354,11 @@
 .sr-stage { position: relative; aspect-ratio: 4 / 3; background: var(--sr-viewer-bg); border: 1px solid var(--sr-card-border); border-radius: var(--sr-radius); overflow: hidden; }
 .sr-stage iframe { display: block; width: 100%; height: 100%; border: 0; background: var(--sr-viewer-bg); }
 .sr-stage__note { position: absolute; left: 0.6rem; bottom: 0.5rem; font-family: var(--sr-mono); font-size: 0.58rem; color: var(--sr-muted); pointer-events: none; }
-.sr-hero .sr-stage { margin: 0; aspect-ratio: 1 / 1; }
+.sr-hero .sr-stage { margin: 0; aspect-ratio: 1 / 1; z-index: 2; } /* above the frog (1), under the header */
+/* the live dashboard loads transparent under the recording and replaces it once it has painted (site.js) */
+.sr-stage iframe.sr-stage__live { position: absolute; inset: 0; opacity: 0; pointer-events: none; }
+.sr-stage[data-state="live"] iframe.sr-stage__live { position: static; opacity: 1; pointer-events: auto; }
+.sr-stage[data-state="compiling"] .sr-stage__badge::before { content: ""; display: inline-block; width: 0.45rem; height: 0.45rem; margin-right: 0.35rem; border-radius: 50%; background: currentColor; animation: sr-live 0.8s ease-in-out infinite; }
 @media (max-width: 40em) { .sr-hero .sr-stage { aspect-ratio: 1 / 1; } }
 /* The three-verb table on the landing page reads as a card row. */
 .sr-home .md-typeset table:not([class]) { font-size: 0.76rem; }
@@ -372,7 +376,7 @@
 .sr-stage { position: relative; }
 
 /* The frog: walks the bottom edge, turns around, hops; a click makes it jump. */
-.sr-frog { position: fixed; left: 0; bottom: 14px; width: 30px; height: 30px; z-index: 4; cursor: pointer;
+.sr-frog { position: fixed; left: 0; bottom: 14px; width: 30px; height: 30px; z-index: 1; cursor: pointer;
   animation: sr-frog-walk 52s linear infinite; filter: drop-shadow(0 3px 2px rgba(0, 0, 0, 0.18)); }
 .sr-frog svg { width: 100%; height: 100%; display: block; }
 .sr-frog__hop { display: block; width: 100%; height: 100%; animation: sr-frog-step 0.42s ease-in-out infinite; transform-origin: 50% 100%; }
@@ -397,3 +401,13 @@
 @keyframes sr-frog-jump { 0% { transform: translateY(0) scaleY(0.8); } 40% { transform: translateY(-46px) rotate(-12deg) scaleY(1.1); } 100% { transform: translateY(0); } }
 @media (prefers-reduced-motion: reduce) { .sr-frog, .sr-frog__face, .sr-frog__hop { animation: none; } .sr-frog { left: 16px; } }
 @media print { .sr-frog { display: none; } }
+@media (max-width: 60em) { .sr-frog { display: none; } } /* a narrow window has no free bottom edge: it would walk over the hero and the content */
+
+/* The hero stage, live or recorded: a live dashboard fills it (its own page, in an iframe); otherwise the recording and,
+   under it, the one command that starts a dashboard. */
+.md-typeset .sr-stage__open { margin: 0.6rem 0 0; font-family: var(--sr-mono); font-size: 0.62rem; }
+.sr-stage__badge--live, .md-typeset .sr-stage__badge--live { display: inline-flex; align-items: center; padding: 0.2rem 0.6rem; border-radius: 999px; pointer-events: auto; background: var(--sr-accent); color: var(--sr-on-accent) !important; text-decoration: none; }
+.sr-stage__badge--live::before { content: ""; display: inline-block; width: 0.45rem; height: 0.45rem; margin-right: 0.35rem; border-radius: 50%; background: currentColor; animation: sr-live 1.6s ease-in-out infinite; }
+@keyframes sr-live { 50% { opacity: 0.3; } }
+.md-typeset .sr-stage__start { display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem; margin: 0.7rem 0 0; font-size: 0.68rem; color: var(--sr-muted); }
+.sr-hero__stage:has(.sr-stage[data-state="live"]) .sr-stage__start { display: none; }

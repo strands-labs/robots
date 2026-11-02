@@ -84,12 +84,7 @@ class Dashboard:
                     for o in self.sim.scene.objects
                 ],
                 "cameras": self.cameras_json(),
-                "physics": {
-                    "name": p.name,
-                    "timestep": p.timestep,
-                    "substeps": p.substeps,
-                    "backend": self.sim.backend_name,
-                },
+                "physics": dict(name=p.name, timestep=p.timestep, substeps=p.substeps, backend=self.sim.backend_name),
                 "time": self.sim.time,
                 "revision": self.sim.revision,
                 "stats": sx.stats,
@@ -141,13 +136,9 @@ class Dashboard:
             return {"t": self.sim.time, "revision": self.sim.revision, "bodies": bodies, "estop": estop}
 
     def _robot(self, rid: str) -> Robot:
-        cards = self.real_cards()
-        if rid in self.real:
-            return self.real[rid]
-        if rid in cards:
-            return cards[rid]
-        if rid in self.sim.robots:
-            return self.sim.robots[rid]  # type: ignore[return-value]
+        robots: dict[str, Any] = {**self.sim.robots, **self.real_cards(), **self.real}  # hardware wins over its twin
+        if rid in robots:
+            return robots[rid]  # type: ignore[no-any-return]
         raise KeyError(f"no robot {rid!r}; robots are {list(self.sim.robots) + list(self.real)}")
 
     def act(self, rid: str, targets: Any, *, confirmed: bool) -> dict[str, Any]:

@@ -13,14 +13,15 @@ title: strands-robots
 <div class="sr-hero__actions">
 <a class="sr-btn sr-btn--primary" href="quickstart/">Quickstart</a>
 <a class="sr-btn" href="install/">Installation</a>
-<span class="sr-install">uv pip install -e ".[mujoco,onnx,mesh]"<button class="sr-copy" data-clipboard-text='uv pip install -e ".[mujoco,onnx,mesh]"'>copy</button></span>
+<span class="sr-install">uv pip install -e ".[dashboard,mujoco]"<button class="sr-copy" data-clipboard-text='uv pip install -e ".[dashboard,mujoco]"'>copy</button></span>
 </div>
 </div>
 <div class="sr-hero__stage" markdown>
-<div class="sr-stage" id="hero-stage" data-live="http://127.0.0.1:8090/">
+<div class="sr-stage" id="hero-stage" data-live="http://127.0.0.1:8091/ http://127.0.0.1:8090/" data-state="probing">
 <img src="assets/media/agent_duck.gif" alt="An agent drives the microduck: walk, turn, roll, stand">
-<span class="sr-stage__badge" id="hero-badge">recorded · run a dashboard on :8090 and this goes live</span>
+<span class="sr-stage__badge" id="hero-badge">recorded</span>
 </div>
+<p class="sr-stage__start">Run a dashboard and this turns into the live page: <span class="sr-install">python -m strands_robots.dashboard<button class="sr-copy" data-clipboard-text="python -m strands_robots.dashboard">copy</button></span></p>
 </div>
 </div>
 
@@ -102,10 +103,13 @@ See [Agent tools](tools.md) for what the tools expose and what an agent cannot d
 ## Run it locally
 
 ```bash
+git clone https://github.com/strands-labs/robots.git && cd robots
 uv venv -p 3.12 && source .venv/bin/activate
-uv pip install -e ".[all]"
-python -c "from strands_robots import Robot; from strands_robots.dashboard import Dashboard; Dashboard(Robot('so101').sim).serve(port=8090)"
+uv pip install -e ".[dashboard,mujoco]"
+python -m strands_robots.dashboard
 ```
 
-With a dashboard listening on `127.0.0.1:8090`, the view at the top of this page switches from the recording to the
-live dashboard. See [Dashboard](dashboard.md) for the options.
+This serves the microduck (the robot in the recording above) on `http://127.0.0.1:8090`. `python -m strands_robots.dashboard so101 g1 --port 8091` puts an
+arm and a humanoid side by side. The page's chat also needs the `tools` extra and a Bedrock model
+(`--model <model id>`). With a dashboard listening on `127.0.0.1:8090` or `127.0.0.1:8091`, the view at the top of
+this page switches from the recording to the live dashboard. See [Dashboard](dashboard.md) for the options.
