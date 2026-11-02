@@ -102,3 +102,40 @@ def test_several_robots_record_one_dataset_each() -> None:
     assert targets_for("/tmp/x", ["a"]) == {"a": "/tmp/x"}
     assert targets_for("/tmp/x", ["a", "b"]) == {"a": "/tmp/x/a", "b": "/tmp/x/b"}
     assert targets_for("hf://me/set", ["a", "b"]) == {"a": "hf://me/set-a", "b": "hf://me/set-b"}
+
+
+def test_a_stop_that_lands_while_start_opens_leaves_no_sampler_behind(tmp_path: Path) -> None:
+    import threading
+
+    from strands_robots.dashboard.record import Recorder
+
+    sim = Simulation()
+    Robot("so101", sim=sim)
+    rec = Recorder(Dashboard(sim))
+    opening = threading.Event()
+    real_open = rec._open_episodes
+
+    def slow_open() -> None:  # a cold LeRobot import or camera renders: start holds its lock for a while
+        opening.set()
+        time.sleep(0.5)
+        real_open()
+
+    rec._open_episodes = slow_open  # type: ignore[method-assign]
+    body = {"robots": ["so101"], "cameras": {}, "target": str(tmp_path / "a"), "task": "t", "fps": 10}
+    starter = threading.Thread(target=lambda: rec.start(**body))
+    starter.start()
+    assert opening.wait(10)
+    assert rec.stop(save=False)["state"] == "idle"
+    starter.join(10)
+    time.sleep(0.3)
+    try:
+        assert not [
+            t for t in threading.enumerate() if t.name == "dashboard-record"
+        ]  # nothing samples an idle recorder
+        rec._open_episodes = real_open  # type: ignore[method-assign]
+        rec.start(**{**body, "target": str(tmp_path / "b")})
+        time.sleep(1.5)
+        assert 10 <= rec.status()["frames"] <= 20  # one sampler at 10 fps, not two
+    finally:
+        rec.stop(save=False)
+        sim.close()

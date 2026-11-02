@@ -74,8 +74,10 @@ class Recorder:
                 self._tracks = []
                 raise
             self._s.started = time.monotonic()
-            self._stop.clear()
-            self._thread = threading.Thread(target=self._sample, name="dashboard-record", daemon=True)
+            self._stop = threading.Event()  # this recording's own flag: a stale sampler can never be revived
+            self._thread = threading.Thread(
+                target=self._sample, args=(self._stop,), name="dashboard-record", daemon=True
+            )
             self._thread.start()
             log.info("dashboard: recording %s to %s at %d fps", robots, target, fps)
             return self.status()
@@ -113,8 +115,9 @@ class Recorder:
         """End the recording; its current episode is saved (``save``, default) or dropped."""
         if not isinstance(save, bool):
             raise ValueError('"save" is true or false')
-        self._stop.set()
-        thread = self._thread
+        with self._lock:  # after any start in progress, so its sampler is the one stopped and joined
+            stop, thread = self._stop, self._thread
+            stop.set()
         if thread is not None and thread is not threading.current_thread():
             thread.join(timeout=10)
         with self._lock:
@@ -202,12 +205,12 @@ class Recorder:
         self._close_all()
         log.error("dashboard: recording stopped: %s", self._s.error)
 
-    def _sample(self) -> None:
+    def _sample(self, stop: threading.Event) -> None:
         period = 1.0 / self._s.fps
         nxt = time.monotonic()
-        while not self._stop.is_set():
+        while not stop.is_set():
             with self._lock:
-                if self._s.state == "recording":
+                if self._s.state == "recording" and not stop.is_set():
                     try:
                         for t in self._tracks:
                             obs = takes.observe(self.dash, t)
@@ -224,4 +227,4 @@ class Recorder:
             if delay < -period:  # fell behind (a save encoding video): re-phase instead of bursting
                 nxt = time.monotonic()
                 delay = 0.0
-            self._stop.wait(max(0.0, delay))
+            stop.wait(max(0.0, delay))
