@@ -14,9 +14,9 @@
 # interaction, which is how its own comment came to describe a policy the
 # repository does not implement.
 #
-# Scope discipline: this file excludes TWO rule ids and nothing else.
-# `tests/test_codeql_query_filters.py` pins that set, so widening it is a
-# deliberate, reviewed edit rather than a drive-by line.
+# Scope discipline: this file excludes FOUR rule ids and nothing else, each with
+# its reasoning below and, where it guards a real bug class, the merge-blocking
+# check that replaces it.
 
 query-filters:
   # py/ineffectual-statement -- 27 of 27 open alerts are `...` used as a
@@ -49,6 +49,23 @@ query-filters:
   # preference with no bug class behind it, so nothing is relocated for it.
   - exclude:
       id: py/import-and-import-from
+
+  # py/cyclic-import and py/unsafe-cyclic-import -- 69 of 69 open alerts on
+  # 2026-11-03 pair a module-level import with one that never runs at load time:
+  # 23 sit under `if TYPE_CHECKING:` (a type hint, never executed) and 14 inside a
+  # function (call time, after both modules have loaded); the other 32 are the
+  # module-level end of one of those pairs. The package's load-time import graph
+  # has no cycle, so no module can be half-built when another reads it.
+  #
+  # The bug class these rules guard (ImportError from a partially initialised
+  # module) is NOT given up. tests/test_import_graph.py reads the load-time graph
+  # from the source and fails on any cycle, naming its path, and
+  # tests/test_modules_import_alone.py imports every module first in a fresh
+  # interpreter. Both are merge-blocking; this scan is advisory.
+  - exclude:
+      id: py/cyclic-import
+  - exclude:
+      id: py/unsafe-cyclic-import
 
 # NOT excluded, deliberately: py/empty-except (88 open, the largest class). A
 # swallowed exception genuinely hides bugs, the instances are not one
