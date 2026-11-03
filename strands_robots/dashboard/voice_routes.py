@@ -15,7 +15,7 @@ from fastapi.responses import JSONResponse
 if TYPE_CHECKING:
     from .dashboard import Dashboard
 
-NO_VOICE = 'voice is off: start the dashboard with Dashboard(sim, voice="openai" | "nova" | "auto")'
+NO_VOICE = 'voice is off: start the dashboard with --voice auto (or openai, nova), or pass Dashboard(sim, voice="auto")'
 
 
 def mount(app: FastAPI, dash: Dashboard) -> None:

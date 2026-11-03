@@ -101,6 +101,13 @@ def build_app(dash: Dashboard) -> FastAPI:
         names += [n for n in _FEATURE_MODULES if (STATIC / n).is_file()]
         return JSONResponse({"panels": names})
 
+    @app.get("/api/chat")
+    async def chat_info() -> JSONResponse:
+        from .dashboard import NO_CHAT
+
+        on = dash.model is not None or dash._agent is not None
+        return JSONResponse({"enabled": on, "hint": None if on else NO_CHAT})
+
     @app.get("/api/policies")
     async def policies() -> JSONResponse:
         out = await asyncio.to_thread(runs.policies_json)

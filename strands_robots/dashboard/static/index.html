@@ -212,6 +212,8 @@
   .msg.tool { color: var(--sr-muted); border-left: 2px solid var(--sr-line); padding-left: .55rem; font-size: .68rem; }
   .msg.tool summary { cursor: pointer; } .msg.tool pre { margin: .25rem 0 0; white-space: pre-wrap; }
   .msg.err { color: var(--sr-bad); }
+  .msg.sys.off { white-space: normal; padding: .6rem .7rem; border: 1px dashed var(--sr-line); border-radius: var(--sr-radius); color: var(--sr-fg-light); font-size: .74rem; line-height: 1.5; }
+  .msg.sys.off code { display: block; margin: .35rem 0; padding: .35rem .5rem; border-radius: 6px; background: var(--sr-accent-soft); color: var(--sr-fg); font-size: .68rem; white-space: pre-wrap; overflow-wrap: anywhere; }
 
   /* ---------- small windows (phones, the docs hero iframe): the side column is a bottom sheet under the stage, in the
      grid (the stage shrinks, the camera re-frames, nothing overlaps). Closed, the sheet keeps its tab row as a dock:

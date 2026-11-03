@@ -502,6 +502,13 @@ function log(text, cls = "") {
 
 function connectChat() {
   let ws = null, current = null;
+  fetch(`${state.base}/api/chat`).then((r) => (r.ok ? r.json() : null), () => null).then((info) => {
+    if (!info || info.enabled) return; // an older server without /api/chat: the first send reports it
+    $("#chatform").querySelector("button").disabled = true;
+    $("#prompt").placeholder = "chat is off · start with --model <bedrock model id>";
+    const el = log("", "sys off");
+    el.innerHTML = `<b>Chat is off.</b> Start the dashboard with a model:<code>python -m strands_robots.dashboard --model &lt;bedrock model id&gt;</code>or pass <code>Dashboard(sim, model=...)</code>`;
+  });
   const open = () => new Promise((resolve, reject) => {
     ws = new WebSocket(wsUrl("/ws/chat"));
     ws.onopen = () => resolve(ws);
