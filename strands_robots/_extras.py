@@ -10,7 +10,7 @@ PACKAGE = "strands-robots"
 REPO_HINT = 'uv pip install -e ".[{extra}]"'
 # LeRobot's remote_inference is not on PyPI yet, and a wheel cannot depend on a git commit, so it is its own line.
 # One line for every LeRobot feature: policies (remote), the SO-101 bus (feetech) and record= (dataset).
-LEROBOT = 'pip install "lerobot[remote,feetech,dataset] @ git+https://github.com/huggingface/lerobot@53feaef37b67e8f4c23b6953e880ff535e39d6fe"'
+LEROBOT = 'pip install "lerobot[remote,feetech,dataset] @ git+https://github.com/huggingface/lerobot@main"'
 
 
 def hint(extra: str) -> str:

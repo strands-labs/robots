@@ -39,9 +39,24 @@ def test_a_user_install_line_names_the_package_and_installs_main(page: str) -> N
         assert MAIN in line, f"{page}: {line}"
 
 
+LEROBOT_MAIN = "lerobot[remote,feetech,dataset] @ git+https://github.com/huggingface/lerobot@main"
+
+
+def test_lerobot_comes_from_its_main_branch_everywhere() -> None:
+    """One LeRobot line: its main branch, in the install hint, the hatch env and every page (no pinned commit)."""
+    from strands_robots._extras import LEROBOT
+
+    assert LEROBOT_MAIN in LEROBOT
+    assert LEROBOT_MAIN in (ROOT / "pyproject.toml").read_text()
+    for page in ["README.md", "docs/quickstart.md", "docs/install.md", "notebooks/README.md"]:
+        for line in (ROOT / page).read_text().splitlines():
+            if "huggingface/lerobot@" in line:
+                assert LEROBOT_MAIN in line, f"{page}: {line.strip()}"
+
+
 @pytest.mark.parametrize("page", ["README.md", "docs/quickstart.md", "notebooks/README.md"])
 def test_the_try_it_line_is_all_plus_lerobot(page: str) -> None:
     text = (ROOT / page).read_text()
     clone = page == "notebooks/README.md"  # the notebooks run from a clone of the repository
     assert ('uv pip install -e ".[all]"' if clone else f'uv pip install "strands-robots[all] {MAIN}"') in text
-    assert "lerobot[remote,feetech,dataset] @ git+https://github.com/huggingface/lerobot@" in text
+    assert LEROBOT_MAIN in text

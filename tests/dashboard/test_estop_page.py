@@ -59,7 +59,7 @@ def test_a_hardware_cards_latch_is_the_real_robots_not_its_twins() -> None:
     import test_drivers
 
     d, _serial = test_drivers.make_driver()
-    real = Robot("so101", driver=d, id="real_arm")
+    real = Robot("so101", driver=d, id="real_arm", twin=True)
     sim = real.twin.sim
     dash = Dashboard(sim, robots=[real])
     try:
