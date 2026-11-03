@@ -8,13 +8,13 @@ strands-robots needs Python 3.10 or newer. LeRobot and Isaac Sim need Python 3.1
 
 ```bash
 uv venv -p 3.12 && source .venv/bin/activate
-uv pip install "strands-robots[all] @ git+https://github.com/strands-labs/robots@dev"
+uv pip install "strands-robots[all] @ git+https://github.com/strands-labs/robots@main"
 ```
 
 `[all]` installs every extra that works on a CPU machine. To install only some, name them:
 
 ```bash
-uv pip install "strands-robots[mujoco,onnx,mesh] @ git+https://github.com/strands-labs/robots@dev"
+uv pip install "strands-robots[mujoco,onnx,mesh] @ git+https://github.com/strands-labs/robots@main"
 ```
 
 These docs follow the `dev` branch on GitHub, so install from there. The `strands-robots` release on PyPI is
