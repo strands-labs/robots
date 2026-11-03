@@ -28,20 +28,20 @@ def test_an_install_line_names_only_declared_extras(page: str) -> None:
         assert set(group.split(",")) <= set(EXTRAS), f"{page}: [{group}]"
 
 
-DEV = "@ git+https://github.com/strands-labs/robots@dev"
+MAIN = "@ git+https://github.com/strands-labs/robots@main"
 
 
 @pytest.mark.parametrize("page", ["README.md", *sorted(str(p.relative_to(ROOT)) for p in (ROOT / "docs").glob("*.md"))])
-def test_a_user_install_line_names_the_package_and_installs_dev(page: str) -> None:
-    """A reader's install line says strands-robots and takes it from dev: the PyPI release is an older API."""
+def test_a_user_install_line_names_the_package_and_installs_main(page: str) -> None:
+    """A reader's install line says strands-robots and takes it from main."""
     text = (ROOT / page).read_text()
     for line in re.findall(r"pip install [^\n]*strands-robots\[[^\n]*", text):
-        assert DEV in line, f"{page}: {line}"
+        assert MAIN in line, f"{page}: {line}"
 
 
 @pytest.mark.parametrize("page", ["README.md", "docs/quickstart.md", "notebooks/README.md"])
 def test_the_try_it_line_is_all_plus_lerobot(page: str) -> None:
     text = (ROOT / page).read_text()
     clone = page == "notebooks/README.md"  # the notebooks run from a clone of the repository
-    assert ('uv pip install -e ".[all]"' if clone else f'uv pip install "strands-robots[all] {DEV}"') in text
+    assert ('uv pip install -e ".[all]"' if clone else f'uv pip install "strands-robots[all] {MAIN}"') in text
     assert "lerobot[remote,feetech,dataset] @ git+https://github.com/huggingface/lerobot@" in text

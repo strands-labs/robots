@@ -8,7 +8,7 @@
 # ## Install
 #
 # ```bash
-# git clone https://github.com/strands-labs/robots && cd robots && git checkout dev
+# git clone https://github.com/strands-labs/robots && cd robots
 # uv venv -p 3.12 && source .venv/bin/activate
 # uv pip install -e ".[mujoco]"
 # ```
