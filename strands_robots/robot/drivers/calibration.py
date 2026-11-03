@@ -20,6 +20,13 @@ class JointCalibration:
     range_min: int
     range_max: int
 
+    def __post_init__(self) -> None:
+        if not self.range_min < self.range_max:  # K8: equal/crossed ends divide by zero on every read
+            raise ValueError(
+                f"motor {self.id}: range_min={self.range_min} must be < range_max={self.range_max} "
+                "(re-run calibrate(): the joint was not swept)"
+            )
+
 
 @dataclass(frozen=True)
 class Calibration:

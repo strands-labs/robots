@@ -49,9 +49,9 @@ class FeetechDriver:
         robot_id: str | None = None,
         bus: FeetechBus | None = None,
         max_speed: float | None = MAX_SPEED,
+        disable_torque_on_disconnect: bool = False,
     ) -> None:
-        """``max_speed`` (rad/s) caps how far one write may move a joint from the last goal (``slew.Slew``);
-        ``None`` writes every goal as given."""
+        """``max_speed`` (rad/s) caps one write's move from the last goal (``slew.Slew``); ``None``: as given."""
         if port is None and bus is None:
             raise ValueError("FeetechDriver needs port= (e.g. /dev/tty.usbmodem...)")
         self.slew = Slew(max_speed)
@@ -64,6 +64,7 @@ class FeetechDriver:
         self.bus = bus or FeetechBus(port or "", baud=baud)
         self.cameras = Cameras(cameras)
         self._torque_on = False
+        self.disable_torque_on_disconnect = disable_torque_on_disconnect  # K8: default False never drops the arm
         self.calibration: Calibration | None = None
         self.calibration_source: str | None = None
         self.calibration_looked: list[str] = []
@@ -130,8 +131,7 @@ class FeetechDriver:
         return JointState(self.names, np.array(pos), np.array(vel), np.array(load))
 
     def write(self, targets: np.ndarray) -> None:
-        # Every goal is computed (and a non-finite target refused) BEFORE torque comes on, so a refused
-        # write leaves a limp arm limp instead of stiffening it against a stale Goal_Position.
+        # K8: every goal is computed (a non-finite target refused) BEFORE torque comes on, so a refused write stays limp
         if not np.all(np.isfinite(np.asarray(targets, dtype=float))):
             raise ValueError(f"{self.description.name}: non-finite goal {np.asarray(targets).tolist()}")
         targets = self.slew.apply(targets, self.read)
@@ -152,19 +152,14 @@ class FeetechDriver:
     def extras(self) -> Mapping[str, Any]:
         return {
             "torque": self._torque_on,
-            "calibration": self.calibration_source or "none (raw full-turn counts)",
             "max_speed": self.slew.max_speed,
             "slewed": self.slew.count,
+            "calibration": self.calibration_source or "none (raw full-turn counts)",
         }
 
     def hold(self) -> None:
-        """Goal_Position := Present_Position, under torque (gravity-loaded joints keep their pose).
-
-        Written as measured, never through the speed cap: a joint that is blocked, stalled or lagging under load
-        is exactly the one an e-stop is for, and a capped hold would leave its goal out past the present
-        position with the servo still pushing toward it. The cap re-anchors on the held pose."""
-        present = np.array(self.read().positions, dtype=float)
-        self.slew.reset(present)
+        """Goal_Position := Present_Position under torque: the measured pose, never speed-capped (K8)."""
+        self.slew.reset(present := np.array(self.read().positions, dtype=float))
         self.write(present)
 
     def estop(self) -> None:
@@ -244,7 +239,12 @@ class FeetechDriver:
         self.bus.write(motor_id, REG_LOCK, b"\x01")
 
     def close(self) -> None:
-        if self._torque_on:
-            self.torque(False)
-        self.cameras.close()
-        self.bus.close()
+        """Holds a torqued arm (K8; ``disable_torque_on_disconnect`` then releases); port + cameras close anyway."""
+        try:
+            if self._torque_on:
+                self.hold()
+                if self.disable_torque_on_disconnect:
+                    self.torque(False)
+        finally:
+            self.cameras.close()
+            self.bus.close()

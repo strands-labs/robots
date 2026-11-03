@@ -12,7 +12,7 @@ import numpy as np
 import pytest
 
 from strands_robots import Description, Robot, Simulation
-from strands_robots.robot.drivers import Calibration
+from strands_robots.robot.drivers import Calibration, JointCalibration
 from strands_robots.robot.drivers import feetech as ft
 from strands_robots.robot.drivers import microduck as md
 from strands_robots.robot.drivers.unitree import G1_ORDER, H1_SLOTS, UnitreeDriver
@@ -260,7 +260,7 @@ def test_driver_reads_through_calibration_and_writes_goals():
     rlo, rhi = d.description.limits["wrist_roll"]
     assert d.rad_to_counts("wrist_roll", rlo) == 3072 and d.rad_to_counts("wrist_roll", rhi) == 1024
     d.close()
-    assert s.regs[1][ft.REG_TORQUE_ENABLE] == 0 and s.closed
+    assert s.regs[1][ft.REG_TORQUE_ENABLE] == 1 and s.closed  # K8: close() holds; it never drops the arm
 
 
 def test_write_computes_goals_before_torque_comes_on():
@@ -273,6 +273,45 @@ def test_write_computes_goals_before_torque_comes_on():
         d.write(targets)
     assert s.frames == []  # nothing on the wire: torque was never enabled, no stale Goal_Position
     assert d.extras()["torque"] is False
+
+
+def _goal_frames(s):
+    return [f for f in s.frames if f[4] == ft.SYNC_WRITE and f[5] == ft.REG_GOAL_POSITION]
+
+
+def test_close_holds_a_gravity_loaded_arm_by_default():
+    """K8: close() under torque writes Goal_Position := Present_Position and leaves torque on (never drops the arm)."""
+    d, s = make_driver()
+    d.write(np.zeros(6))
+    s.frames.clear()
+    d.close()
+    assert _goal_frames(s), "close() holds: Goal_Position := Present_Position"
+    assert not [f for f in s.frames if f[4] == ft.SYNC_WRITE and f[5] == ft.REG_TORQUE_ENABLE]
+
+
+def test_close_releases_torque_only_when_asked():
+    """K8: disable_torque_on_disconnect=True restores LeRobot's release-on-close (a TORQUE_ENABLE write goes out)."""
+    d, s = make_driver()
+    d.disable_torque_on_disconnect = True
+    d.write(np.zeros(6))
+    s.frames.clear()
+    d.close()
+    assert [f for f in s.frames if f[4] == ft.SYNC_WRITE and f[5] == ft.REG_TORQUE_ENABLE]
+    assert s.regs[1][ft.REG_TORQUE_ENABLE] == 0
+
+
+def test_close_on_a_limp_arm_leaves_it_limp():
+    """K8: torque never came on, so close() writes nothing and does not stiffen the arm."""
+    d, s = make_driver()
+    s.frames.clear()
+    d.close()
+    assert s.frames == [] and s.closed
+
+
+def test_a_degenerate_calibration_is_refused():
+    """K8: range_min == range_max would divide by zero on every read; the JointCalibration is refused at build."""
+    with pytest.raises(ValueError, match="range_min"):
+        JointCalibration(1, 0, 0, 2048, 2048)
 
 
 def test_uncalibrated_driver_uses_full_turn_counts():
@@ -739,3 +778,23 @@ def test_robot_id_names_the_lerobot_calibration_file_and_an_uncalibrated_arm_war
         bare = Robot("so101", port="/dev/fake", id="nobody", twin=False)
     assert bare.body.calibration is None
     bare.close()
+
+
+def test_close_releases_the_port_even_when_the_servos_went_dark():
+    """K8: the servo supply is cut, then the program quits: the hold fails loudly, the port still closes."""
+
+    class DarkSerial(FakeSerial):
+        dark = False
+
+        def write(self, data):
+            if not self.dark:
+                return super().write(data)
+            self.frames.append(bytes(data))
+            return len(data)
+
+    d, s = make_driver(serial=DarkSerial())
+    d.write(np.zeros(6))
+    s.dark = True
+    with pytest.raises(ft.ProtocolError):
+        d.close()
+    assert s.closed
