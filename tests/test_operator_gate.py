@@ -37,7 +37,7 @@ def test_direct_act_is_the_developers_call_and_needs_no_gate():
 )
 def test_a_refused_hold_writes_nothing(confirm, match):
     d, s = make_driver()
-    real = Robot("so101", driver=d, confirm=confirm)
+    real = Robot("so101", driver=d, confirm=confirm, twin=True)
     before = real.observe().joints.positions
     s.frames.clear()
     with pytest.raises(PermissionError, match=match):
@@ -50,7 +50,7 @@ def test_a_refused_hold_writes_nothing(confirm, match):
 def test_an_allowed_hold_writes_and_the_twin_mirrors_it():
     d, s = make_driver()
     asked: list[np.ndarray] = []
-    real = Robot("so101", driver=d, confirm=lambda action: asked.append(np.array(action)) or True)
+    real = Robot("so101", driver=d, confirm=lambda action: asked.append(np.array(action)) or True, twin=True)
     measured = real.observe().joints
     real.confirm_act(measured.positions)
     assert len(asked) == 1 and len(goal_writes(s)) == 2  # torque on, then one Goal_Position write

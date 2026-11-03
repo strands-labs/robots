@@ -1,14 +1,14 @@
-"""D04: a real robot brings its twin; the operator gate sits in front of the bus."""
+"""D04: a real robot can bring a twin (twin=True); the operator gate sits in front of the bus."""
 from scene import Scene
 
 
 def scene() -> Scene:
     s = Scene(
         "d04_twin",
-        "A real robot brings its twin",
-        "Robot(port=) drives the bus through the operator gate and mirrors every command into a twin in "
-        "Simulation.default().",
-        "Left, the one green element: Robot(\"so101\", port=...), a hardware robot. A wire runs right through the "
+        "A real robot can bring a twin",
+        "Robot(port=) drives the bus through the operator gate; with twin=True it mirrors every command into a "
+        "twin in Simulation.default().",
+        "Left, the one green element: Robot(\"so101\", port=..., twin=True), a hardware robot. A wire runs right through the "
         "operator gate, confirm= a callable the operator owns, to the Driver: feetech on the STS3215 bus, unitree "
         "and microduck observe only. A second wire runs down to so101_twin, a SimBody in Simulation.default(): "
         "act mirrors the targets into the twin, observe() pushes the measured joints into it, so "
@@ -17,7 +17,7 @@ def scene() -> Scene:
         h=640,
     )
     s.section(60, 122, "the robot you hold", accent=True)
-    s.box(60, 134, 340, 132, 'Robot("so101", port=...)', "a hardware robot; the same observe, act and run as "
+    s.box(60, 134, 340, 132, 'Robot("so101", port=..., twin=True)', "a hardware robot; the same observe, act and run as "
                                                         "in a world", accent=True, size=14, subsize=12, id="real")
     s.chips(74, 226, ["is_real", "twin", "calibrate()"])
 
@@ -40,7 +40,7 @@ def scene() -> Scene:
           size=14, subsize=12, id="twin")
     s.box(380, 400, 300, 84, "real.twin.sim.render()", "what the arm is doing, drawn in MuJoCo", size=14,
           subsize=12)
-    s.para(80, 508, "off with twin=False; a hardware Robot takes port= or driver=, never sim=", 600, size=12,
+    s.para(80, 508, "off by default (no MuJoCo needed); a hardware Robot takes port= or driver=, never sim=", 600, size=12,
            cls="grot muted")
 
     s.section(760, 368, "refused")

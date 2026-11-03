@@ -4,8 +4,8 @@ description: "Drive a real robot with the same Robot class: Feetech buses, Unitr
 
 # Connecting hardware
 
-A real robot is the same `Robot` class with a `port=`. A driver talks to the hardware, and a digital twin shows it
-in simulation.
+A real robot is the same `Robot` class with a `port=`. A driver talks to the hardware. Pass `twin=True` and a
+digital twin shows it in simulation.
 
 {{drawing:d04_twin}}
 
@@ -13,7 +13,7 @@ in simulation.
 ```python
 from strands_robots import Robot
 
-real = Robot("so101", port="/dev/ttyACM0", confirm=lambda a: input(f"move to {a}? ") == "y")
+real = Robot("so101", port="/dev/ttyACM0", twin=True, confirm=lambda a: input(f"move to {a}? ") == "y")
 real.calibrate(interactive=False)  # loads the LeRobot calibration file
 obs = real.observe()               # measured joints, in radians
 real.confirm_act({"gripper": 1.0}, seconds=1.5)
@@ -30,7 +30,8 @@ real.close()                       # torque off, port closed
 | `microduck` | The microduck's robotd socket | Observe only |
 | `memory` | No hardware | Writes are stored and read back |
 
-The registry picks the driver. Pass `driver=` to choose one. Pass `twin=False` to skip the twin.
+The registry picks the driver. Pass `driver=` to choose one. The twin is off by default, so a hardware-only install
+needs no MuJoCo. Pass `twin=True` to mirror the robot in `Simulation.default()` (needs the `mujoco` extra).
 
 ## Try it without hardware
 
@@ -39,7 +40,7 @@ The `memory` driver acts like a real robot, so the gate and e-stop behave as the
 ```python
 from strands_robots import Robot
 
-real = Robot("so101", driver="memory", twin=False, confirm=lambda targets: True)
+real = Robot("so101", driver="memory", confirm=lambda targets: True)
 real.confirm_act({"shoulder_pan": 0.3})
 print(real.body.writes)  # the targets that reached the "bus"
 ```

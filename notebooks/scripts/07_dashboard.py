@@ -504,7 +504,7 @@ print({k: (round(v, 3) if isinstance(v, float) else v) for k, v in s.items() if 
 # (the page sends `X-Confirm: yes` only after a confirm dialog). Needs a real arm, so it is not run here:
 #
 # ```python
-# follower = Robot("so101", port="/dev/ttyACM0", id="blue_follower")   # needs a real arm; its twin is simulated
+# follower = Robot("so101", port="/dev/ttyACM0", id="blue_follower", twin=True)   # needs a real arm; twin=True draws it
 # Dashboard(follower.twin.sim, robots=[follower]).serve(port=8090)
 # ```
 

@@ -70,7 +70,7 @@ test = "pytest {args}"
 [tool.hatch.envs.lerobot]
 python = "3.12"
 features = ["dev", "mujoco", "lerobot"]
-dependencies = ["lerobot[remote,feetech,dataset] @ git+https://github.com/huggingface/lerobot@53feaef37b67e8f4c23b6953e880ff535e39d6fe"]
+dependencies = ["lerobot[remote,feetech,dataset] @ git+https://github.com/huggingface/lerobot@main"]
 
 [tool.hatch.envs.lerobot.scripts]
 test = "pytest tests/policy tests/recording tests/test_policy_factory.py tests/test_units_lerobot_modes.py tests/test_units_lerobot_calibrated.py {args}"

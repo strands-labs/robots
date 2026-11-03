@@ -42,7 +42,7 @@ def arm() -> Iterator[Callable[..., Robot]]:
     opened: list[Robot] = []
 
     def open_arm(confirm: Callable[[np.ndarray], bool]) -> Robot:
-        opened.append(Robot("so101", port=PORT, confirm=confirm))
+        opened.append(Robot("so101", port=PORT, confirm=confirm, twin=True))
         return opened[-1]
 
     yield open_arm

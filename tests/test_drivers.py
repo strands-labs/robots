@@ -358,7 +358,7 @@ def test_calibrate_writes_lerobot_json(tmp_path, monkeypatch):
 
 def test_hardware_robot_gets_a_twin_in_the_default_world():
     d, s = make_driver()
-    real = Robot("so101", driver=d)
+    real = Robot("so101", driver=d, twin=True)
     assert real.is_real and real.sim is None and real.twin is not None
     assert real.twin.sim is Simulation.default() and real.twin.id == "so101_twin"
     hi = d.description.limits["shoulder_pan"][1]
@@ -382,7 +382,7 @@ def test_hardware_robot_gets_a_twin_in_the_default_world():
 def test_a_real_act_advances_the_twins_world_one_control_step(manual):
     # a real act() steps the twin's world as a simulated act() steps its own; manual_time() still wins
     d, _ = make_driver()
-    real = Robot("so101", driver=d)
+    real = Robot("so101", driver=d, twin=True)
     world = real.twin.sim
     t0, start = world.time, real.twin.observe()["shoulder_pan"]
     with world.manual_time() if manual else contextlib.nullcontext():
@@ -400,7 +400,7 @@ def test_a_real_act_advances_the_twins_world_one_control_step(manual):
 def test_a_real_observe_places_the_twin_at_the_measurement_with_no_step():
     # the twin mirrors a MEASUREMENT: after observe() it shows the real pose, before its world steps once
     d, _ = make_driver()
-    real = Robot("so101", driver=d)
+    real = Robot("so101", driver=d, twin=True)
     world = real.twin.sim
     with world.manual_time():
         t0 = world.time
@@ -409,6 +409,14 @@ def test_a_real_observe_places_the_twin_at_the_measurement_with_no_step():
         twin = real.twin.observe().joints
     assert world.time == t0 and np.abs(measured).max() > 0.3
     assert np.allclose(twin.positions, measured, atol=1e-9) and np.allclose(twin.velocities, 0.0)
+    real.close()
+
+
+def test_a_hardware_robot_has_no_twin_unless_asked():
+    """The twin is opt-in: a hardware-only install (no MuJoCo) works with the defaults, and no world is made."""
+    d, _ = make_driver()
+    real = Robot("so101", driver=d)
+    assert real.twin is None and Simulation._default is None
     real.close()
 
 

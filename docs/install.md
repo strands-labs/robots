@@ -45,7 +45,7 @@ The core needs only `numpy` and `robot_descriptions`. If you use a feature witho
 LeRobot comes from its main branch, so it has its own install line:
 
 ```bash
-uv pip install "lerobot[remote,feetech,dataset] @ git+https://github.com/huggingface/lerobot@53feaef37b67e8f4c23b6953e880ff535e39d6fe"
+uv pip install "lerobot[remote,feetech,dataset] @ git+https://github.com/huggingface/lerobot@main"
 ```
 
 `dataset` lets you record datasets. `remote` adds `lerobot-policy-server`.

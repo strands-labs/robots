@@ -14,7 +14,7 @@ from strands_robots.types import JointState
 
 
 def _real_g1(msg):
-    return Robot("g1", driver=UnitreeDriver(Description.load("g1"), port="fake", subscriber=FakeSub(msg)))
+    return Robot("g1", driver=UnitreeDriver(Description.load("g1"), port="fake", subscriber=FakeSub(msg)), twin=True)
 
 
 def _touching(world, rid):
@@ -58,7 +58,7 @@ def _on_the_floor(robot):
 def test_a_twin_never_pushes_a_simulated_arm_off_its_targets(arm_first):
     # both stand on the so101 spawn point and every observe() places the twin there; #4749's headline is arm first
     arm = Robot("so101") if arm_first else None
-    real = Robot("so101", driver=make_driver()[0], id="arm_real")
+    real = Robot("so101", driver=make_driver()[0], id="arm_real", twin=True)
     arm = arm or Robot("so101")
     worst = 0.0
     for k in range(100):  # the sim arm sweeps for 50 ticks, then holds; the real arm idles, observed every tick
@@ -88,7 +88,8 @@ def test_a_twin_rests_on_the_floor_and_touches_nothing_else():
 def test_a_twin_stands_on_the_floor_as_its_plain_body_does():
     # cassie's shins, tarsi and feet carry only contact bits 2 and 4: they meet each other, never the floor
     plain = Robot("cassie", sim=Simulation(), id="plain")  # alone in a world of its own
-    real = Robot("cassie", driver=_MemoryDriver("cassie"))  # cassie has no built-in driver: a third-party one
+    # cassie has no built-in driver: a third-party one
+    real = Robot("cassie", driver=_MemoryDriver("cassie"), twin=True)
     # with the twin bit on every colliding geom, the twin also stood on its feet and tarsi, at 0.296 m, not 0.154 m
     assert _on_the_floor(real.twin) == _on_the_floor(plain)
     assert real.twin.pose.position[2] == pytest.approx(plain.pose.position[2], abs=0.01)
@@ -116,7 +117,7 @@ def test_a_nan_reading_never_resets_the_twins_world():
 def test_a_huge_reading_never_resets_the_twins_world(value):
     # kinova_gen3's joint_1 has no limit, so nothing clips its reading; MuJoCo resets at a qpos beyond 1e10 (mjMAXVAL)
     drv = _MemoryDriver("kinova_gen3")
-    real = Robot("kinova_gen3", driver=drv, position=[0.0, -1.5, 0.0])
+    real = Robot("kinova_gen3", driver=drv, position=[0.0, -1.5, 0.0], twin=True)
     arm = Robot("so101", position=[0.0, 1.5, 0.0], id="sim_arm")  # in the twin's world, clear of the twin
     for _ in range(50):
         arm.act({"shoulder_pan": 0.8})
@@ -168,7 +169,7 @@ def test_close_while_another_thread_uses_the_world_raises_a_clean_error(verb):
 
 
 def test_a_real_robot_outlives_its_twins_world():
-    real = Robot("so101", driver=make_driver()[0])
+    real = Robot("so101", driver=make_driver()[0], twin=True)
     world, out = real.twin.sim, []
     with world.lock:  # the twin's world is busy, so real.observe() waits there to mirror ...
         th = threading.Thread(target=lambda: out.append(real.observe()))

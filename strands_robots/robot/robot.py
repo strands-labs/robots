@@ -47,7 +47,7 @@ class Robot(DeviceVerbs):
         port: str | None = None,
         driver: str | Any | None = None,
         cameras: Mapping[str, int | str] | None = None,
-        twin: bool = True,
+        twin: bool = False,
         confirm: Callable[[np.ndarray], bool] | None = None,
         calibration: Any = None,
         mesh: Any = None,
