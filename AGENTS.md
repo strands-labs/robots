@@ -11,7 +11,7 @@ The same code drives a simulated robot or a real one. The package exports exactl
 | Name | Is |
 |---|---|
 | `Simulation` | One world: MuJoCo on CPU, Isaac Sim or Newton (MuJoCo-Warp) on GPU |
-| `Robot` | A body in a world, or a real robot through a driver, with a digital twin |
+| `Robot` | A body in a world, or a real robot through a driver (optionally with a digital twin) |
 | `Policy` | Turns an `Observation` into an `Action` (functions, ONNX, LeRobot, replay) |
 | `Mesh` | Robots on other machines over Zenoh or AWS IoT Core |
 | `Body`, `Description` | The body protocol and a robot's model facts |
@@ -26,14 +26,14 @@ from the top level.
 ```bash
 uv venv -p 3.12 && source .venv/bin/activate
 uv pip install -e ".[all,dev]"
-uv pip install "lerobot[remote,feetech,dataset] @ git+https://github.com/huggingface/lerobot@53feaef37b67e8f4c23b6953e880ff535e39d6fe"
+uv pip install "lerobot[remote,feetech,dataset] @ git+https://github.com/huggingface/lerobot@main"
 ```
 
 - Python 3.10+ for the package; CI, mypy and LeRobot use 3.12.
 - `[all]` is every extra except `isaac`, `newton` and `dev`. Adding an extra means adding it to `all`
   (`tests/test_install_lines.py`).
-- LeRobot is never a wheel dependency (a wheel can't carry a git ref). Its commit lives in `strands_robots/_extras.py`
-  (`LEROBOT`); change it there, in `pyproject.toml` (`[tool.hatch.envs.lerobot]`) and in the docs together.
+- LeRobot comes from its main branch and is never a wheel dependency (a wheel can't carry a git ref). The one line
+  lives in `strands_robots/_extras.py` (`LEROBOT`), the hatch `lerobot` env and the docs; a test keeps them equal.
 - Headless Linux: set `MUJOCO_GL=egl` (CI does) or let `_gl.ensure_gl()` pick egl or osmesa. Import `strands_robots`
   before `mujoco`.
 
@@ -200,7 +200,8 @@ All paths are under `strands_robots/`.
 
 ## Known gotchas
 
-- A real `Robot` builds a MuJoCo twin by default. A hardware-only install needs `twin=False` or the `mujoco` extra.
+- A real `Robot` has no twin unless `twin=True`, which mirrors it in `Simulation.default()` and needs the `mujoco`
+  extra. The dashboard draws a real robot through its twin.
 - Registry entries with `driver: "strands"` or `"lerobot"` have no driver in `_DRIVERS`: `Robot(x, port=...)` fails
   with "no driver known".
 - Without MuJoCo, the XML fallback ignores `angle="degree"` and `<default>` ranges, so limits can differ.
