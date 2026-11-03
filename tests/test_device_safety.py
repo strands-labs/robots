@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import threading
 import time
 from decimal import Decimal
@@ -607,7 +608,8 @@ def test_a_fault_subscriber_can_stop_the_watchdog_whose_thread_it_runs_on():
     assert dog._thread is not None
     dog._thread.join(5.0)
     assert not dog._thread.is_alive() and len(later) == 1 and dog.errors == 1
-    real.close()
+    with contextlib.suppress(OSError):  # K8: close() holds; this arm's bus re-enumerated, so the hold can't land
+        real.close()
 
 
 def test_workspace_bounds_validator_refuses_a_target_whose_tool_leaves_the_box():
