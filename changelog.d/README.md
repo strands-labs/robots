@@ -16,8 +16,8 @@ reconcile.
 release bookkeeping (collapsing `[Unreleased]` into a dated section). It is
 fragments, not the log, that behavioural PRs write to.
 
-This rule is enforced by the `Guards` step of the required check
-(`scripts/ci_guards.py` runs `scripts/check_changelog_fragment.py`), which names
+This rule is enforced by the `Changelog fragment` step of the required check
+(`scripts/check_changelog_fragment.py`), which names
 any `### ` entry a branch adds to `[Unreleased]` that no fragment accounts for.
 It is a base diff rather than a test because `[Unreleased]` already carries
 entries from before this convention, so no static assertion about that section

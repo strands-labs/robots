@@ -60,8 +60,8 @@ concurrency:
 jobs:
   # The one required check (ruleset `default`: context `call-test-lint / Test
   # and Lint`). The job id and the callee's job name are what that context is
-  # made of, so both stay as they are. The pull-request guards that used to be
-  # ten advisory workflows run as its first step - see scripts/ci_guards.py.
+  # made of, so both stay as they are. On a pull request its first step is the
+  # changelog fragment check (scripts/check_changelog_fragment.py).
   call-test-lint:
     if: github.event_name != 'schedule'
     uses: ./.github/workflows/test-lint.yml
