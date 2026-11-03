@@ -23,7 +23,8 @@ class Pose:
     linear_velocity: np.ndarray | None = None
     angular_velocity: np.ndarray | None = None
 
-    __eq__ = _eq
+    def __eq__(self, other: object) -> bool:
+        return _eq(self, other)
 
     def __hash__(self) -> int:
         return hash(

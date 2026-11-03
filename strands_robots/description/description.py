@@ -18,7 +18,7 @@ from pathlib import Path
 from typing import Any
 
 from .introspect import introspect
-from .registry import _NAME_RE, normalize_name, registry
+from .registry import NAME_RE, normalize_name, registry
 from .resolve import _resolve_asset
 
 _SCENE_CANDIDATES = ("scene.xml", "scene_mjx.xml")
@@ -115,7 +115,7 @@ class Description:
             entry: dict[str, Any] = {"name": path.stem, "category": "file"}
         else:
             norm = normalize_name(name)
-            if not _NAME_RE.match(norm):
+            if not NAME_RE.match(norm):
                 raise ValueError(f"robot name {name!r} may only contain letters, digits, '_' and '.'")
             entry = registry().get(norm)  # type: ignore[assignment]
             path, fmt, entry = _resolve_asset(norm, entry)

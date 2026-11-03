@@ -22,8 +22,11 @@ class Task:
     def _go(self, target: Callable[[threading.Event], RunResult]) -> None:
         try:
             self._result = target(self._stop)
-        except BaseException as exc:  # noqa: BLE001 - surfaced via .result
+        except Exception as exc:  # noqa: BLE001 - surfaced via .result
             self._error = exc
+        except BaseException as exc:  # KeyboardInterrupt, SystemExit: surfaced via .result, then let through
+            self._error = exc
+            raise
 
     def stop(self, timeout: float | None = None) -> RunResult | None:
         """Stop and wait for the run to end, its recording saved; ``TimeoutError`` if it is still running."""

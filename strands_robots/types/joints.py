@@ -53,7 +53,8 @@ class JointState:
                 raise ValueError(f"JointState.{f} has shape {arr.shape}, expected ({n},) for {n} joints")
             object.__setattr__(self, f, arr)
 
-    __eq__ = _eq
+    def __eq__(self, other: object) -> bool:
+        return _eq(self, other)
 
     def __hash__(self) -> int:
         return hash((self.names, _key(self.positions), _key(self.velocities), _key(self.efforts)))

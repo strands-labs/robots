@@ -25,7 +25,8 @@ class Observation:
     images: Mapping[str, np.ndarray] = field(default_factory=dict)
     extras: Mapping[str, Any] = field(default_factory=dict)
 
-    __eq__ = _eq
+    def __eq__(self, other: object) -> bool:
+        return _eq(self, other)
 
     def __hash__(self) -> int:
         return hash((self.t, self.joints, self.pose))

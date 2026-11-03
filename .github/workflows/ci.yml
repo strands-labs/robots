@@ -110,7 +110,7 @@ jobs:
           # surfaced in PR #85 (MJCF interpolation) and PR #90 (subprocess
           # injection / path traversal).
           queries: security-and-quality
-          # Filters out two note-severity quality rules from that suite whose
+          # Filters out four note-severity quality rules from that suite whose
           # every instance in this repository is an idiom the codebase is
           # obliged to use. The file carries the per-rule reasoning and the
           # reason a filter is needed at all; see #1810.
@@ -124,7 +124,7 @@ jobs:
           # alert, which is NOT the same as a pull request being free to merge
           # with one: github-advanced-security opens a review thread per new
           # alert and the default ruleset requires thread resolution, so any
-          # new alert is a hard merge gate whatever its severity. The two
+          # new alert is a hard merge gate whatever its severity. The four
           # note-severity rules whose every instance is an unavoidable idiom
           # are filtered in codeql-config.yml for exactly that reason; every
           # other rule -- py/empty-except included -- still gates a merge and
