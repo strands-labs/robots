@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any
 
 _REGISTRY_DIR = Path(__file__).parent.parent / "registry"
-_NAME_RE = re.compile(r"^[a-z0-9_.]+$")
+NAME_RE = re.compile(r"^[a-z0-9_.]+$")
 
 
 def normalize_name(name: str) -> str:
