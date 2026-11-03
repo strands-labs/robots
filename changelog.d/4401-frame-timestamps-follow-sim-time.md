@@ -1,3 +1,0 @@
-### Fixed: a recorded frame's timestamp follows the sim time actually advanced (#4392)
-
-On MuJoCo's default `dt=0.002` a 30 Hz control period is 16.67 physics steps; `PolicyRunner` rounded it once to 17, so a 30 fps recording of 60 frames declared 1.967 s over 2.040 s of simulation, 2 percent early (Isaac's `1/120` s at 50 Hz: 17 percent). Substeps now follow the cumulative control clock (17, 17, 16, ...) so the k-th action starts within one physics step of `k / control_frequency`, in `run`, `replay`, `evaluate` and benchmarks alike; a whole-number period and an explicit `control_substeps` are unchanged. The inexact period is still said once at WARNING with the effective numbers.

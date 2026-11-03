@@ -1,0 +1,37 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 300" width="900" height="300" role="img" aria-labelledby="t">
+<title id="t">Three cards in a row, lit green one after another: Robot("so101") joins Simulation.default(); arm.observe() returns an Observation with joints, pose and images; arm.act(targets) writes targets and steps the world 20 ms; sim.render(camera) returns an HxWx3 frame. An arrow loops from act back to observe.</title>
+<style>
+text{font-family:'JetBrains Mono',ui-monospace,monospace;fill:#000}
+.h{font-size:17px;font-weight:600}.s{font-size:13px;fill:#3d3c3c}.k{font-size:12px;fill:#3d3c3c}
+.card{fill:#fff;stroke:#3d3c3c;stroke-width:1.2}
+.lit{fill:none;stroke:#007a3d;stroke-width:3;opacity:0}
+.w{fill:none;stroke:#3d3c3c;stroke-width:1.2}
+.a1{animation:on 6s infinite 0s}.a2{animation:on 6s infinite 1.5s}.a3{animation:on 6s infinite 3s}.a4{animation:on 6s infinite 4.5s}
+@keyframes on{0%,100%{opacity:0}4%,22%{opacity:1}26%{opacity:0}}
+.dot{fill:#007a3d}
+</style>
+<rect width="900" height="300" fill="#fff"/>
+<g stroke="#d9d9d9" stroke-width="1">
+<path d="M0 60H900M0 120H900M0 180H900M0 240H900M150 0V300M300 0V300M450 0V300M600 0V300M750 0V300"/>
+</g>
+<g transform="translate(20,90)">
+<rect class="card" width="190" height="110" rx="8"/><rect class="lit a1" width="190" height="110" rx="8"/>
+<text class="h" x="16" y="34">Robot("so101")</text><text class="s" x="16" y="62">joins</text><text class="s" x="16" y="82">Simulation.default()</text>
+</g>
+<g transform="translate(245,90)">
+<rect class="card" width="190" height="110" rx="8"/><rect class="lit a2" width="190" height="110" rx="8"/>
+<text class="h" x="16" y="34">arm.observe()</text><text class="s" x="16" y="62">Observation</text><text class="s" x="16" y="82">joints · pose · images</text>
+</g>
+<g transform="translate(470,90)">
+<rect class="card" width="190" height="110" rx="8"/><rect class="lit a3" width="190" height="110" rx="8"/>
+<text class="h" x="16" y="34">arm.act(targets)</text><text class="s" x="16" y="62">writes targets,</text><text class="s" x="16" y="82">world steps 20 ms</text>
+</g>
+<g transform="translate(695,90)">
+<rect class="card" width="185" height="110" rx="8"/><rect class="lit a4" width="185" height="110" rx="8"/>
+<text class="h" x="16" y="34">sim.render(cam)</text><text class="s" x="16" y="62">HxWx3 uint8</text><text class="s" x="16" y="82">one frame</text>
+</g>
+<path class="w" d="M210 145H245M435 145H470M660 145H695"/>
+<path class="w" d="M565 90V52H340V90" stroke-dasharray="4 4"/>
+<text class="k" x="372" y="44">every control step</text>
+<circle class="dot" r="5"><animateMotion dur="3s" repeatCount="indefinite" path="M340 90V52H565V90V200V230H340V200"/></circle>
+</svg>

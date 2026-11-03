@@ -1,29 +1,311 @@
 <!doctype html>
-<html lang="en">
-  <head>
-    <meta charset="UTF-8" />
-    <link rel="icon" type="image/svg+xml" href="/static/icon.svg" />
-    <link rel="apple-touch-icon" href="/static/apple-touch-icon.png" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
-    <meta name="theme-color" media="(prefers-color-scheme: light)" content="#ffffff" />
-    <meta name="theme-color" media="(prefers-color-scheme: dark)" content="#000000" />
-    <meta name="color-scheme" content="light dark" />
-    <meta name="description" content="Fleet cockpit for the strands-robots mesh" />
-    <!-- iOS treats a home-screen launch as a separate app: without these it opens
-         in Safari chrome, which costs ~90px of a phone screen and shows the URL
-         bar over the camera stage. -->
-    <meta name="mobile-web-app-capable" content="yes" />
-    <meta name="apple-mobile-web-app-capable" content="yes" />
-    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
-    <meta name="apple-mobile-web-app-title" content="Robots" />
-    <!-- A phone controlling a robot arm should not zoom on a double tap. -->
-    <meta name="format-detection" content="telephone=no" />
-    <title>Strands Robots</title>
-    <script type="module" crossorigin src="/static/app.js"></script>
-    <link rel="modulepreload" crossorigin href="/static/vendor/react.js">
-    <link rel="stylesheet" crossorigin href="/static/assets/index.css">
-  </head>
-  <body>
-    <div id="root"></div>
-  </body>
+<html lang="en" data-scheme="paper">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>strands-robots · dashboard</title>
+<link rel="icon" href="./mark.svg" type="image/svg+xml">
+<script>
+  /* Pick the scheme before first paint (no flash): ?theme= · the dashboard's own toggle · the docs site's palette
+     (Material keeps it in localStorage as <path>.__palette) · the OS. Same names as the docs: paper (light) · dark. */
+  (() => {
+    let s = new URLSearchParams(location.search).get("theme");
+    try {
+      s = s || localStorage.getItem("sr.dashboard.scheme");
+      if (!s) { const raw = Object.keys(localStorage).filter((k) => k.endsWith("__palette")).map((k) => localStorage.getItem(k))[0]; const m = raw && JSON.parse(raw)?.color?.scheme; if (m) s = m === "slate" ? "dark" : m; }
+    } catch { /* storage blocked */ }
+    if (s !== "paper" && s !== "dark") s = matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "paper";
+    document.documentElement.dataset.scheme = s;
+  })();
+</script>
+<style>
+  /* The Strands Robots docs design (docs/stylesheets/extra.css): the same --sr-* tokens, paper/ink + the strands green,
+     JetBrains Mono for labels and headings over Space Grotesk text, 8 px radius, 1 px outlines, pills. */
+  :root {
+    --sr-radius: 8px;
+    --sr-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+    --sr-text: "Space Grotesk", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    --sr-black: #000; --sr-charcoal-1: #28292a; --sr-charcoal-2: #3d3c3c;
+    --sr-stop: #d1242f; --sr-stop-hover: #b01e28; --sr-on-stop: #fff;
+    --sr-bar-h: 3.25rem; --sr-side-w: 25rem;
+  }
+  [data-scheme="paper"] {
+    color-scheme: light;
+    --sr-accent: #007a3d; --sr-accent-bright: #02a435; --sr-accent-soft: rgba(2,164,53,.12); --sr-on-accent: #fff;
+    --sr-bg: #fff; --sr-fg: #000; --sr-fg-light: #3d3c3c; --sr-muted: #767373; --sr-line: rgba(0,0,0,.15);
+    --sr-chip-bg: #f4f4f4; --sr-pill-bg: #fff; --sr-pill-border: #999696; --sr-card-bg: #fff; --sr-card-border: #000;
+    --sr-viewer-bg: #f4f4f4; --sr-grid-major: #b6b6b6; --sr-grid-minor: #d9d9d9; --sr-warn: #946e00; --sr-bad: #cf222e;
+    --sr-panel: rgba(255,255,255,.92); --sr-dot: #9fd9b0; --sr-track: #d9d9d9;
+  }
+  [data-scheme="dark"] {
+    color-scheme: dark;
+    --sr-accent: #00cc60; --sr-accent-bright: #00cc60; --sr-accent-soft: rgba(0,204,96,.14); --sr-on-accent: #000;
+    --sr-bg: #000; --sr-fg: #fff; --sr-fg-light: #b6b6b6; --sr-muted: #999696; --sr-line: #28292a;
+    --sr-chip-bg: #28292a; --sr-pill-bg: #28292a; --sr-pill-border: #3d3c3c; --sr-card-bg: #000; --sr-card-border: #fff;
+    --sr-viewer-bg: #111213; --sr-grid-major: #46505c; --sr-grid-minor: #303740; --sr-warn: #f6bc00; --sr-bad: #ff6b6b;
+    --sr-panel: rgba(0,0,0,.86); --sr-dot: #00cc60; --sr-track: #3d3c3c;
+  }
+  @font-face { font-family: "Space Grotesk"; font-weight: 400; font-display: swap; src: url("./fonts/SpaceGrotesk-400.woff2") format("woff2"); }
+  @font-face { font-family: "JetBrains Mono"; font-weight: 500; font-display: swap; src: url("./fonts/JetBrainsMono-500.woff2") format("woff2"); }
+
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; background: var(--sr-bg); color: var(--sr-fg); font: 14px/1.5 var(--sr-text); -webkit-font-smoothing: antialiased; }
+  button, input, select, textarea { font: inherit; color: inherit; }
+  a { color: var(--sr-accent); }
+  code, .mono, .pill, .chip, .tag, .card h3, .joint, .msg.tool, #prompt, .sr-btn, .tabs button, .section-title { font-family: var(--sr-mono); }
+  :focus-visible { outline: 2px solid var(--sr-accent); outline-offset: 2px; }
+
+  /* Frame: one bar on top (the docs header), the stage on the left, the side column on the right. Nothing floats over
+     the side column, so the chat input is never covered. */
+  #app { display: grid; grid-template-rows: var(--sr-bar-h) minmax(0, 1fr); grid-template-columns: minmax(0, 1fr) var(--sr-side-w); grid-template-areas: "bar bar" "stage side"; height: 100%; overflow: hidden; position: relative; }
+  #app[data-side="closed"] { grid-template-columns: minmax(0, 1fr) 0; }
+  #app[data-side="closed"] #side { visibility: hidden; }
+
+  /* ---------- top bar ---------- */
+  #bar { grid-area: bar; display: flex; align-items: center; gap: .6rem; padding: 0 .9rem; background: var(--sr-bg); border-bottom: 1px solid var(--sr-line); min-width: 0; z-index: 5; }
+  .brand { display: inline-flex; align-items: center; gap: .5rem; color: var(--sr-fg); text-decoration: none; font-family: var(--sr-mono); font-weight: 500; font-size: .86rem; white-space: nowrap; }
+  .brand img { width: 20px; height: 20px; display: block; }
+  .brand small { color: var(--sr-accent); font-weight: 500; font-size: .86rem; }
+  .pill { display: inline-flex; align-items: center; gap: .4rem; height: 1.8rem; padding: 0 .75rem; border-radius: 999px; border: 1px solid var(--sr-pill-border); background: var(--sr-pill-bg); color: var(--sr-fg); font-size: .7rem; letter-spacing: .03em; white-space: nowrap; }
+  .pill::before { content: ""; width: .5rem; height: .5rem; border-radius: 50%; background: var(--sr-muted); }
+  .pill[data-mode="server"] { border-color: var(--sr-accent); color: var(--sr-accent); } .pill[data-mode="server"]::before { background: var(--sr-accent); }
+  .pill[data-mode="offline"], .pill[data-mode="standalone"] { border-color: var(--sr-warn); color: var(--sr-warn); }
+  .pill[data-mode="offline"]::before, .pill[data-mode="standalone"]::before { background: var(--sr-warn); }
+  .pill[data-mode="static"]::before { background: var(--sr-fg-light); }
+  .pill[data-mode="error"] { border-color: var(--sr-bad); color: var(--sr-bad); } .pill[data-mode="error"]::before { background: var(--sr-bad); }
+  #status { display: flex; flex-wrap: nowrap; gap: .3rem; overflow: hidden; min-width: 0; flex: 1; font-size: .66rem; color: var(--sr-muted); }
+  .chip { display: inline-flex; align-items: center; gap: .3rem; height: 1.6rem; padding: 0 .6rem; border-radius: 999px; border: 1px solid var(--sr-line); background: var(--sr-chip-bg); white-space: nowrap; letter-spacing: .02em; }
+  .chip b { color: var(--sr-fg); font-weight: 500; }
+  .chip.warn { border-color: var(--sr-warn); color: var(--sr-warn); } .chip.bad { border-color: var(--sr-bad); color: var(--sr-bad); }
+  .barlink { font-family: var(--sr-mono); font-size: .74rem; font-weight: 500; color: var(--sr-fg); text-decoration: none; letter-spacing: .04em; padding: .3rem .4rem; white-space: nowrap; }
+  .barlink:hover { color: var(--sr-accent); }
+  .iconbtn { display: inline-flex; align-items: center; justify-content: center; width: 1.9rem; height: 1.9rem; flex: none; border-radius: 999px; border: 1px solid var(--sr-pill-border); background: var(--sr-pill-bg); color: var(--sr-fg); cursor: pointer; padding: 0; }
+  .iconbtn:hover { border-color: var(--sr-accent); }
+  .iconbtn[aria-pressed="true"] { background: var(--sr-fg); color: var(--sr-bg); border-color: var(--sr-fg); }
+  .iconbtn svg { width: 1rem; height: 1rem; fill: currentColor; }
+  [data-scheme="paper"] .icon-sun, [data-scheme="dark"] .icon-moon { display: none; }
+
+  /* STOP ALL: the one always-visible red button, in the bar, never over content. One click, no confirm. */
+  #safety { display: inline-flex; align-items: center; gap: .5rem; flex: none; }
+  #safety[hidden] { display: none; }
+  .stopall { display: inline-flex; align-items: center; gap: .45rem; height: 2.1rem; padding: 0 1rem; border-radius: 999px; border: 0; background: var(--sr-stop); color: var(--sr-on-stop); font-family: var(--sr-mono); font-weight: 500; font-size: .76rem; letter-spacing: .06em; cursor: pointer; box-shadow: 0 0 0 3px color-mix(in srgb, var(--sr-stop) 22%, transparent); }
+  .stopall:hover { background: var(--sr-stop-hover); }
+  .stopall::before { content: ""; width: .7rem; height: .7rem; border-radius: 2px; background: currentColor; }
+  .stopall[data-latched="yes"] { animation: sr-pulse 1.4s ease-in-out infinite; }
+  @keyframes sr-pulse { 50% { box-shadow: 0 0 0 6px color-mix(in srgb, var(--sr-stop) 30%, transparent); } }
+  #safety-say { font-family: var(--sr-mono); font-size: .62rem; color: var(--sr-muted); max-width: 16rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  #safety-say.bad { color: var(--sr-bad); }
+
+  /* ---------- stage ---------- */
+  #stage { grid-area: stage; position: relative; min-width: 0; min-height: 0; background: var(--sr-viewer-bg); }
+  #stage canvas { display: block; width: 100%; height: 100%; touch-action: none; }
+  #notice { position: absolute; left: .8rem; bottom: .8rem; max-width: min(36rem, calc(100% - 1.6rem)); padding: .5rem .8rem; border-radius: var(--sr-radius); border: 1px solid var(--sr-pill-border); background: var(--sr-panel); color: var(--sr-fg-light); font-size: .74rem; line-height: 1.45; }
+  #notice:empty { display: none; }
+  #notice .keys { display: inline-block; margin-left: .4rem; color: var(--sr-muted); font-family: var(--sr-mono); font-size: .64rem; }
+  #notice code { background: var(--sr-chip-bg); padding: 0 .3rem; border-radius: 3px; font-size: .9em; }
+  #notice.bad { border-color: var(--sr-bad); color: var(--sr-bad); }
+  #pad { position: absolute; left: .8rem; bottom: .8rem; display: grid; grid-template-columns: repeat(3, 2.4rem); grid-template-rows: auto repeat(2, 2.4rem); gap: .3rem; }
+  #pad[hidden] { display: none; }
+  #pad button { border-radius: 999px; border: 1px solid var(--sr-pill-border); background: var(--sr-panel); color: var(--sr-fg); font-size: .85rem; cursor: pointer; touch-action: none; user-select: none; -webkit-user-select: none; }
+  #pad button[aria-pressed="true"] { background: var(--sr-accent); color: var(--sr-on-accent); border-color: var(--sr-accent); }
+  #pad #skill { grid-column: 1 / 4; min-width: 0; background: var(--sr-panel); color: var(--sr-fg); border: 1px solid var(--sr-pill-border); border-radius: 999px; padding: .3rem .6rem; font-family: var(--sr-mono); font-size: .66rem; }
+  #pad button[data-key="w"] { grid-column: 2; } #pad button[data-key="a"] { grid-column: 1; grid-row: 3; } #pad button[data-key="s"] { grid-column: 2; grid-row: 3; } #pad button[data-key="d"] { grid-column: 3; grid-row: 3; }
+  #pad:not([hidden]) ~ #notice { left: 9rem; }
+
+  /* ---------- side column: tabs (robots · panels from the slot API) over a scrolling pane, the chat docked below ---------- */
+  #side { grid-area: side; display: flex; flex-direction: column; min-height: 0; min-width: 0; background: var(--sr-bg); border-left: 1px solid var(--sr-line); }
+  .tabs { display: flex; gap: .2rem; padding: 0 .6rem; border-bottom: 1px solid var(--sr-line); overflow-x: auto; scrollbar-width: none; flex: none; }
+  .tabs button { flex: none; display: inline-flex; align-items: center; gap: .35rem; height: 2.6rem; padding: 0 .6rem; border: 0; background: transparent; color: var(--sr-muted); font-size: .72rem; font-weight: 500; letter-spacing: .04em; cursor: pointer; }
+  .tabs button:hover { color: var(--sr-fg); }
+  .tabs button[aria-selected="true"] { color: var(--sr-fg); box-shadow: inset 0 -2px var(--sr-accent); }
+  .tabs button .badge { min-width: 1.1rem; height: 1.1rem; padding: 0 .3rem; border-radius: 999px; background: var(--sr-chip-bg); color: var(--sr-fg-light); font-size: .6rem; line-height: 1.1rem; text-align: center; }
+  .tabs button .badge:empty { display: none; }
+  .tabs button[data-tab="chat"] { display: none; }
+  #panes { flex: 1 1 62%; min-height: 6rem; overflow: auto; overscroll-behavior: contain; }
+  .pane { padding: .8rem; }
+  .pane[hidden] { display: none; }
+  .section-title { display: flex; align-items: center; justify-content: space-between; gap: .5rem; margin: .2rem 0 .6rem; font-size: .66rem; font-weight: 500; letter-spacing: .08em; text-transform: uppercase; color: var(--sr-muted); }
+  .muted { color: var(--sr-muted); font-size: .74rem; }
+
+  /* controls: pills like the docs' buttons (panels from other modules reuse .sr-input / .sr-btn / .section-title) */
+  .sr-input, #run select, #run input, #add input { width: 100%; min-width: 0; height: 2.1rem; background: var(--sr-bg); color: var(--sr-fg); border: 1px solid var(--sr-pill-border); border-radius: 999px; padding: 0 .85rem; font-family: var(--sr-mono); font-size: .7rem; }
+  .sr-input:focus, #run select:focus, #run input:focus, #add input:focus, #prompt:focus { outline: none; border-color: var(--sr-accent); box-shadow: 0 0 0 3px var(--sr-accent-soft); }
+  .sr-btn { display: inline-flex; align-items: center; justify-content: center; gap: .35rem; height: 2.1rem; padding: 0 1rem; border-radius: 999px; border: 1px solid var(--sr-pill-border); background: var(--sr-pill-bg); color: var(--sr-fg); font-size: .72rem; font-weight: 500; cursor: pointer; white-space: nowrap; }
+  .sr-btn:hover { border-color: var(--sr-accent); }
+  .sr-btn.primary { background: var(--sr-accent); border-color: var(--sr-accent); color: var(--sr-on-accent); }
+  .sr-btn.primary:hover { opacity: .88; }
+  .sr-btn:disabled { opacity: .5; cursor: default; }
+  #run, #add { display: grid; gap: .45rem; margin-bottom: .6rem; }
+  #run { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
+  #run input, #run button { grid-column: 1 / 3; }
+  #add { grid-template-columns: minmax(0, 1fr) auto; margin-bottom: .9rem; }
+  #run[hidden], #add[hidden] { display: none; }
+  #run button[data-running="true"] { background: transparent; color: var(--sr-warn); border-color: var(--sr-warn); }
+  #cards:empty::before { content: "no robots in this world yet"; color: var(--sr-muted); font-size: .74rem; }
+
+  /* ---------- robot cards: header = name, kind, latch, E-STOP, resume, collapse; body = joint sliders ---------- */
+  .card { border: 1px solid var(--sr-line); border-radius: var(--sr-radius); margin-bottom: .6rem; background: var(--sr-card-bg); transition: border-color 120ms ease; }
+  .card:hover { border-color: var(--sr-pill-border); }
+  .card.picked { border-color: var(--sr-accent); box-shadow: 0 0 0 1px var(--sr-accent); }
+  .card[data-latched="yes"] { border-color: var(--sr-stop); box-shadow: 0 0 0 1px var(--sr-stop); }
+  .card h3 { margin: 0; padding: .5rem .55rem .5rem .4rem; font-size: .8rem; font-weight: 500; display: flex; align-items: center; gap: .4rem; cursor: pointer; user-select: none; }
+  .card h3 .name { flex: 1; min-width: 0; display: flex; align-items: baseline; gap: .4rem; overflow: hidden; }
+  .card h3 .name > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .card h3 small { color: var(--sr-muted); font-weight: 400; font-size: .68rem; white-space: nowrap; }
+  .card .chev { width: 1.4rem; height: 1.4rem; flex: none; display: inline-flex; align-items: center; justify-content: center; border: 0; background: transparent; color: var(--sr-muted); cursor: pointer; padding: 0; border-radius: 4px; transition: transform 150ms ease; }
+  .card .chev:hover { color: var(--sr-fg); }
+  .card .chev svg { width: .75rem; height: .75rem; fill: currentColor; }
+  .card[data-collapsed="yes"] .chev { transform: rotate(-90deg); }
+  .card[data-collapsed="yes"] .body { display: none; }
+  .card .body { padding: .1rem .75rem .75rem; border-top: 1px solid var(--sr-line); }
+  .tag { font-size: .6rem; line-height: 1; padding: .25rem .5rem; border-radius: 999px; border: 1px solid var(--sr-pill-border); color: var(--sr-fg-light); letter-spacing: .02em; white-space: nowrap; flex: none; }
+  .tag.sim { border-color: var(--sr-accent); color: var(--sr-accent); }
+  .tag.real { border-color: var(--sr-warn); color: var(--sr-warn); }
+  .card .running { font-size: .6rem; padding: .25rem .5rem; border-radius: 999px; border: 1px solid var(--sr-accent); background: var(--sr-accent-soft); color: var(--sr-accent); white-space: nowrap; flex: none; max-width: 7rem; overflow: hidden; text-overflow: ellipsis; }
+  .estop-ctl { display: inline-flex; align-items: center; gap: .3rem; flex: none; }
+  .estop-ctl .estop-status { font-family: var(--sr-mono); font-size: .6rem; letter-spacing: .04em; color: var(--sr-accent); }
+  .estop-ctl[data-latched="yes"] .estop-status { color: var(--sr-stop); }
+  .estop-ctl button, .device button.estop { height: 1.65rem; padding: 0 .65rem; border-radius: 999px; font-family: var(--sr-mono); font-size: .62rem; font-weight: 500; letter-spacing: .04em; cursor: pointer; }
+  button.estop { border: 0; background: var(--sr-stop); color: var(--sr-on-stop); }
+  button.estop:hover { background: var(--sr-stop-hover); }
+  button.resume { border: 1px solid var(--sr-pill-border); background: transparent; color: var(--sr-fg); }
+  button.resume:hover { border-color: var(--sr-accent); color: var(--sr-accent); }
+  .estop-ctl[data-latched="no"] button.resume { display: none; }
+
+  /* sliders: name + value on one line, a full-width track under it (readable at a glance, easy to grab) */
+  .joint { display: grid; grid-template-columns: minmax(0, 1fr) auto; grid-template-areas: "name val" "track track"; column-gap: .5rem; margin: .55rem 0 0; font-size: .7rem; color: var(--sr-fg-light); }
+  .joint > span:first-child { grid-area: name; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .joint .val { grid-area: val; text-align: right; color: var(--sr-fg); font-variant-numeric: tabular-nums; }
+  .joint .val::after { content: " rad"; color: var(--sr-muted); }
+  .joint input[type=range] { grid-area: track; width: 100%; margin: .25rem 0 0; height: 1.1rem; background: transparent; -webkit-appearance: none; appearance: none; cursor: pointer; }
+  .joint input[type=range]::-webkit-slider-runnable-track { height: 4px; border-radius: 4px; background: var(--sr-track); }
+  .joint input[type=range]::-moz-range-track { height: 4px; border-radius: 4px; background: var(--sr-track); }
+  .joint input[type=range]::-webkit-slider-thumb { -webkit-appearance: none; width: 14px; height: 14px; margin-top: -5px; border-radius: 50%; background: var(--sr-accent); border: 2px solid var(--sr-bg); box-shadow: 0 0 0 1px var(--sr-accent); }
+  .joint input[type=range]::-moz-range-thumb { width: 12px; height: 12px; border-radius: 50%; background: var(--sr-accent); border: 2px solid var(--sr-bg); }
+  .joint input[type=range]:disabled { cursor: default; opacity: .55; }
+  .card.cam img { display: block; width: 100%; margin-top: .6rem; border-radius: 6px; border: 1px solid var(--sr-line); background: var(--sr-viewer-bg); }
+
+  /* mesh devices (other peers' robots): one row each with its own E-STOP */
+  #mesh-devices { margin-top: 1rem; }
+  #mesh-devices[hidden] { display: none; }
+  .device { display: flex; align-items: center; gap: .5rem; padding: .45rem .55rem .45rem .7rem; margin-bottom: .4rem; border: 1px solid var(--sr-line); border-radius: var(--sr-radius); font-family: var(--sr-mono); font-size: .72rem; }
+  .device > span { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .device small { color: var(--sr-muted); }
+
+  /* ---------- chat dock: its own row of the side column, nothing positioned over it ---------- */
+  #chat { display: flex; flex-direction: column; flex: 1 1 38%; min-height: 9rem; border-top: 1px solid var(--sr-line); background: var(--sr-bg); }
+  #chat-head { margin: 0; padding: .55rem .8rem 0; }
+  #log { flex: 1; overflow: auto; padding: .3rem .8rem .6rem; overscroll-behavior: contain; }
+  #log:empty::before { content: "ask the agent — it holds sim.tool and every robot.tool"; color: var(--sr-muted); font-size: .74rem; }
+  #chatform { display: flex; gap: .45rem; padding: .6rem .8rem .7rem; border-top: 1px solid var(--sr-line); background: var(--sr-bg); }
+  #prompt { flex: 1; min-width: 0; height: 2.3rem; background: var(--sr-bg); color: var(--sr-fg); border: 1px solid var(--sr-pill-border); border-radius: 999px; padding: 0 1rem; font-size: .74rem; }
+  #prompt::placeholder { color: var(--sr-muted); }
+  #chatform button { height: 2.3rem; border-radius: 999px; border: 1px solid var(--sr-accent); background: var(--sr-accent); color: var(--sr-on-accent); padding: 0 1.1rem; font-family: var(--sr-mono); font-size: .72rem; font-weight: 500; cursor: pointer; }
+  #chatform button:disabled { opacity: .5; cursor: default; }
+  /* slots (SR.registerSlot): a row above the chat input, a group in the bar; in flow, never over anything */
+  #chat-slot { display: flex; flex-direction: column; gap: .4rem; padding: .5rem .8rem 0; border-top: 1px solid var(--sr-line); }
+  #bar-slot { display: inline-flex; align-items: center; gap: .4rem; flex: none; }
+  #chat-slot[hidden], #bar-slot[hidden] { display: none; }
+  .msg { margin: .45rem 0; white-space: pre-wrap; font-size: .8rem; overflow-wrap: anywhere; color: var(--sr-fg); }
+  .msg.user { color: var(--sr-accent); font-family: var(--sr-mono); font-size: .74rem; }
+  .msg.user::before { content: "› "; }
+  .msg.tool { color: var(--sr-muted); border-left: 2px solid var(--sr-line); padding-left: .55rem; font-size: .68rem; }
+  .msg.tool summary { cursor: pointer; } .msg.tool pre { margin: .25rem 0 0; white-space: pre-wrap; }
+  .msg.err { color: var(--sr-bad); }
+  .msg.sys.off { white-space: normal; padding: .6rem .7rem; border: 1px dashed var(--sr-line); border-radius: var(--sr-radius); color: var(--sr-fg-light); font-size: .74rem; line-height: 1.5; }
+  .msg.sys.off code { display: block; margin: .35rem 0; padding: .35rem .5rem; border-radius: 6px; background: var(--sr-accent-soft); color: var(--sr-fg); font-size: .68rem; white-space: pre-wrap; overflow-wrap: anywhere; }
+
+  /* ---------- small windows (phones, the docs hero iframe): the side column is a bottom sheet under the stage, in the
+     grid (the stage shrinks, the camera re-frames, nothing overlaps). Closed, the sheet keeps its tab row as a dock:
+     Robots · Connect · Record · Chat are one tap away; tapping the open tab again folds the sheet. ---------- */
+  @media (max-width: 56em) {
+    :root { --sr-bar-h: 2.9rem; }
+    #app, #app[data-side="closed"] { grid-template-columns: minmax(0, 1fr); grid-template-rows: var(--sr-bar-h) minmax(0, 1fr) auto; grid-template-areas: "bar" "stage" "side"; }
+    #bar { padding: 0 .5rem; gap: .4rem; }
+    .brand small, #status, #safety-say { display: none; }
+    .brand { margin-right: auto; }
+    .stopall { padding: 0 .75rem; }
+    #side { height: min(56dvh, 34rem); border-left: 0; border-top: 1px solid var(--sr-pill-border); padding-bottom: env(safe-area-inset-bottom); }
+    #app[data-side="closed"] #side { visibility: visible; height: auto; }
+    #app[data-side="closed"] #panes, #app[data-side="closed"] #chat { display: none; }
+    #app[data-side="closed"] .tabs { border-bottom: 0; }
+    #app[data-side="closed"] .tabs button[aria-selected="true"] { box-shadow: none; color: var(--sr-muted); }
+    .tabs { justify-content: space-around; }
+    .tabs button { height: 2.9rem; }
+    .tabs button[data-tab="chat"] { display: inline-flex; }
+    #side[data-tab="chat"] #panes { display: none; }
+    #side:not([data-tab="chat"]) #chat { display: none; }
+    #side[data-tab="chat"] #chat { border-top: 0; flex: 1; }
+    #chat-head { display: none; }
+  }
+  /* very small: the bar keeps the mark, the mode dot, STOP ALL and the toggles; the word "Docs" and the mode text go */
+  @media (max-width: 26em) { #mode { font-size: 0; gap: 0; padding: 0 .55rem; } #docs-link { display: none; } }
+  @media (max-width: 30em) { .brand { font-size: 0; gap: 0; } .barlink { padding: .3rem .2rem; } }
+  @media (max-width: 90em) { #status .chip.opt { display: none; } }
+  @media (pointer: coarse) { .iconbtn, .pill { min-height: 2.3rem; } .joint input[type=range] { height: 1.6rem; } }
+  @media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation: none !important; transition: none !important; } }
+</style>
+</head>
+<body>
+<div id="app">
+  <header id="bar">
+    <a class="brand" href="./" title="strands-robots dashboard"><img src="./mark.svg" alt="">strands-robots <small>/dashboard</small></a>
+    <span class="pill" id="mode" data-mode="loading" title="server: your CLI's Simulation is the truth · standalone: no server, physics and the policy run in this browser">loading</span>
+    <div id="status" aria-live="polite"></div>
+    <div id="bar-slot" hidden></div>
+    <a class="barlink" id="docs-link" href="https://strands-labs.github.io/robots/dashboard/" target="_blank" rel="noopener" title="strands-robots docs">Docs</a>
+    <button class="iconbtn" id="theme" type="button" aria-label="switch light / dark" title="light / dark (t)">
+      <svg class="icon-moon" viewBox="0 0 24 24"><path d="M12.3 22a10 10 0 0 1-2.6-19.7 1 1 0 0 1 1.2 1.3A7.5 7.5 0 0 0 20.4 13a1 1 0 0 1 1.3 1.2A10 10 0 0 1 12.3 22z"/></svg>
+      <svg class="icon-sun" viewBox="0 0 24 24"><path d="M12 7a5 5 0 1 0 0 10 5 5 0 0 0 0-10zm-1-6h2v3h-2zm0 19h2v3h-2zM1 11h3v2H1zm19 0h3v2h-3zM4.2 5.6l1.4-1.4 2.1 2.1-1.4 1.4zm12.1 12.1 1.4-1.4 2.1 2.1-1.4 1.4zM16.3 6.3l2.1-2.1 1.4 1.4-2.1 2.1zM4.2 18.4l2.1-2.1 1.4 1.4-2.1 2.1z"/></svg>
+    </button>
+    <button class="iconbtn" id="toggle" type="button" aria-pressed="true" aria-label="side panel" title="robots + chat (d)"><svg viewBox="0 0 24 24"><path d="M3 4h18v16H3V4zm2 2v12h9V6H5zm11 0v12h3V6h-3z"/></svg></button>
+    <div id="safety" hidden aria-label="e-stop">
+      <span id="safety-say" aria-live="assertive"></span>
+      <button class="stopall" id="stop-all" type="button" title="E-stop every robot in this world and on the mesh (Shift+Esc)">STOP ALL</button>
+    </div>
+  </header>
+  <div id="stage">
+    <canvas id="twin"></canvas>
+    <div id="pad" hidden aria-label="walk command">
+      <select id="skill" aria-label="skill"></select>
+      <button data-key="w" aria-label="forward">▲</button>
+      <button data-key="a" aria-label="turn left">◀</button>
+      <button data-key="s" aria-label="back">▼</button>
+      <button data-key="d" aria-label="turn right">▶</button>
+    </div>
+    <div id="notice"></div>
+  </div>
+  <aside id="side" data-tab="robots">
+    <nav class="tabs" id="tabs" role="tablist">
+      <button role="tab" data-tab="robots" aria-selected="true">Robots <span class="badge" id="robot-count"></span></button>
+      <button role="tab" data-tab="chat" aria-selected="false">Chat</button>
+    </nav>
+    <div id="panes">
+      <section class="pane" data-pane="robots" role="tabpanel">
+        <div id="run" hidden>
+          <select id="run-robot" aria-label="robot"></select>
+          <select id="run-policy" aria-label="policy"></select>
+          <input id="run-text" placeholder="vx=0.3 for a walker · an instruction for a VLA · ws://host:8765 · lerobot/<repo>" autocomplete="off">
+          <button id="run-go" class="sr-btn primary" type="button">run ▸</button>
+        </div>
+        <div id="add" hidden>
+          <input id="add-robot" list="add-names" placeholder="add a robot: so101 · g1 · microduck · franka …" aria-label="registry robot" autocomplete="off">
+          <datalist id="add-names"></datalist>
+          <button id="add-go" class="sr-btn" type="button">+ robot</button>
+        </div>
+        <div id="cards"></div>
+        <div id="mesh-devices" hidden></div>
+      </section>
+    </div>
+    <div id="chat">
+      <div id="chat-head" class="section-title"><span>Agent</span></div>
+      <div id="log"></div>
+      <div id="chat-slot" hidden></div>
+      <form id="chatform"><input id="prompt" placeholder="ask the agent…  (⌘K or /)" autocomplete="off"><button type="submit">send</button></form>
+    </div>
+  </aside>
+</div>
+<script type="module" src="./app.js"></script>
+<script type="module" src="./safety.js"></script>
+</body>
 </html>

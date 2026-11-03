@@ -1,146 +1,58 @@
-"""Shared fixtures for the mesh test suite.
-
-Default ``STRANDS_MESH_AUTH_MODE`` to ``none`` so tests that mock Zenoh
-do not have to provide cert files. Tests that exercise the mTLS code
-path opt in by setting the env var explicitly via ``monkeypatch``.
-
-Tests that exercise the second-factor opt-in gate itself
-(``STRANDS_MESH_I_KNOW_THIS_IS_INSECURE``) MUST opt out of the autouse
-default by adding the ``mesh_auth_mode_default`` marker, otherwise the
-gate is short-circuited by this fixture and the test passes by
-accident::
-
-    @pytest.mark.mesh_auth_mode_default
-    def test_second_factor_required():
-        # neither STRANDS_MESH_AUTH_MODE nor _I_KNOW_THIS_IS_INSECURE
-        # are set by the autouse fixture for this test.
-        ...
-"""
-
-from __future__ import annotations
-
+import itertools
 import os
+import socket
+import uuid
 
 import pytest
 
-
-def pytest_configure(config: pytest.Config) -> None:
-    """Register markers used by mesh tests."""
-    config.addinivalue_line(
-        "markers",
-        "mesh_auth_mode_default: opt out of the autouse "
-        "STRANDS_MESH_AUTH_MODE=none default. Use for tests that "
-        "exercise the second-factor opt-in gate itself.",
-    )
+_SEQ = itertools.count()
 
 
-@pytest.fixture(autouse=True)
-def _default_mesh_auth_mode_none(monkeypatch, request):
-    """Default to auth_mode=none for mesh unit tests.
-
-    Production deployments default to mTLS (the value of
-    ``STRANDS_MESH_AUTH_MODE`` when no env var is set). The test suite
-    needs the opposite: most tests use a mocked Zenoh session and do
-    not have CA / cert / key files to point at.
-
-    The second-factor opt-in flag (``STRANDS_MESH_I_KNOW_THIS_IS_INSECURE``)
-    is set in the *same conditional branch* as the auth-mode override so
-    that a developer who runs ``STRANDS_MESH_AUTH_MODE=mtls hatch run test``
-    does not get the insecure-opt-in flag silently injected.
-
-    Tests that exercise the second-factor gate itself MUST opt out via
-    ``@pytest.mark.mesh_auth_mode_default``, otherwise the gate passes
-    by accident under this fixture.
-    """
-    if request.node.get_closest_marker("mesh_auth_mode_default"):
-        return
-    if "STRANDS_MESH_AUTH_MODE" not in os.environ:
-        monkeypatch.setenv("STRANDS_MESH_AUTH_MODE", "none")
-        # B2: auth_mode=none requires explicit second-factor opt-in.
-        monkeypatch.setenv("STRANDS_MESH_I_KNOW_THIS_IS_INSECURE", "1")
-
-
-@pytest.fixture(autouse=True)
-def _restore_real_zenoh_module():
-    """Neutralise a leaked ``zenoh`` MagicMock in ``sys.modules``.
-
-    Several mesh tests install a mock Zenoh via
-    ``patch.dict("sys.modules", {"zenoh": MagicMock()})``. ``patch.dict``
-    restores correctly on its own, but under some full-suite collection
-    orderings a real ``zenoh`` reference can still be displaced by a
-    ``unittest.mock.MagicMock`` that outlives its intended scope. When that
-    happens, :func:`strands_robots.mesh.session._build_config` does a fresh
-    ``import zenoh`` and gets the mock - ``zenoh.Config().get_json(...)``
-    then returns a ``MagicMock`` and ``json.loads(...)`` raises
-    ``TypeError: the JSON object must be str, bytes or bytearray, not
-    MagicMock``.
-
-    This autouse fixture asserts a clean baseline: if ``sys.modules["zenoh"]``
-    is a mock object, drop it so the next ``import zenoh`` re-binds the real
-    wheel (or cleanly raises ImportError where it is genuinely absent).
-    """
-    import sys
-    from unittest.mock import NonCallableMock
-
-    mod = sys.modules.get("zenoh")
-    # Only act on an unambiguous mock: a ``unittest.mock`` instance. Real
-    # ``zenoh`` (an extension module) is never from that package, so this
-    # cannot evict the genuine wheel. Dropping the mock lets the next
-    # ``import zenoh`` re-bind the real module (or cleanly ImportError).
-    if mod is not None and (isinstance(mod, NonCallableMock) or type(mod).__module__ == "unittest.mock"):
-        del sys.modules["zenoh"]
-    yield
-
-
-@pytest.fixture(autouse=True)
-def _clear_acl_thread_snapshot():
-    """Leave no ACL snapshot on the main thread once a test is over.
-
-    ``Mesh.start`` clears the snapshot its gate stashed, but a test that calls
-    ``Mesh._refuse_under_permissive_default_acl()`` directly never reaches that
-    ``finally`` and leaves ``auth_mode="mtls"`` behind; every later
-    ``session._build_config()`` on the thread then reads mTLS whatever the env
-    says. Two files leak that way -- test_default_acl_warning.py and
-    test_docs_mesh_accept_permissive_acl_env_var_reference.py, both of which
-    call the gate directly -- and test_acl_thread_snapshot_isolation.py pins
-    that this fixture clears up after them.
-    """
-    from strands_robots.mesh import _acl_config
-
-    _acl_config._clear_thread_snapshot()
-    yield
-    _acl_config._clear_thread_snapshot()
-
-
-@pytest.fixture(autouse=True)
-def _restore_peer_roster():
-    """Leave the module-global peer roster as each test found it.
-
-    ``Mesh._on_presence`` writes the sender into ``session._PEERS`` and nothing
-    removes it, so a test that announces a peer (``tests._wire_source.
-    bound_source``, a presence sample fed to a mesh fixture) leaks it into every
-    later test in the process - a gateway test then counts one remote peer it
-    never discovered. The roster is restored, not cleared, so peers a
-    module-scoped fixture registered before the test survive it.
-    """
-    from strands_robots.mesh import session
-
-    with session._PEERS_LOCK:
-        before = dict(session._PEERS)
-    yield
-    with session._PEERS_LOCK:
-        session._PEERS.clear()
-        session._PEERS.update(before)
+def free_port() -> int:
+    with socket.socket() as s:
+        s.bind(("127.0.0.1", 0))
+        return s.getsockname()[1]
 
 
 @pytest.fixture
-def require_signatures(monkeypatch, tmp_path):
-    """Run the test on a mesh that requires signed wire identity; returns the test CA.
+def tenant() -> str:
+    return f"t{os.getpid()}-{uuid.uuid4().hex[:8]}"
 
-    The opt-out from the ``none`` default above, done the documented way: sets
-    ``STRANDS_MESH_AUTH_MODE=mtls`` with a CA and leaf under ``tmp_path`` and
-    ``STRANDS_MESH_REQUIRE_SIGNED_IDENTITY=1`` (see ``tests/_wire_identity.py``).
-    """
-    from tests._wire_identity import require_signed_identity
 
-    return require_signed_identity(monkeypatch, tmp_path)
+@pytest.fixture(params=["mem", "zenoh"])
+def pair(request):
+    """Two connected transports (a listener and a peer), closed after the test."""
+    from strands_robots.mesh.transports import open_transport
+
+    if request.param == "mem":
+        name = f"bus{next(_SEQ)}-{uuid.uuid4().hex[:6]}"
+        a, b = open_transport(f"mem://{name}"), open_transport(f"mem://{name}")
+    else:
+        pytest.importorskip("zenoh")
+        port = free_port()
+        a = open_transport(f"zenoh://?listen=tcp/127.0.0.1:{port}")
+        b = open_transport(f"zenoh://?connect=tcp/127.0.0.1:{port}")
+    yield a, b
+    b.close()
+    a.close()
+
+
+@pytest.fixture(params=["mem", "zenoh", "iot-fake"])
+def mesh_pair(request, tenant):
+    """Two Meshes (a listener and a peer) in one tenant, closed after the test."""
+    from strands_robots.mesh import Mesh
+
+    if request.param == "mem":
+        name = f"mesh{next(_SEQ)}-{uuid.uuid4().hex[:6]}"
+        ua = ub = f"mem://{name}"
+    elif request.param == "iot-fake":
+        name = f"broker{next(_SEQ)}-{uuid.uuid4().hex[:6]}"
+        ua = ub = f"iot://fake?broker={name}"
+    else:
+        pytest.importorskip("zenoh")
+        port = free_port()
+        ua, ub = f"zenoh://?listen=tcp/127.0.0.1:{port}", f"zenoh://?connect=tcp/127.0.0.1:{port}"
+    a, b = Mesh(ua, tenant=tenant), Mesh(ub, tenant=tenant)
+    yield a, b
+    b.close()
+    a.close()

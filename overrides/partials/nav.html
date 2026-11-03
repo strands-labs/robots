@@ -13,7 +13,7 @@
     </a>
     {{ config.site_name }}
   </label>
-  {#- The section label and search box that head the harness docs sidebar; desktop only, the drawer has its own title. -#}
+  {#- The section label and search box that head the docs sidebar; desktop only, the drawer has its own title. -#}
   <div class="sr-sidehead">
     {% for nav_item in nav.items if nav_item.active and not nav_item.is_homepage %}
       {% set first = nav_item.children | first if nav_item.children else nav_item %}

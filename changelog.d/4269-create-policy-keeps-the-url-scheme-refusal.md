@@ -1,3 +1,0 @@
-### Fixed: create_policy() reports an undeclared URL scheme instead of a generic unknown provider
-
-`create_policy("http://localhost:5555")` (and `grpc://`, `tcp://`, any scheme no provider declares) now raises `No policy provider handles the URL scheme 'http://' (from 'http://localhost:5555'). Declared schemes: cosmos3://, ws://, wss://, zmq://.` Before, that message was logged at WARNING and replaced by `Unknown policy provider: ... Available: [13 names]`. The hardware pre-flight (`start_task` and the other policy entry points) now refuses the same address with the same reason before the arm is claimed, instead of passing it through.

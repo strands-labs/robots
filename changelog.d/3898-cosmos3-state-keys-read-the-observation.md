@@ -1,3 +1,0 @@
-### Fixed: Cosmos 3 binds the joint state from the observation when the declared state keys name none of it
-
-Running the Cosmos 3 policy on a sim arm whose actuators are not named after its joints - the Panda's `actuator1..8` beside `joint1..7` and `finger_joint1` - stopped at the first step with "needs 7 joint state values but found 0", because `run_policy` hands the policy the actuator names as `robot_state_keys` and none of them is an observation key. When no declared key is present, the joint state is now read from the observation's own position keys, with one warning naming the unmatched keys and `generic_state_keys_used` set in the rollout result, the same rule the LeRobot provider applies.

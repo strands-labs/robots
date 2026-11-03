@@ -1,0 +1,27 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 380" width="1000" height="380" role="img" aria-labelledby="t">
+<title id="t">One Simulation, three engines lit in turn: MuJoCo on the CPU, MuJoCo-Warp stepping 1,024 copies on CUDA, Isaac Sim with PhysX. Robot, Policy and robot.run stay the same on the left.</title>
+<rect width="1000" height="380" fill="#fff"/>
+<g font-family="'JetBrains Mono',ui-monospace,monospace">
+<text x="30" y="40" font-size="18" font-weight="600" fill="#000">one Simulation, the engine is a choice</text>
+<rect x="30" y="80" width="300" height="250" rx="8" fill="#fff" stroke="#3d3c3c" stroke-width="1.5"/>
+<text x="50" y="108" font-size="12" fill="#3d3c3c">unchanged</text>
+<text x="50" y="150" font-size="15" fill="#000">Robot("so101", sim=sim)</text>
+<text x="50" y="194" font-size="15" fill="#000">Robot("g1", sim=sim)</text>
+<text x="50" y="238" font-size="15" fill="#000">Policy(...)</text>
+<text x="50" y="282" font-size="15" fill="#000">robot.run(policy, ...)</text>
+<path d="M330 205 C 380 205, 380 115, 420 115" fill="none" stroke="#d9d9d9" stroke-width="2"><animate attributeName="stroke" calcMode="discrete" dur="9s" repeatCount="indefinite" keyTimes="0;0.0000;0.3333" values="#007a3d;#007a3d;#d9d9d9"/></path>
+<rect x="420" y="80" width="550" height="70" rx="8" fill="#fff" stroke="#d9d9d9" stroke-width="1.5"><animate attributeName="stroke" calcMode="discrete" dur="9s" repeatCount="indefinite" keyTimes="0;0.0000;0.3333" values="#007a3d;#007a3d;#d9d9d9"/></rect>
+<text x="440" y="108" font-size="14" fill="#000">Simulation("mujoco")<animate attributeName="fill" calcMode="discrete" dur="9s" repeatCount="indefinite" keyTimes="0;0.0000;0.3333" values="#007a3d;#007a3d;#000"/></text>
+<text x="440" y="132" font-size="12" fill="#3d3c3c">MuJoCo · CPU · one world</text>
+<text x="950" y="132" font-size="12" fill="#b6b6b6" text-anchor="end">this Mac</text>
+<path d="M330 205 C 380 205, 380 205, 420 205" fill="none" stroke="#d9d9d9" stroke-width="2"><animate attributeName="stroke" calcMode="discrete" dur="9s" repeatCount="indefinite" keyTimes="0;0.3333;0.6667" values="#d9d9d9;#007a3d;#d9d9d9"/></path>
+<rect x="420" y="170" width="550" height="70" rx="8" fill="#fff" stroke="#d9d9d9" stroke-width="1.5"><animate attributeName="stroke" calcMode="discrete" dur="9s" repeatCount="indefinite" keyTimes="0;0.3333;0.6667" values="#d9d9d9;#007a3d;#d9d9d9"/></rect>
+<text x="440" y="198" font-size="14" fill="#000">Simulation("mujoco", physics="newton", num_envs=1024)<animate attributeName="fill" calcMode="discrete" dur="9s" repeatCount="indefinite" keyTimes="0;0.3333;0.6667" values="#000;#007a3d;#000"/></text>
+<text x="440" y="222" font-size="12" fill="#3d3c3c">MuJoCo-Warp · CUDA · N copies</text>
+<text x="950" y="222" font-size="12" fill="#b6b6b6" text-anchor="end">L40S</text>
+<path d="M330 205 C 380 205, 380 295, 420 295" fill="none" stroke="#d9d9d9" stroke-width="2"><animate attributeName="stroke" calcMode="discrete" dur="9s" repeatCount="indefinite" keyTimes="0;0.6667" values="#d9d9d9;#007a3d"/></path>
+<rect x="420" y="260" width="550" height="70" rx="8" fill="#fff" stroke="#d9d9d9" stroke-width="1.5"><animate attributeName="stroke" calcMode="discrete" dur="9s" repeatCount="indefinite" keyTimes="0;0.6667" values="#d9d9d9;#007a3d"/></rect>
+<text x="440" y="288" font-size="14" fill="#000">Simulation("isaac")<animate attributeName="fill" calcMode="discrete" dur="9s" repeatCount="indefinite" keyTimes="0;0.6667" values="#000;#007a3d"/></text>
+<text x="440" y="312" font-size="12" fill="#3d3c3c">Isaac Sim · PhysX · RTX render</text>
+<text x="950" y="312" font-size="12" fill="#b6b6b6" text-anchor="end">L40S</text>
+</g></svg>

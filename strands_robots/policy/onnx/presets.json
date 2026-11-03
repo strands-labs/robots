@@ -1,0 +1,140 @@
+{
+ "microduck": {
+  "class": "microduck:MicroduckPolicy",
+  "summary": "biped skills from pollen-robotics/microduck-policies (skill=alpha_walking|velstand|alpha_stand|alpha_sitstand|ball_kick_left|ball_kick_right|roller|roller_crouch|roulade|alpha_ground_pick); command vx, vy (m/s), wz (rad/s)",
+  "robots": [
+   "microduck"
+  ],
+  "repo": "pollen-robotics/microduck-policies",
+  "files": {
+   "alpha_walking": "alpha_walking.onnx",
+   "velstand": "velstand.onnx",
+   "alpha_stand": "alpha_stand.onnx",
+   "alpha_sitstand": "alpha_sitstand.onnx",
+   "ball_kick_left": "ball_kick_left.onnx",
+   "ball_kick_right": "ball_kick_right.onnx",
+   "roller": "roller.onnx",
+   "roller_crouch": "roller_crouch.onnx",
+   "roulade": "roulade.onnx",
+   "alpha_ground_pick": "alpha_ground_pick.onnx"
+  },
+  "sha256": {
+   "alpha_walking.onnx": "e36332d383997d51401897734cd3e79cf5038406feddb18b4d57ecfb141daa6c",
+   "velstand.onnx": "2fc7f8ee6acd7d0d3f66a99927b5d5a56589aeed02ec714de329b252d5ccf492",
+   "alpha_stand.onnx": "1569268713e40deea795dd2922dba50d3621e15a872855408b6b1b125b1c094b",
+   "alpha_sitstand.onnx": "a6f102d9fd655782ba85bfffe18175c34621da719cffcdd673be7982a06fc254",
+   "ball_kick_left.onnx": "d6928284dccd3dd61e08bf2f760effa74309fbefd97b2b31afb2a60f526d196a",
+   "ball_kick_right.onnx": "147a32c388c6b19111b3ac3b550a9a6dc8b8bf267118af4d8c3712522eedb5af",
+   "roller.onnx": "cf05651d2708a2f9364212e86b866c97a70ace8131c492500105e8f28bf99afd",
+   "roller_crouch.onnx": "a1a084be240469c76ac9d3fa44d4792f16d4b1da60398b3ecd3cfc5e2244d990",
+   "roulade.onnx": "3d60da08fc13f29c1b57f41977aa898132c0d60042100149d8e775affcbca32b",
+   "alpha_ground_pick.onnx": "ffbf5109982ff999b0ba53afe86b9ae731bbec679d67fb7f8ab4c52152c88872"
+  },
+  "command_widths": {
+   "twist": 3,
+   "head_pose": 4,
+   "body_pose": 6
+  },
+  "browser": {
+   "robot": "microduck",
+   "skill": "alpha_walking",
+   "hz": 50.0,
+   "fall_z": 0.07,
+   "stand_z": 0.1
+  }
+ },
+ "holosoma": {
+  "class": "holosoma:HolosomaPolicy",
+  "summary": "29-DoF humanoid standing and locomotion; command vx, vy (m/s), wz (rad/s)",
+  "robots": [
+   "unitree_g1"
+  ],
+  "repo": "nepyope/holosoma_locomotion",
+  "files": {
+   "fastsac": "fastsac_g1_29dof.onnx",
+   "ppo": "ppo_g1_29dof.onnx"
+  },
+  "sha256": {
+   "fastsac_g1_29dof.onnx": "8346fd90778439395922a8c7256f24125ae84b8dea949128bac9e23c02bc7717",
+   "ppo_g1_29dof.onnx": "c9d310f479c2da1e86f468de24f64e102a2a275c14eed0fa341473612d942294"
+  },
+  "joints": 29,
+  "default_pose": [
+   -0.312,
+   0.0,
+   0.0,
+   0.669,
+   -0.363,
+   0.0,
+   -0.312,
+   0.0,
+   0.0,
+   0.669,
+   -0.363,
+   0.0,
+   0.0,
+   0.0,
+   0.0,
+   0.2,
+   0.2,
+   0.0,
+   0.6,
+   0.0,
+   0.0,
+   0.0,
+   0.2,
+   -0.2,
+   0.0,
+   0.6,
+   0.0,
+   0.0,
+   0.0
+  ],
+  "scales": {
+   "base_ang_vel": 0.25,
+   "dof_vel": 0.05
+  },
+  "terms": [
+   [
+    "actions",
+    29
+   ],
+   [
+    "base_ang_vel",
+    3
+   ],
+   [
+    "command_ang_vel",
+    1
+   ],
+   [
+    "command_lin_vel",
+    2
+   ],
+   [
+    "cos_phase",
+    2
+   ],
+   [
+    "dof_pos",
+    29
+   ],
+   [
+    "dof_vel",
+    29
+   ],
+   [
+    "projected_gravity",
+    3
+   ],
+   [
+    "sin_phase",
+    2
+   ]
+  ],
+  "action_scale": 0.25,
+  "action_clip": 100.0,
+  "gait_period": 1.0,
+  "stand_eps": 0.01
+ }
+}

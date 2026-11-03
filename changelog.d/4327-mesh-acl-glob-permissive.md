@@ -1,3 +1,0 @@
-### Fixed: an ACL glob over the command or safety plane reads as permissive to the refuse-to-start gate
-
-`_is_permissive_acl_shape` recognised a wide-open `allow` rule only by the literal `**`; the shipped template's `**/cmd`, `**/broadcast` and `**/safety/**` together cover every topic on which a `put` moves or stops a robot, and bound to an unconstrained subject they let any CA-signed peer command and stop every robot while the gate stayed silent. A Zenoh key-expression matcher (`**`, `*`, `$*`) now decides whether an `allow` rule that can `put` reaches a peer `cmd`, the `broadcast` or a fleet safety command, and the loader warns when such a rule is bound to a subject without `cert_common_names` (f023).

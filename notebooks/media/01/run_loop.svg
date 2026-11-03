@@ -1,0 +1,24 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 280" width="900" height="280" role="img" aria-labelledby="t">
+<title id="t">robot.run(policy, hz, seconds or steps or stop_when): a cycle of observe, policy(obs), act(action) lit one after another, which ends when a limit is met and returns a RunResult card listing steps, seconds, hz_achieved, stopped_by, final.</title>
+<style>
+text{font-family:'JetBrains Mono',ui-monospace,monospace;fill:#000}
+.h{font-size:16px;font-weight:600}.s{font-size:12.5px;fill:#3d3c3c}
+.card{fill:#fff;stroke:#3d3c3c;stroke-width:1.2}.w{fill:none;stroke:#3d3c3c;stroke-width:1.2}
+.lit{fill:none;stroke:#007a3d;stroke-width:3;opacity:0}
+.a1{animation:on 4.5s infinite 0s}.a2{animation:on 4.5s infinite 1.5s}.a3{animation:on 4.5s infinite 3s}
+@keyframes on{0%,100%{opacity:0}5%,28%{opacity:1}33%{opacity:0}}
+.res{fill:#fff;stroke:#007a3d;stroke-width:1.5}
+</style>
+<rect width="900" height="280" fill="#fff"/>
+<g stroke="#d9d9d9"><path d="M0 70H900M0 140H900M0 210H900M180 0V280M360 0V280M540 0V280M720 0V280"/></g>
+<text class="h" x="20" y="34">robot.run(policy, hz=50, seconds=2)</text>
+<g transform="translate(20,80)"><rect class="card" width="160" height="70" rx="8"/><rect class="lit a1" width="160" height="70" rx="8"/><text class="h" x="14" y="30">observe()</text><text class="s" x="14" y="52">Observation</text></g>
+<g transform="translate(230,80)"><rect class="card" width="160" height="70" rx="8"/><rect class="lit a2" width="160" height="70" rx="8"/><text class="h" x="14" y="30">policy(obs)</text><text class="s" x="14" y="52">action</text></g>
+<g transform="translate(440,80)"><rect class="card" width="160" height="70" rx="8"/><rect class="lit a3" width="160" height="70" rx="8"/><text class="h" x="14" y="30">act(action)</text><text class="s" x="14" y="52">world steps 1/hz</text></g>
+<path class="w" d="M180 115H230M390 115H440"/>
+<path class="w" d="M520 150V200H100V150" stroke-dasharray="4 4"/>
+<text class="s" x="160" y="222">until steps= / seconds= / stop_when= / stop()</text>
+<path class="w" d="M600 115H650"/>
+<g transform="translate(650,60)"><rect class="res" width="230" height="170" rx="8"/><text class="h" x="14" y="28">RunResult</text>
+<text class="s" x="14" y="56">steps        100</text><text class="s" x="14" y="78">seconds      2.0</text><text class="s" x="14" y="100">hz_achieved  50.0</text><text class="s" x="14" y="122">stopped_by   "steps"</text><text class="s" x="14" y="144">final        Observation</text></g>
+</svg>

@@ -1,0 +1,167 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 460" width="1000" height="460" role="img" aria-labelledby="t">
+<title id="t">Top: robot.run in this process sends one frame over Zenoh to a lerobot-policy-server process, which answers with a whole action chunk; a dot travels right with the frame, then left with the chunk. Bottom: two timelines of control ticks. Sequential: the arm holds (grey ticks, act returns None) while the chunk is on its way, then plays its rows (green ticks), then asks again only when the queue is empty. Splice: the next chunk is requested before the queue empties, so every tick plays a row and none holds.</title>
+<style>
+text{font-family:'JetBrains Mono',ui-monospace,monospace;fill:#000}
+.h{font-size:16px;font-weight:600}.s{font-size:13px;fill:#3d3c3c}.k{font-size:12px;fill:#3d3c3c}
+.card{fill:#fff;stroke:#3d3c3c;stroke-width:1.2}.w{fill:none;stroke:#b6b6b6;stroke-width:1.2}
+.hold{fill:#d9d9d9}.play{fill:#007a3d}.ask{fill:none;stroke:#007a3d;stroke-width:1.5}
+.cur{stroke:#02a435;stroke-width:2}
+</style>
+<rect width="1000" height="460" fill="#fff"/>
+<g stroke="#d9d9d9" stroke-width="1"><path d="M0 60H1000M0 120H1000M0 180H1000M0 240H1000M0 300H1000M0 360H1000M0 420H1000M200 0V460M400 0V460M600 0V460M800 0V460"/></g>
+<g transform="translate(24,30)"><rect class="card" width="280" height="110" rx="8"/><text class="h" x="16" y="34">robot.run(policy)</text><text class="s" x="16" y="60">this process, the sim arm</text><text class="k" x="16" y="86">Policy("zenoh://host:7450/act")</text></g>
+<g transform="translate(696,30)"><rect class="card" width="280" height="110" rx="8"/><text class="h" x="16" y="34">lerobot-policy-server</text><text class="s" x="16" y="60">another process, the model</text><text class="k" x="16" y="86">--config_path=act.yaml</text></g>
+<path class="w" d="M304 72H696"/><path class="w" d="M304 100H696"/>
+<text class="k" x="500" y="64" text-anchor="middle">one frame (state + wrist image)</text>
+<text class="k" x="500" y="122" text-anchor="middle">one chunk (30 rows)</text>
+<circle r="6" fill="#007a3d"><animate attributeName="cx" values="304;696;696;304;304" keyTimes="0;0.2;0.25;0.45;1" dur="6s" repeatCount="indefinite"/><animate attributeName="cy" values="72;72;100;100;100" keyTimes="0;0.2;0.25;0.45;1" dur="6s" repeatCount="indefinite"/><animate attributeName="opacity" values="1;1;1;1;0;0" keyTimes="0;0.2;0.25;0.45;0.46;1" dur="6s" repeatCount="indefinite"/></circle>
+<text class="h" x="24" y="228">sequential</text>
+<rect class="hold" x="180" y="210" width="8" height="26" rx="2"/>
+<rect class="hold" x="191" y="210" width="8" height="26" rx="2"/>
+<rect class="hold" x="202" y="210" width="8" height="26" rx="2"/>
+<rect class="hold" x="213" y="210" width="8" height="26" rx="2"/>
+<rect class="hold" x="224" y="210" width="8" height="26" rx="2"/>
+<rect class="hold" x="235" y="210" width="8" height="26" rx="2"/>
+<rect class="play" x="246" y="210" width="8" height="26" rx="2"/>
+<rect class="play" x="257" y="210" width="8" height="26" rx="2"/>
+<rect class="play" x="268" y="210" width="8" height="26" rx="2"/>
+<rect class="play" x="279" y="210" width="8" height="26" rx="2"/>
+<rect class="play" x="290" y="210" width="8" height="26" rx="2"/>
+<rect class="play" x="301" y="210" width="8" height="26" rx="2"/>
+<rect class="play" x="312" y="210" width="8" height="26" rx="2"/>
+<rect class="play" x="323" y="210" width="8" height="26" rx="2"/>
+<rect class="play" x="334" y="210" width="8" height="26" rx="2"/>
+<rect class="play" x="345" y="210" width="8" height="26" rx="2"/>
+<rect class="play" x="356" y="210" width="8" height="26" rx="2"/>
+<rect class="play" x="367" y="210" width="8" height="26" rx="2"/>
+<rect class="play" x="378" y="210" width="8" height="26" rx="2"/>
+<rect class="play" x="389" y="210" width="8" height="26" rx="2"/>
+<rect class="play" x="400" y="210" width="8" height="26" rx="2"/>
+<rect class="play" x="411" y="210" width="8" height="26" rx="2"/>
+<rect class="play" x="422" y="210" width="8" height="26" rx="2"/>
+<rect class="play" x="433" y="210" width="8" height="26" rx="2"/>
+<rect class="play" x="444" y="210" width="8" height="26" rx="2"/>
+<rect class="play" x="455" y="210" width="8" height="26" rx="2"/>
+<rect class="play" x="466" y="210" width="8" height="26" rx="2"/>
+<rect class="play" x="477" y="210" width="8" height="26" rx="2"/>
+<rect class="hold" x="488" y="210" width="8" height="26" rx="2"/>
+<rect class="hold" x="499" y="210" width="8" height="26" rx="2"/>
+<rect class="hold" x="510" y="210" width="8" height="26" rx="2"/>
+<rect class="hold" x="521" y="210" width="8" height="26" rx="2"/>
+<rect class="hold" x="532" y="210" width="8" height="26" rx="2"/>
+<rect class="hold" x="543" y="210" width="8" height="26" rx="2"/>
+<rect class="play" x="554" y="210" width="8" height="26" rx="2"/>
+<rect class="play" x="565" y="210" width="8" height="26" rx="2"/>
+<rect class="play" x="576" y="210" width="8" height="26" rx="2"/>
+<rect class="play" x="587" y="210" width="8" height="26" rx="2"/>
+<rect class="play" x="598" y="210" width="8" height="26" rx="2"/>
+<rect class="play" x="609" y="210" width="8" height="26" rx="2"/>
+<rect class="play" x="620" y="210" width="8" height="26" rx="2"/>
+<rect class="play" x="631" y="210" width="8" height="26" rx="2"/>
+<rect class="play" x="642" y="210" width="8" height="26" rx="2"/>
+<rect class="play" x="653" y="210" width="8" height="26" rx="2"/>
+<rect class="play" x="664" y="210" width="8" height="26" rx="2"/>
+<rect class="play" x="675" y="210" width="8" height="26" rx="2"/>
+<rect class="play" x="686" y="210" width="8" height="26" rx="2"/>
+<rect class="play" x="697" y="210" width="8" height="26" rx="2"/>
+<rect class="play" x="708" y="210" width="8" height="26" rx="2"/>
+<rect class="play" x="719" y="210" width="8" height="26" rx="2"/>
+<rect class="play" x="730" y="210" width="8" height="26" rx="2"/>
+<rect class="play" x="741" y="210" width="8" height="26" rx="2"/>
+<rect class="play" x="752" y="210" width="8" height="26" rx="2"/>
+<rect class="play" x="763" y="210" width="8" height="26" rx="2"/>
+<rect class="play" x="774" y="210" width="8" height="26" rx="2"/>
+<rect class="play" x="785" y="210" width="8" height="26" rx="2"/>
+<rect class="hold" x="796" y="210" width="8" height="26" rx="2"/>
+<rect class="hold" x="807" y="210" width="8" height="26" rx="2"/>
+<rect class="hold" x="818" y="210" width="8" height="26" rx="2"/>
+<rect class="hold" x="829" y="210" width="8" height="26" rx="2"/>
+<rect class="hold" x="840" y="210" width="8" height="26" rx="2"/>
+<rect class="hold" x="851" y="210" width="8" height="26" rx="2"/>
+<rect class="play" x="862" y="210" width="8" height="26" rx="2"/>
+<rect class="play" x="873" y="210" width="8" height="26" rx="2"/>
+<rect class="play" x="884" y="210" width="8" height="26" rx="2"/>
+<rect class="play" x="895" y="210" width="8" height="26" rx="2"/>
+<rect class="play" x="906" y="210" width="8" height="26" rx="2"/>
+<rect class="play" x="917" y="210" width="8" height="26" rx="2"/>
+<rect class="play" x="928" y="210" width="8" height="26" rx="2"/>
+<rect class="play" x="939" y="210" width="8" height="26" rx="2"/>
+<text class="k" x="180" y="262">grey: act() returns None, the arm holds its last target (a hold, never a miss)</text>
+<text class="h" x="24" y="338">splice</text>
+<rect class="hold" x="180" y="320" width="8" height="26" rx="2"/>
+<rect class="hold" x="191" y="320" width="8" height="26" rx="2"/>
+<rect class="hold" x="202" y="320" width="8" height="26" rx="2"/>
+<rect class="hold" x="213" y="320" width="8" height="26" rx="2"/>
+<rect class="hold" x="224" y="320" width="8" height="26" rx="2"/>
+<rect class="hold" x="235" y="320" width="8" height="26" rx="2"/>
+<rect class="play" x="246" y="320" width="8" height="26" rx="2"/>
+<rect class="play" x="257" y="320" width="8" height="26" rx="2"/>
+<rect class="play" x="268" y="320" width="8" height="26" rx="2"/>
+<rect class="play" x="279" y="320" width="8" height="26" rx="2"/>
+<rect class="play" x="290" y="320" width="8" height="26" rx="2"/>
+<rect class="play" x="301" y="320" width="8" height="26" rx="2"/>
+<rect class="play" x="312" y="320" width="8" height="26" rx="2"/>
+<rect class="play" x="323" y="320" width="8" height="26" rx="2"/>
+<rect class="play" x="334" y="320" width="8" height="26" rx="2"/>
+<rect class="play" x="345" y="320" width="8" height="26" rx="2"/>
+<rect class="play" x="356" y="320" width="8" height="26" rx="2"/>
+<rect class="play" x="367" y="320" width="8" height="26" rx="2"/>
+<rect class="play" x="378" y="320" width="8" height="26" rx="2"/>
+<rect class="play" x="389" y="320" width="8" height="26" rx="2"/>
+<rect class="play" x="400" y="320" width="8" height="26" rx="2"/>
+<rect class="play" x="411" y="320" width="8" height="26" rx="2"/>
+<rect class="play" x="422" y="320" width="8" height="26" rx="2"/>
+<rect class="play" x="433" y="320" width="8" height="26" rx="2"/>
+<rect class="play" x="444" y="320" width="8" height="26" rx="2"/>
+<rect class="play" x="455" y="320" width="8" height="26" rx="2"/>
+<rect class="play" x="466" y="320" width="8" height="26" rx="2"/>
+<rect class="play" x="477" y="320" width="8" height="26" rx="2"/>
+<rect class="play" x="488" y="320" width="8" height="26" rx="2"/>
+<rect class="play" x="499" y="320" width="8" height="26" rx="2"/>
+<rect class="play" x="510" y="320" width="8" height="26" rx="2"/>
+<rect class="play" x="521" y="320" width="8" height="26" rx="2"/>
+<rect class="play" x="532" y="320" width="8" height="26" rx="2"/>
+<rect class="play" x="543" y="320" width="8" height="26" rx="2"/>
+<rect class="play" x="554" y="320" width="8" height="26" rx="2"/>
+<rect class="play" x="565" y="320" width="8" height="26" rx="2"/>
+<rect class="play" x="576" y="320" width="8" height="26" rx="2"/>
+<rect class="play" x="587" y="320" width="8" height="26" rx="2"/>
+<rect class="play" x="598" y="320" width="8" height="26" rx="2"/>
+<rect class="play" x="609" y="320" width="8" height="26" rx="2"/>
+<rect class="play" x="620" y="320" width="8" height="26" rx="2"/>
+<rect class="play" x="631" y="320" width="8" height="26" rx="2"/>
+<rect class="play" x="642" y="320" width="8" height="26" rx="2"/>
+<rect class="play" x="653" y="320" width="8" height="26" rx="2"/>
+<rect class="play" x="664" y="320" width="8" height="26" rx="2"/>
+<rect class="play" x="675" y="320" width="8" height="26" rx="2"/>
+<rect class="play" x="686" y="320" width="8" height="26" rx="2"/>
+<rect class="play" x="697" y="320" width="8" height="26" rx="2"/>
+<rect class="play" x="708" y="320" width="8" height="26" rx="2"/>
+<rect class="play" x="719" y="320" width="8" height="26" rx="2"/>
+<rect class="play" x="730" y="320" width="8" height="26" rx="2"/>
+<rect class="play" x="741" y="320" width="8" height="26" rx="2"/>
+<rect class="play" x="752" y="320" width="8" height="26" rx="2"/>
+<rect class="play" x="763" y="320" width="8" height="26" rx="2"/>
+<rect class="play" x="774" y="320" width="8" height="26" rx="2"/>
+<rect class="play" x="785" y="320" width="8" height="26" rx="2"/>
+<rect class="play" x="796" y="320" width="8" height="26" rx="2"/>
+<rect class="play" x="807" y="320" width="8" height="26" rx="2"/>
+<rect class="play" x="818" y="320" width="8" height="26" rx="2"/>
+<rect class="play" x="829" y="320" width="8" height="26" rx="2"/>
+<rect class="play" x="840" y="320" width="8" height="26" rx="2"/>
+<rect class="play" x="851" y="320" width="8" height="26" rx="2"/>
+<rect class="play" x="862" y="320" width="8" height="26" rx="2"/>
+<rect class="play" x="873" y="320" width="8" height="26" rx="2"/>
+<rect class="play" x="884" y="320" width="8" height="26" rx="2"/>
+<rect class="play" x="895" y="320" width="8" height="26" rx="2"/>
+<rect class="play" x="906" y="320" width="8" height="26" rx="2"/>
+<rect class="play" x="917" y="320" width="8" height="26" rx="2"/>
+<rect class="play" x="928" y="320" width="8" height="26" rx="2"/>
+<rect class="play" x="939" y="320" width="8" height="26" rx="2"/>
+<text class="k" x="180" y="372">the next chunk is asked for one turnaround before the queue empties</text>
+<line class="cur" x1="180" y1="196" x2="180" y2="352"><animate attributeName="x1" from="180" to="950" dur="12s" repeatCount="indefinite"/><animate attributeName="x2" from="180" to="950" dur="12s" repeatCount="indefinite"/></line>
+<path class="ask" d="M184 204 v-8 m-4 4 l4 -4 l4 4"/>
+<path class="ask" d="M492 204 v-8 m-4 4 l4 -4 l4 4"/>
+<path class="ask" d="M800 204 v-8 m-4 4 l4 -4 l4 4"/>
+<text class="k" x="24" y="430">one tick = 1/30 s · arrows: a frame goes out, only when the queue is empty</text>
+</svg>

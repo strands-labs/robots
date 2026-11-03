@@ -1,3 +1,0 @@
-### Fixed: the RL reach examples roll the trained checkpoint out as their docstrings promise
-
-`examples/training/train_ppo_reach.py` and `examples/training/train_fastsac_reach.py` both closed their module docstring with "the deterministic (mean) policy is rolled out ... and the joint trajectory is reported", and neither file contained a rollout: `main()` stopped at `print(result.metrics)`, so a reader got `mean_reward` and no indication of where the `Elbow` joint ended up. Each example now deploys its own checkpoint through `run_policy(policy_provider="rl")` on the robot `make_env` built and prints the joint trace beside the target, and a test pins the pair per file - the docstring promises the rollout, the code performs it on the trained robot - in both directions.

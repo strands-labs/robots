@@ -1,9 +1,0 @@
-### Fixed: a geom's shape is read from the `<default>` class it inherits
-
-MJCF lets a `<geom>` spell almost nothing itself. `<default class="X">` supplies every attribute the element omits, `<body childclass="X">` names that class for a whole subtree, and the classes form an inheritance tree rooted at the unnamed top-level `<default>`. So `type`, `size` and `fromto` - the three attributes that decide what shape a geom is - need not be on the geom at all.
-
-Both MJCF readers in the Isaac loaders asked the element directly, so they saw only the half a geom spells itself. `asimov_v0`'s six leg links reported the 0.05 m fallback box for capsules whose `<default class="body_capsule">` declares `type="capsule" size="0.05"` over a 0.25 m `fromto` segment: a 10 cm cube for a 25 cm shin, on a shipped registry robot, under `load_mjcf` reporting success. The `abh_*` hands are the extreme form, where every geom is `<geom class="X"/>` and the class carries the mesh name, so the reader saw a four-geom body declaring no mesh at all.
-
-One rule now answers what a geom declared, for every reader: the geom's own class, else the nearest enclosing `childclass`, else the root class, overridden by whatever the element spells itself. Classes are model-global through `<include>`, the same splice `<compiler>` and `<asset>` already get.
-
-Measured over 660 MJCFs with MuJoCo's own compiled geoms as the oracle: 12 files change on the robot reader, all box to capsule or cylinder corrections; 66 change on the scene-object reader, 58 of them collision-proxy corrections and 8 that now refuse. Those 8 are `ability_hand_api` models MuJoCo itself refuses, where resolving the class-declared mesh name lets the fail-loud contract see a missing asset instead of silently emitting a box proxy. LIBERO is unchanged on both readers.

@@ -1,3 +1,0 @@
-### Fixed: `Robot(mode="real", ros2_bridge="false")` is refused for the flag, not for a missing rclpy
-
-`Robot.__init__` read `ros2_bridge` by truthiness to decide whether to probe the ROS 2 transport dependency, before the boolean grading in `_init_ros_bridge` ran. `"false"` is truthy, so on a machine without a sourced ROS 2 distro a caller who asked for no bridge was told `'rclpy' is required for the ROS 2 telemetry bridge (ros2_bridge=True)`. Both `ros2_bridge` and `ros2_commands` are now graded on the shared boolean domain ahead of that probe, so a non-boolean spelling is refused by name whether or not rclpy or cyclonedds is installed; a genuine `ros2_bridge=True` without the dependency still reports the install hint.

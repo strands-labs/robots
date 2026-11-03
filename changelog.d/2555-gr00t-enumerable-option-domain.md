@@ -1,3 +1,0 @@
-### Fixed
-
-- **tools/gr00t_inference**: `data_config`, `embodiment_tag` and the three TensorRT dtype flags are now held to a lowercase selector-token domain at the dispatch boundary, like the numeric options beside them in the same detached `docker exec` argv. An unusable value is refused up front, naming the parameter, instead of reporting a service that "failed to start" with the reason left in the container log. The admitted set is derived from the shipped `data_configs.json`, and options the requested action ignores (`data_config` under `protocol="n1.7"`, the dtypes without `use_tensorrt`) are left alone.

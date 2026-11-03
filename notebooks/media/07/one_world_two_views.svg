@@ -1,0 +1,80 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 380" width="1000" height="380" role="img" aria-labelledby="t">
+<title id="t">One Simulation in the middle, read under sim.lock. Left, a Python script calls arm.act and sim.add_object on it. Right, a browser tab draws it: GET /api/scene once, then WS /ws/state streams joint values about 30 times a second; the page's sliders and E-STOP come back as POST requests through the robot's own safety chain. The three paths light up one after another.</title>
+<style>
+  text{font-family:'JetBrains Mono',ui-monospace,monospace;fill:#000}
+  .h{font-size:15px;font-weight:500}
+  .s{font-size:12px;fill:#3d3c3c}
+  .c{fill:#fff;stroke:#000;stroke-width:1.2}
+  .w{fill:none;stroke:#b6b6b6;stroke-width:1.4}
+  .g{fill:none;stroke:#007a3d;stroke-width:2}
+  .dot{fill:#007a3d}
+</style>
+<rect width="1000" height="380" fill="#fff"/>
+<g stroke="#d9d9d9" stroke-width="1">
+  <path d="M0 60H1000M0 120H1000M0 180H1000M0 240H1000M0 300H1000M0 360H1000"/>
+  <path d="M100 0V380M200 0V380M300 0V380M400 0V380M500 0V380M600 0V380M700 0V380M800 0V380M900 0V380"/>
+</g>
+
+<!-- script -->
+<rect class="c" x="30" y="90" width="250" height="200" rx="8"/>
+<text class="h" x="50" y="120">your script</text>
+<text class="s" x="50" y="150">sim = Simulation()</text>
+<text class="s" x="50" y="172">arm = Robot("so101", sim=sim)</text>
+<text class="s" x="50" y="194">Dashboard(sim).start()</text>
+<text class="s" x="50" y="230">arm.act(..., seconds=1)</text>
+<text class="s" x="50" y="252">sim.add_object("crate")</text>
+<rect x="44" y="214" width="222" height="48" rx="5" fill="none" stroke="#007a3d" stroke-width="2" opacity="0">
+  <animate attributeName="opacity" values="1;1;0;0;0;0;1" keyTimes="0;0.3;0.33;0.66;0.97;0.99;1" dur="9s" repeatCount="indefinite"/>
+</rect>
+
+<!-- world -->
+<rect class="c" x="375" y="110" width="250" height="160" rx="8" stroke-width="1.6"/>
+<text class="h" x="395" y="140">Simulation</text>
+<text class="s" x="395" y="166">one world, one clock</text>
+<text class="s" x="395" y="188">sim.lock around every read</text>
+<text class="s" x="395" y="210">sim.revision bumps on change</text>
+<rect x="395" y="228" width="210" height="26" rx="13" fill="#9fd9b0" opacity=".55"/>
+<text class="s" x="410" y="246" style="fill:#000">robots · objects · cameras</text>
+
+<!-- browser -->
+<rect class="c" x="720" y="90" width="250" height="200" rx="8"/>
+<rect x="720" y="90" width="250" height="26" rx="8" fill="#28292a"/>
+<circle cx="736" cy="103" r="4" fill="#b6b6b6"/><circle cx="750" cy="103" r="4" fill="#b6b6b6"/>
+<text x="766" y="107" style="font-size:11px;fill:#fff">127.0.0.1:8090</text>
+<text class="h" x="740" y="144">browser twin</text>
+<text class="s" x="740" y="170">MuJoCo WASM, kinematics</text>
+<text class="s" x="740" y="192">three.js draws the poses</text>
+<text class="s" x="740" y="230">cards · sliders · chat</text>
+<text class="s" x="740" y="252">E-STOP · Resume</text>
+
+<!-- script -> world -->
+<path class="w" d="M280 190H375"/>
+<path class="g" d="M280 190H375" opacity="0">
+  <animate attributeName="opacity" values="1;1;0;0;0;0;1" keyTimes="0;0.3;0.33;0.66;0.97;0.99;1" dur="9s" repeatCount="indefinite"/>
+</path>
+<path d="M368 185l8 5-8 5" fill="none" stroke="#000" stroke-width="1.4"/>
+
+<!-- world -> browser: state frames -->
+<path class="w" d="M625 160H720"/>
+<path d="M713 155l8 5-8 5" fill="none" stroke="#000" stroke-width="1.4"/>
+<text class="s" x="630" y="148">WS /ws/state</text>
+<g opacity="0">
+  <animate attributeName="opacity" values="0;0;1;1;0;0" keyTimes="0;0.32;0.34;0.65;0.67;1" dur="9s" repeatCount="indefinite"/>
+  <path class="g" d="M625 160H720"/>
+  <circle class="dot" r="4" cy="160"><animate attributeName="cx" values="625;715" dur="0.6s" repeatCount="indefinite"/></circle>
+  <circle class="dot" r="4" cy="160"><animate attributeName="cx" values="625;715" dur="0.6s" begin="0.3s" repeatCount="indefinite"/></circle>
+</g>
+
+<!-- browser -> world: posts -->
+<path class="w" d="M720 230H625" stroke-dasharray="5 4"/>
+<path d="M632 225l-8 5 8 5" fill="none" stroke="#000" stroke-width="1.4"/>
+<text class="s" x="630" y="250">POST act/estop</text>
+<g opacity="0">
+  <animate attributeName="opacity" values="0;0;1;1;0" keyTimes="0;0.66;0.68;0.97;1" dur="9s" repeatCount="indefinite"/>
+  <path class="g" d="M720 230H625" stroke-dasharray="5 4"/>
+  <circle class="dot" r="4" cy="230"><animate attributeName="cx" values="715;630" dur="1s" repeatCount="indefinite"/></circle>
+</g>
+<text class="s" x="375" y="300">through the robot's own safety chain</text>
+
+<text class="s" x="30" y="345">GET /api/scene once (merged MJCF + a card per robot), then frames; a revision bump recompiles the page.</text>
+</svg>

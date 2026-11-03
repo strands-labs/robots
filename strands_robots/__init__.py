@@ -1,299 +1,50 @@
-#!/usr/bin/env python3
-"""
-Strands Robotics - Universal Robot Control with Policy Abstraction
+"""strands-robots v1: a Simulation is a world, a Robot is a body in a world (or on a bus),
+a Policy turns an Observation into an Action.
 
-A unified Python interface for controlling diverse robot hardware through
-any VLA provider with clean policy abstraction architecture.
+This is the ``dev`` branch: v1 is built here part by part (strands-labs/robots#4749, schedule #3818).
+Each of the five concepts is a package you can read top to bottom; the top level exports the
+classes a program names, and everything else is imported from its package
+(``from strands_robots.simulation import Scene``):
 
-Key features:
-- Policy abstraction for any VLA provider (GR00T, ACT, SmolVLA, etc.)
-- Universal robot support through LeRobot integration
-- Clean separation between robot control and policy inference
-- Direct policy injection for maximum flexibility
-- Multi-camera support with rich configuration options
-- MuJoCo simulation backend (no GPU required)
+    from strands_robots import Robot
 
-Lazy Loading:
-    Heavy imports (Robot, tools, Simulation) are deferred until
-    first access. Heavy imports are deferred so ``import strands_robots`` stays
-    fast when lerobot/torch/mujoco are installed but not yet needed.
+    arm = Robot("so101")                    # joins Simulation.default(); mujoco is imported here, not before
+    g1 = Robot("g1", position=[1, 0, 0])    # the SAME world: arm.sim is g1.sim
+    arm.act({"shoulder_pan": 0.3})          # one control step for the world
+    arm.run(lambda obs: {"elbow_flex": 0.4}, hz=50, steps=60)   # -> RunResult
+    real = Robot("so101", port="/dev/ttyACM0", confirm=ask)     # a feetech bus, a twin in the default world
+    real.act({"shoulder_pan": 0.3})         # writes the bus; the twin mirrors it and its world steps once
+    lab = Mesh("zenoh://", tenant="lab-a")                   # every robot on the LAN; lab.mount(real)
 
-    Light-weight symbols (Policy, MockPolicy, create_policy) are available
-    immediately since they don't pull in torch/lerobot.
+Every refusal (the operator said no, a limit, the e-stop) raises ``RequestRefused``, a ``PermissionError``.
 """
 
-import importlib as _importlib
-import warnings as _warnings
-from importlib.metadata import PackageNotFoundError as _PackageNotFoundError
-from importlib.metadata import version as _distribution_version
-from typing import TYPE_CHECKING, Any
+from __future__ import annotations
 
-try:
-    __version__ = _distribution_version("strands-robots")
-except _PackageNotFoundError:  # a source tree that was never installed
-    __version__ = "0.0.0+unknown"
+from . import _gl as _gl  # first: picks MUJOCO_GL before anything imports mujoco, which reads it once
+from .description import Description
+from .mesh import Mesh
+from .policy import Policy
+from .robot import Body, Robot
+from .robot.safety import RequestRefused
+from .simulation import Simulation
+from .types import Action, JointState, Observation, Pose
 
-# TYPE_CHECKING-only eager imports so type-checkers see concrete types for
-# the lazy attributes below (the runtime __getattr__ resolves them to Any
-# from the static analyzer's perspective). PEP 562.
-if TYPE_CHECKING:
-    from strands_robots.dataset_transfer import sync_dataset_to_bucket
-    from strands_robots.device_connect import (
-        ReachyMiniDriver,
-        RobotDeviceDriver,
-        SimulationDeviceDriver,
-        init_device_connect,
-        init_device_connect_sync,
-    )
-    from strands_robots.hardware_ros_bridge import HardwareRosBridge
-    from strands_robots.hardware_rtps_bridge import HardwareRtpsBridge
-    from strands_robots.policies.lerobot_local.resolution import list_policy_types
-    from strands_robots.registry import (
-        get_robot,
-        is_discoverable,
-        list_discoverable,
-        list_robots,
-        list_urdf_only,
-    )
-    from strands_robots.robot import Robot
-    from strands_robots.simulation import (
-        SimCamera,
-        SimObject,
-        SimRobot,
-        Simulation,
-        SimWorld,
-        create_simulation,
-        list_backends,
-        register_backend,
-    )
-    from strands_robots.streaming_dataset import StreamingDatasetReader, stream_dataset
-    from strands_robots.teleoperator import Teleoperator
-    from strands_robots.tools.download_assets import download_assets
-    from strands_robots.tools.episode_judge import (
-        create_judge_agent,
-        load_episode,
-        read_predicate_verdict,
-        sample_frames,
-        write_label,
-    )
-    from strands_robots.tools.harness_memory import harness_memory
-    from strands_robots.tools.lerobot_camera import lerobot_camera
-    from strands_robots.tools.lerobot_teleoperate import lerobot_teleoperate
-    from strands_robots.tools.lerobot_train import lerobot_train
-    from strands_robots.tools.pose_tool import pose_tool
-    from strands_robots.tools.robot_mesh import robot_mesh
-    from strands_robots.tools.run_policy import run_policy
-    from strands_robots.tools.serial_tool import serial_tool
-    from strands_robots.tools.train_policy import train_policy
-    from strands_robots.tools.use_lerobot import use_lerobot
-    from strands_robots.tools.use_ros import use_ros
-    from strands_robots.tools.use_rosbridge import use_rosbridge
-    from strands_robots.tools.use_rtps import use_rtps
-
-# ------------------------------------------------------------------
-# Light-weight imports - no torch / lerobot / mujoco dependency
-# ------------------------------------------------------------------
-from strands_robots.policies import (  # noqa: F401
-    MockPolicy,
-    Policy,
-    create_policy,
-    list_providers,
-    register_policy,
-)
-
-# ------------------------------------------------------------------
-# Lazy-loaded heavy symbols
-# ------------------------------------------------------------------
-# Maps public name -> (module_path, attribute_name)
-_LAZY_IMPORTS: dict[str, tuple[str, str]] = {
-    # Hardware robot
-    "Robot": ("strands_robots.robot", "Robot"),
-    "HardwareRosBridge": ("strands_robots.hardware_ros_bridge", "HardwareRosBridge"),
-    "HardwareRtpsBridge": ("strands_robots.hardware_rtps_bridge", "HardwareRtpsBridge"),
-    "Teleoperator": ("strands_robots.teleoperator", "Teleoperator"),
-    "list_robots": ("strands_robots.registry", "list_robots"),
-    "get_robot": ("strands_robots.registry", "get_robot"),
-    "list_discoverable": ("strands_robots.registry", "list_discoverable"),
-    "is_discoverable": ("strands_robots.registry", "is_discoverable"),
-    "list_urdf_only": ("strands_robots.registry", "list_urdf_only"),
-    # Policies
-    # lerobot_local policy-type discovery surface. Lazy (unlike list_providers,
-    # whose factory is torch-free) because the lerobot_local package import
-    # chain pulls in torch; resolving on first access keeps "import
-    # strands_robots" torch-free while still exposing the discovery peer.
-    "list_policy_types": ("strands_robots.policies.lerobot_local.resolution", "list_policy_types"),
-    # Simulation (MuJoCo)
-    "Simulation": ("strands_robots.simulation", "Simulation"),
-    "create_simulation": ("strands_robots.simulation.factory", "create_simulation"),
-    "list_backends": ("strands_robots.simulation.factory", "list_backends"),
-    "register_backend": ("strands_robots.simulation.factory", "register_backend"),
-    "SimWorld": ("strands_robots.simulation", "SimWorld"),
-    "SimRobot": ("strands_robots.simulation", "SimRobot"),
-    "SimObject": ("strands_robots.simulation", "SimObject"),
-    "SimCamera": ("strands_robots.simulation", "SimCamera"),
-    # Tools
-    "download_assets": ("strands_robots.tools.download_assets", "download_assets"),
-    "harness_memory": ("strands_robots.tools.harness_memory", "harness_memory"),
-    # Episode-judge labeling tools (deterministic-verdict precedence lives in
-    # strands_robots.episode_labels; these are the agent-facing surface).
-    "create_judge_agent": ("strands_robots.tools.episode_judge", "create_judge_agent"),
-    "load_episode": ("strands_robots.tools.episode_judge", "load_episode"),
-    "sample_frames": ("strands_robots.tools.episode_judge", "sample_frames"),
-    "read_predicate_verdict": ("strands_robots.tools.episode_judge", "read_predicate_verdict"),
-    "write_label": ("strands_robots.tools.episode_judge", "write_label"),
-    "lerobot_camera": ("strands_robots.tools.lerobot_camera", "lerobot_camera"),
-    "lerobot_teleoperate": ("strands_robots.tools.lerobot_teleoperate", "lerobot_teleoperate"),
-    "lerobot_train": ("strands_robots.tools.lerobot_train", "lerobot_train"),
-    "pose_tool": ("strands_robots.tools.pose_tool", "pose_tool"),
-    "run_policy": ("strands_robots.tools.run_policy", "run_policy"),
-    "serial_tool": ("strands_robots.tools.serial_tool", "serial_tool"),
-    "train_policy": ("strands_robots.tools.train_policy", "train_policy"),
-    "use_lerobot": ("strands_robots.tools.use_lerobot", "use_lerobot"),
-    "use_ros": ("strands_robots.tools.use_ros", "use_ros"),
-    "use_rosbridge": ("strands_robots.tools.use_rosbridge", "use_rosbridge"),
-    "use_rtps": ("strands_robots.tools.use_rtps", "use_rtps"),
-    # Robot mesh coordination tool (Device Connect dispatch + mesh fallback)
-    "robot_mesh": ("strands_robots.tools.robot_mesh", "robot_mesh"),
-    # Device Connect integration - wraps robots as Device Connect devices
-    "init_device_connect": ("strands_robots.device_connect", "init_device_connect"),
-    "init_device_connect_sync": ("strands_robots.device_connect", "init_device_connect_sync"),
-    "RobotDeviceDriver": ("strands_robots.device_connect", "RobotDeviceDriver"),
-    "SimulationDeviceDriver": ("strands_robots.device_connect", "SimulationDeviceDriver"),
-    "ReachyMiniDriver": ("strands_robots.device_connect", "ReachyMiniDriver"),
-    "StreamingDatasetReader": ("strands_robots.streaming_dataset", "StreamingDatasetReader"),
-    # Simulator-free dataset read-back: thin alias for StreamingDatasetReader.open.
-    # Lazy so training/eval scripts pay the torch/lerobot import only on first call.
-    "stream_dataset": ("strands_robots.streaming_dataset", "stream_dataset"),
-    # Lifecycle-independent bucket sync for on-disk LeRobotDataset dirs.
-    "sync_dataset_to_bucket": ("strands_robots.dataset_transfer", "sync_dataset_to_bucket"),
-}
+# The one copy of the version: the wheel is built with it (pyproject [tool.hatch.version]), `hatch version X` sets
+# it, and the publish workflow refuses a release tag that is not v<this>.
+__version__ = "0.6.0"
 
 __all__ = [
-    # Always available
-    "Policy",
-    "MockPolicy",
-    "create_policy",
-    "list_providers",
-    "register_policy",
-    # Lazy-loaded
     "Robot",
-    "HardwareRosBridge",
-    "HardwareRtpsBridge",
-    "Teleoperator",
-    "list_policy_types",
     "Simulation",
-    "SimWorld",
-    "SimRobot",
-    "SimObject",
-    "SimCamera",
-    "list_robots",
-    "get_robot",
-    "list_discoverable",
-    "is_discoverable",
-    "list_urdf_only",
-    "create_simulation",
-    "list_backends",
-    "register_backend",
-    "download_assets",
-    "harness_memory",
-    "create_judge_agent",
-    "load_episode",
-    "sample_frames",
-    "read_predicate_verdict",
-    "write_label",
-    "lerobot_camera",
-    "lerobot_teleoperate",
-    "lerobot_train",
-    "run_policy",
-    "serial_tool",
-    "train_policy",
-    "use_lerobot",
-    "use_ros",
-    "use_rosbridge",
-    "use_rtps",
-    "pose_tool",
-    "robot_mesh",
-    "init_device_connect",
-    "init_device_connect_sync",
-    "RobotDeviceDriver",
-    "SimulationDeviceDriver",
-    "ReachyMiniDriver",
-    "StreamingDatasetReader",
-    "stream_dataset",
-    "sync_dataset_to_bucket",
+    "Policy",
+    "Body",
+    "Description",
+    "Observation",
+    "Action",
+    "JointState",
+    "Pose",
+    "RequestRefused",
+    "Mesh",
+    "__version__",
 ]
-
-
-# Auto-configure MuJoCo GL backend for headless environments BEFORE any
-# module imports mujoco at the top level.  MuJoCo locks the OpenGL backend
-# at import time, so MUJOCO_GL must be set first.
-#
-# WHY EAGER: This MUST run at module import time, not lazily, because:
-# 1. MuJoCo reads MUJOCO_GL only on first `import mujoco`
-# 2. Any downstream code doing `from strands_robots.simulation import ...`
-#    triggers mujoco import via the lazy-load chain
-# 3. If we defer to first use, the env var would be set too late
-#
-# GUARD: Skip when mujoco is not installed so users without the [sim-mujoco]
-# extra do not pay import-attempt cost on every `import strands_robots`.
-# This is the canonical location - strands_robots/simulation/__init__.py
-# intentionally does NOT duplicate this call.
-#
-# LEAF: the selector is imported from ``strands_robots._mujoco_gl`` and not from
-# the MuJoCo backend module, because importing anything under
-# ``strands_robots.simulation`` runs that package's ``__init__`` and, through
-# ``SimEngine`` -> the policy runner -> the rendering package, initialises
-# numpy - which ``__getattr__`` below promises this import does not do (#3587).
-import importlib.util as _importlib_util  # noqa: E402
-
-try:
-    # find_spec raises ValueError for a sys.modules entry with __spec__ None (a stub
-    # or mock) and propagates ImportError from a finder; neither may break the import.
-    _mujoco_spec = _importlib_util.find_spec("mujoco")
-except (ImportError, ValueError):
-    _mujoco_spec = None
-if _mujoco_spec is not None:
-    try:
-        from strands_robots._mujoco_gl import _configure_gl_backend
-
-        _configure_gl_backend()
-    except (ImportError, AttributeError, OSError):
-        pass  # best effort: MuJoCo picks its own GL backend when the hint cannot be set
-
-
-# Auto-configure the macOS dyld search path so torchcodec can find Homebrew's
-# ffmpeg with zero user setup - making ``sim.stream_dataset(...)`` video decode
-# work out of the box. No-op off macOS, without torchcodec, or when already set.
-# May re-exec the interpreter ONCE on a plain script run (guarded; never in
-# Jupyter/REPL/pytest). Opt out with STRANDS_ROBOTS_NO_DYLD_SHIM=1. See :mod:`strands_robots._dyld`.
-try:
-    from strands_robots._dyld import ensure_ffmpeg_on_dyld_path
-
-    ensure_ffmpeg_on_dyld_path()
-except Exception:  # noqa: BLE001 - never let the shim block import
-    pass
-
-
-def __getattr__(name: str) -> Any:  # noqa: N807
-    """Lazy-load heavy modules on first attribute access.
-
-    This avoids importing torch, lerobot, numpy, mujoco, pyserial, etc. at
-    ``import strands_robots`` time.  The first access to e.g.
-    ``strands_robots.Robot`` or ``strands_robots.Simulation`` triggers the
-    real import.
-    """
-    if name in _LAZY_IMPORTS:
-        module_path, attr_name = _LAZY_IMPORTS[name]
-        try:
-            module = _importlib.import_module(module_path)
-            value = getattr(module, attr_name)
-            # Cache in module dict so __getattr__ is not called again
-            globals()[name] = value
-            return value
-        except ImportError as exc:
-            _warnings.warn(
-                f"{name} not available (missing dependencies): {exc}",
-                stacklevel=2,
-            )
-            raise AttributeError(name) from exc
-    raise AttributeError(f"module 'strands_robots' has no attribute {name!r}")

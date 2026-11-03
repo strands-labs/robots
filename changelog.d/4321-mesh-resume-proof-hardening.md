@@ -1,3 +1,0 @@
-### Fixed: the emergency-stop resume proof is no longer a cheap offline oracle for the override code
-
-The `strands/safety/resume` proof is now an HMAC keyed with an scrypt-derived key (`resume_proof_key`, 16 MiB per derivation, cached per process) rather than the raw `STRANDS_MESH_OVERRIDE_CODE`, so a captured envelope costs a memory-hard derivation per guess; a proof minted the old way is refused, so both sides of a fleet upgrade together. A code shorter than 16 characters is treated as unset on both sides, with a start-up WARNING that says how to generate one. The broadcast resume handler honours the same brute-force throttle as the RPC `resume` action, counts proof mismatches against it and records `resume_denied` (f009).

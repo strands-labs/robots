@@ -20,7 +20,7 @@ permissions:
 jobs:
   # Build and publish from main. Pull requests that touch docs/ or mkdocs.yml
   # get the same `mkdocs build --strict` inside the required check
-  # (test-lint.yml, "Build the docs when they changed").
+  # (test-lint.yml, "Build the docs (strict)").
   build:
     runs-on: ubuntu-latest
     timeout-minutes: 15

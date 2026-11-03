@@ -1,3 +1,0 @@
-### Fixed: a simulated robot's registry `joints` is the count `get_robot_state` reports
-
-47 of the 66 simulated robots declared a `joints` figure that disagreed with the model they load (`unitree_go2` said 40 where the model has 12, `unitree_g1` 46 against 29, 24 more counted the floating base). The rule is now one sentence: every joint of the loaded model except a free floating base, which the state reports as `base`. `scripts/audit_registry_joints.py` grades every entry against its model and rewrites mismatches with `--write`; a registry test runs the same comparison per robot, and the joints chip on the docs says what it counts. (#4147)

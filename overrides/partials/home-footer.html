@@ -1,17 +1,17 @@
-{% set install = 'pip install "strands-robots[sim-mujoco]"' %}
+{% set install = "uv pip install -e \".[mujoco,onnx,lerobot,mesh]\"" %}
 {% set columns = [
-  ("Get started", [("Install", "start/install/"), ("First robot", "start/first-robot/"), ("First real arm", "start/first-real-arm/"), ("First agent", "start/first-agent/"), ("Doctor", "start/doctor/")]),
-  ("Build", [("Robots", "robots/"), ("Policies", "learn/policies/"), ("Simulation", "learn/simulation/"), ("Hardware", "learn/hardware/drivers/"), ("Mesh", "learn/mesh/")]),
-  ("Operate", [("Data", "learn/data/record/"), ("Training", "learn/training/"), ("Dashboard", "learn/dashboard/"), ("ROS 2", "learn/ros2/"), ("Security", "learn/security/")]),
-  ("Resources", [("Reference", "reference/"), ("API", "reference/api/"), ("Tools", "reference/tools/"), ("Changelog", "reference/changelog/"), ("Contributing", "project/contributing/")]),
-  ("Community", [("GitHub", config.repo_url), ("PyPI", "https://pypi.org/project/strands-robots/"), ("Discord", "https://discord.gg/strands"), ("Strands Agents", "https://strandsagents.com/"), ("Strands Labs", "https://github.com/strands-labs")]),
+  ("Get started", [("Installation", "install/"), ("Quickstart", "quickstart/"), ("Example notebooks", "notebooks/")]),
+  ("Guides", [("Robot descriptions", "robots/"), ("Simulation", "simulation/"), ("Policies", "policies/"), ("Running a LeRobot policy", "lerobot/"), ("Recording a dataset", "recording/"), ("Dashboard", "dashboard/")]),
+  ("Hardware and fleets", [("Connecting hardware", "hardware/"), ("Safety and e-stop", "safety/"), ("Mesh networking", "mesh/"), ("AWS IoT Core", "iot/"), ("GPU simulation", "gpu/")]),
+  ("Reference", [("API reference", "api/"), ("Agent tools", "tools/")]),
+  ("Community", [("GitHub", config.repo_url), ("Strands Agents", "https://strandsagents.com/"), ("Strands Labs", "https://github.com/strands-labs")]),
 ] %}
 <div class="sr-cta"><div class="sr-cta__panel">
-  <p class="sr-cta__title">Push the boundaries of what robots can do.</p>
+  <p class="sr-cta__title">Build robots in Python.</p>
   <p class="sr-cta__links">
-    <a href="{{ 'start/' | url }}">Quick start &rarr;</a>
-    <a href="{{ 'robots/' | url }}">Pick a robot &rarr;</a>
-    <a href="{{ config.repo_url }}/tree/main/examples">Examples &rarr;</a>
+    <a href="{{ 'quickstart/' | url }}">Quickstart &rarr;</a>
+    <a href="{{ 'notebooks/' | url }}">Notebooks &rarr;</a>
+    <a href="{{ 'install/' | url }}">Installation &rarr;</a>
   </p>
 </div></div>
 <footer class="md-footer sr-footer">
@@ -37,7 +37,6 @@
     <a href="https://aws.amazon.com/privacy/">Privacy</a>
     <a href="https://aws.amazon.com/terms/">Site terms</a>
     <a href="{{ config.repo_url }}/blob/main/LICENSE">License</a>
-    <a href="https://aws.amazon.com/legal/cookies/">Cookies</a>
   </div>
   <p class="sr-footer__copyright md-grid">&copy; {{ build_date_utc.year }}, Amazon Web Services, Inc. or its affiliates. All rights reserved.</p>
 </footer>

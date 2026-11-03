@@ -1,3 +1,0 @@
-### Fixed: the judge example records a success again, and the judge knows frames stop one step short
-
-`examples/19_judge_recorded_episodes.py` relied on the mock policy's phase carrying over between episodes, which the mock no longer does, so all three episodes ran out of steps, the filter selected nothing and the training step was skipped. Each episode is now its own reset rollout: episode 0 gets 15 steps and fails, the others get 40 and stop on the clause at step 24. The judge's system prompt and the label-and-judge page now say that each recorded frame is the state before its action, so an episode a `stop_when` clause ended stops one control step short of the state that fired it.

@@ -45,8 +45,10 @@ jobs:
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
         with:
-          # The tag, so hatch-vcs derives the release version from it; on a
-          # release event github.ref already is the tag.
+          # The tag; on a release event github.ref already is the tag. A v1
+          # tree states its own version (`hatch version` reads the tree, not
+          # the tag), and Validate version below refuses a tag that is not
+          # v<that version>.
           ref: ${{ inputs.tag || github.ref }}
           persist-credentials: false
           fetch-depth: 0
@@ -64,20 +66,33 @@ jobs:
         # v0.5.1 built with hatchling 1.31 and Metadata 2.4. Build without
         # isolation so this pin, not the tag's [build-system], decides the
         # backend; the pyproject pin covers local `uv pip install -e .`.
+        # hatch-vcs is for a v0.5 tag re-published by dispatch: its pyproject
+        # derives the version from the tag. A v1 tree does not use it.
         run: |
           python -m pip install --upgrade pip
           pip install hatch twine build 'hatchling<1.32' hatch-vcs
 
       - name: Validate version
+        # A release (X.Y.Z) or a pre-release (X.Y.ZaN, X.Y.ZbN, X.Y.ZrcN; M2
+        # is 1.0.0rc1), never a .devN; and only under the tag that names it:
+        # a release commit that forgot to set its version, or a tag on the
+        # wrong commit, would otherwise publish whatever the tree says under
+        # that tag. The tag reaches the script through env, never by
+        # expression interpolation into it.
+        env:
+          TAG: ${{ inputs.tag || github.ref_name }}
         run: |
           version=$(hatch version)
-          if [[ $version =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-              echo "Valid version format"
-              exit 0
-          else
-              echo "Invalid version format"
+          echo "tag ${TAG}, hatch version ${version}"
+          if [[ ! $version =~ ^[0-9]+\.[0-9]+\.[0-9]+((a|b|rc)[0-9]+)?$ ]]; then
+              echo "Invalid version format: ${version} (want X.Y.Z or X.Y.Z{a,b,rc}N)"
               exit 1
           fi
+          if [[ "v${version}" != "${TAG}" ]]; then
+              echo "Version ${version} is not the tag ${TAG}"
+              exit 1
+          fi
+          echo "Valid version format"
 
       - name: Build
         run: |

@@ -1,3 +1,0 @@
-### Changed: the mesh safety subscribers share one envelope path
-
-`Mesh._on_safety_estop` and `Mesh._on_safety_resume` now decode, session-bind and time-gate their envelopes through the same three helpers, and the refusal, redundancy and corroboration records on those paths go through one never-raising `_audit` wrapper instead of seventeen copies of the same `try`/`except`. The four lockout transitions (`remote_estop_engaged`, `remote_resume_applied` and the local `emergency_stop` / `resume_ok` pair) publish directly, as before. No wire, payload or behaviour change: refusal messages, audit event names, severities and payload fields are identical.

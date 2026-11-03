@@ -1,120 +1,83 @@
 ---
 hide: [navigation, toc]
 template_class: sr-home
+title: strands-robots
 ---
 
-# Strands Robots
+# strands-robots
 
 <div class="sr-hero" markdown>
 <div markdown>
-<p class="sr-hero__title">One <em>Robot</em> object. Any robot.</p>
-<p class="sr-hero__lead">Simulated or physical, arm or humanoid, the same call. Hand it to a Strands Agent and it becomes a tool the model can use. Learned policies from the Hugging Face Hub run through the same call, in MuJoCo and on the physical robot. A policy does not reach a real arm until an operator says yes.</p>
+<p class="sr-hero__title">Build robots<br>in <em>Python</em>.</p>
+<p class="sr-hero__lead">strands-robots is a Python library for building robots. The same code drives a simulated robot and a real one. Any robot can be a tool for an agent.</p>
 <div class="sr-hero__actions">
-<a class="sr-btn sr-btn--primary" href="start/">Start</a>
-<a class="sr-btn" href="robots/">Pick a robot</a>
-<span class="sr-install">pip install "strands-robots[sim-mujoco]"<button class="sr-copy" data-clipboard-text='pip install "strands-robots[sim-mujoco]"'>copy</button></span>
+<a class="sr-btn sr-btn--primary" href="quickstart/">Quickstart</a>
+<a class="sr-btn" href="install/">Installation</a>
+<span class="sr-install">uv pip install "strands-robots[dashboard,mujoco] @ git+https://github.com/strands-labs/robots@dev"<button class="sr-copy" data-clipboard-text='uv pip install "strands-robots[dashboard,mujoco] @ git+https://github.com/strands-labs/robots@dev"'>copy</button></span>
 </div>
 </div>
 <div class="sr-hero__stage" markdown>
-<robot-viewer name="so101" autoload></robot-viewer>
-<label class="sr-pick">Try another robot <select data-robot-pick><option value="so101">so101</option></select></label>
+<div class="sr-stage" id="hero-stage" data-live="http://127.0.0.1:8091/ http://127.0.0.1:8090/" data-state="probing">
+<img src="assets/media/agent_duck.gif" alt="An agent drives the microduck: walk, turn, roll, stand">
+<span class="sr-stage__badge" id="hero-badge">recorded</span>
+</div>
+<p class="sr-stage__start">Start a dashboard to see it live here: <span class="sr-install">python -m strands_robots.dashboard<button class="sr-copy" data-clipboard-text="python -m strands_robots.dashboard">copy</button></span></p>
 </div>
 </div>
 
-<div class="sr-proof" markdown>
-<div><strong>{{n:robots}}</strong><span>robots in the registry</span></div>
-<div><strong>{{n:policy_providers}}</strong><span>policy providers behind one <code>run_policy</code> call</span></div>
-<div><strong>{{n:native_drivers}}</strong><span>native hardware drivers that need no lerobot install</span></div>
-</div>
-
-<div class="sr-grid" markdown>
-<div class="sr-card" markdown>
-### [Start](start/index.md)
-The ladder: see it in 30 seconds, run a simulated SO-101 in three minutes, talk to it, plug in the real one, run one checkpoint on both, teach it, fleet.
-</div>
-<div class="sr-card" markdown>
-### [Robots](robots/index.md)
-The catalog: arms, hands, humanoids, quadrupeds, mobile bases. Which ones simulate, which ones have a driver.
-</div>
-<div class="sr-card" markdown>
-### [Agents](learn/agents.md)
-`Agent(tools=[robot])`. What the model sees, what it can call, and the operator gate in front of real motion.
-</div>
-<div class="sr-card" markdown>
-### [Concepts](concepts/index.md)
-How it works in three minutes: the Robot object, the Policy object, the backends under them, the gate, and a glossary.
-</div>
-<div class="sr-card" markdown>
-### [Hardware](learn/hardware/drivers.md)
-Native and lerobot drivers, teleoperation, cameras, calibration.
-</div>
-<div class="sr-card" markdown>
-### [Mesh](learn/mesh/fleet.md)
-Several robots on several machines with one e-stop. Zenoh, mTLS, an access-control list.
-</div>
-<div class="sr-card" markdown>
-### [Policies](learn/policies/index.md)
-Learned policies behind one `run_policy` call: vision-language-action models, world foundation models, whole-body controllers, RL checkpoints, remote servers. Record on the robot, train, run the checkpoint back on it.
-</div>
-</div>
-
-## One API, sim or real
+## Core concepts
 
 <div class="sr-pair" markdown>
 
-```python
+```python title="Robots share a world"
 from strands_robots import Robot
 
-robot = Robot("so101", mode="sim")
-robot.send_action({"1": 0.5}, n_substeps=200)
-print(robot.get_robot_state()["content"][0]["text"])
-robot.cleanup()
+arm = Robot("so101")                  # an SO-101 arm
+g1 = Robot("g1", position=[1, 0, 0])  # a Unitree G1 humanoid
+assert arm.sim is g1.sim
 ```
 
-```python title="sketch"
-from strands_robots import Robot
+```python title="Policies move them"
+from strands_robots import Policy
 
-robot = Robot("so101", mode="real", driver="strands", port="/dev/ttyACM0")
-robot.send_action({"shoulder_pan": 30.0})
-print(robot.tool_spec["description"])
-robot.cleanup()
+g1.run(Policy("holosoma"), seconds=10)       # ONNX
+arm.run(Policy("lerobot/smolvla_base"))      # LeRobot
+arm.run(Policy("zenoh://gpu:7447/smolvla"))  # remote
+```
+
+```python title="Safety"
+arm.manifest                   # controls and safe ranges
+arm.estop()                    # stops now, from any thread
+arm.resume(approved_by="you")  # a named operator clears it
+```
+
+```python title="Agents use them as tools"
+from strands import Agent
+
+Agent(tools=[arm.tool, arm.sim.tool])(
+    "look at the scene, then open the gripper")
 ```
 
 </div>
 
-The left fence runs on a laptop; the right needs an SO-101 on USB. Same tool, same verbs: the sim addresses joints by the model's names in radians, the native driver addresses servos by name in degrees. [Start here](start/index.md).
+## What you get
 
-## The same checkpoint, sim or real
+| Area | Provides |
+|---|---|
+| Robots | 76 robots by name, or your own MJCF or URDF |
+| Simulation | MuJoCo on CPU, Isaac Sim and Newton on GPU |
+| Hardware | SO-100 and SO-101 arms, Unitree robots |
+| Policies | Python functions, ONNX, LeRobot |
+| Recording | LeRobot v3 datasets |
+| Mesh | Robots on other machines, over Zenoh or AWS IoT |
+| Dashboard | A 3D view, controls, cameras, chat and e-stops |
 
-<div class="sr-pair" markdown>
+## Run it locally
 
-```python
-import os; os.environ["STRANDS_TRUST_REMOTE_CODE"] = "1"
-from strands_robots import Robot
-robot = Robot("so101", mode="sim")
-robot.add_camera(name="front", position=[0.22, 0.025, 0.6], target=[0.22, 0.025, 0])
-robot.add_camera(name="wrist", parent_body="so101/gripper", position=[0.058, 0.0, -0.029], target=[-0.024, 0.0, -0.297])
-joints = robot.robot_joint_names("so101")
-embodiment = {"state_keys": joints, "action_keys": joints, "dim_policy": "pad", "obs_rename": {
-    "front": "observation.images.camera1", "wrist": "observation.images.camera2", "default": "observation.images.camera3"}}
-print(robot.run_policy(robot_name="so101", policy_provider="lerobot_local", instruction="pick up the cube", n_steps=60,
-                       policy_config={"pretrained_name_or_path": "lerobot/smolvla_base", "embodiment": embodiment})["status"])
-robot.cleanup()
+```bash
+uv venv -p 3.12 && source .venv/bin/activate
+uv pip install "strands-robots[dashboard,mujoco] @ git+https://github.com/strands-labs/robots@dev"
+python -m strands_robots.dashboard
 ```
 
-```python title="sketch"
-import os; os.environ["STRANDS_TRUST_REMOTE_CODE"] = "1"
-from strands_robots import Robot; from strands_robots.policies import create_policy
-robot = Robot("so101", mode="real", port="/dev/ttyACM0", cameras={"front": {"type": "opencv", "index_or_path": 0},
-              "wrist": {"type": "opencv", "index_or_path": 1}, "top": {"type": "opencv", "index_or_path": 2}})
-keys = [f"{m}.pos" for m in ("shoulder_pan", "shoulder_lift", "elbow_flex", "wrist_flex", "wrist_roll", "gripper")]
-embodiment = {"state_keys": keys, "action_keys": keys, "dim_policy": "pad", "obs_rename": {
-    "front": "observation.images.camera1", "wrist": "observation.images.camera2", "top": "observation.images.camera3"}}
-policy = create_policy("lerobot_local", pretrained_name_or_path="lerobot/smolvla_base", embodiment=embodiment)
-print(robot.run_policy(policy, instruction="pick up the cube", duration=10.0)["status"])
-robot.cleanup()
-```
-
-</div>
-
-The left fence runs on a laptop with no GPU: SmolVLA, a vision-language-action model from the Hub, reads three cameras and the instruction and drives the simulated arm. The right one runs the same checkpoint on the physical arm, whose state arrives as `<motor>.pos` keys; as an agent tool, its `execute` waits for operator approval. [Same checkpoint](start/first-policy.md) explains `obs_rename` and the embodiment.
+Open `http://127.0.0.1:8090`. See [Dashboard](dashboard.md) for options.

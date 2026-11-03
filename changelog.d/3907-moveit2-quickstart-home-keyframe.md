@@ -1,3 +1,0 @@
-### Fixed: the MoveIt2 Quickstart plans from a start state panda_arm accepts
-
-The Quickstart on `docs/policies/moveit2.md` handed the page's own `panda_arm` sidecar a six-value zero `observation.state`. The sidecar plans from the state the client sends and refuses one narrower than the group, so the fence failed with `start_state_error: joint_state carries 6 values but planning group 'panda_arm' plans over 7 joints` before any plan ran, and the model's zero pose is a start state in collision anyway. The fence now sends the Panda's seven-joint home keyframe, the same start the page's In-simulation example uses, and a test grades every `panda_arm` fence on the page against it.

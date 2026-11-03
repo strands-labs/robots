@@ -1,5 +1,8 @@
 name: Test and Lint
 
+# v1 (dev branch): the required check is lint + the test suite, nothing else.
+# The job id and name stay `test-lint` / "Test and Lint" so the ruleset's required
+# context `call-test-lint / Test and Lint` (called from ci.yml) is unchanged.
 on:
   workflow_call:
     inputs:
@@ -11,278 +14,38 @@ jobs:
   test-lint:
     name: Test and Lint
     runs-on: ubuntu-latest
-    # Sized so that every bounded step below can spend its ENTIRE allowance and
-    # the suite still finishes inside this bound - the two were sized
-    # independently and stopped being compatible. Over 663 successful runs in
-    # the 10 days to 2026-08-19: `Run tests` p50 22.6 / p90 27.2 / max 29.1 min,
-    # and the unbounded remainder (checkout, setup-python, install, lint) 4.4
-    # min. Against the apt step's own 12-minute bound that is 29.1 + 12 + 4.4 =
-    # 45.5 min of legal spend, so 45 could be reaped with nothing wrong and no
-    # step named - the exact outcome that step bound exists to prevent (#2456).
-    # 60 leaves ~14.5 min of margin. It is also `_CEILING_MINUTES` in
-    # tests/test_workflow_jobs_are_bounded.py, deliberately: the suite grew
-    # +0.95 min/day over that window (p50 23.0 -> 32.7, R^2 0.93, driven by
-    # +3054 test functions), so the next raise cannot be spent here and has to
-    # be argued as suite runtime instead (#2457).
-    # Without any bound this job inherits the 6-hour default, which is how a
-    # test that had already printed its verdict at 18 min went on to hold the
-    # runner for another 82 (#2239).
-    timeout-minutes: 60
+    timeout-minutes: 30
     permissions:
       contents: read
-      # The guards step's check_closing_reference.py reads closingIssuesReferences
-      # over GraphQL. A called workflow's job-level block sets every scope it
-      # does not name to none - the caller's grant is only a ceiling - so the
-      # scope has to be asked for HERE as well as in ci.yml. Without it the
-      # query errors, the script maps that to `unknown-links` / exit 0, and the
-      # guard passes every pull request while rendering like a working one.
       pull-requests: read
+    env:
+      MUJOCO_GL: egl
     steps:
       - name: Checkout code
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
         with:
           ref: ${{ inputs.ref }}
-          # Need history so we can diff the changed paths against the base.
-          fetch-depth: 0
           persist-credentials: false
 
       - name: Set up Python
         uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5.6.0
         with:
-          python-version: '3.12'
-          cache: 'pip'
+          python-version: "3.12"
 
-      # The pull-request guards, before anything is installed: a branch that
-      # writes into CHANGELOG.md, whose title claims a close its body does not
-      # link, whose uv.lock no longer resolves pyproject.toml, that edits a file
-      # main also changed since it forked, or that interpolates LLM input into a
-      # shell or an MJCF string hears about it here, in under a minute, instead
-      # of after the suite. These were ten advisory workflow rows, each with
-      # its own checkout and setup-python; scripts/ci_guards.py runs the same
-      # scripts with the same arguments and folds their exit statuses. The
-      # verdicts are in the step summary. Not a pull request: nothing to guard.
-      #
-      # HEAD_SHA is the pull request head, deliberately not the merge commit
-      # this job checks out, because the overlap and fragment checks are
-      # defeated by a merge commit - it already contains the base tip
-      # (tests/test_merge_base_overlap.py::test_a_merge_commit_head_defeats_the_check).
-      # The head is the merge commit's second parent, so it is reachable.
-      - name: Guards
-        if: github.event_name == 'pull_request'
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          PR_NUMBER: ${{ github.event.pull_request.number }}
-          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-          BASE_REF: ${{ github.base_ref }}
-        run: |
-          git fetch --no-tags origin "${BASE_REF}" || true
-          # uv for `uv lock --check`; pip rather than a setup action, so this
-          # adds no third-party action to pin (lockfile-parity.yml's reasoning).
-          pip install --no-cache-dir uv
-          python3 scripts/ci_guards.py guards
+      - name: Install system dependencies (EGL for headless MuJoCo)
+        timeout-minutes: 10
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq libegl1 libgl1 libosmesa6
 
-      - name: Install system dependencies (OpenGL for MuJoCo)
-        # The step's own ceiling, so a stall is reaped here rather than at the
-        # job bound above - only the step-level bound marks the step that
-        # stalled, and a job-level reap renders as a rollup FAILURE with no
-        # reason (#2442).
-        # Sized from the observed band: 31 successful runs put this step at
-        # p50 33s and max 455s (7m35s). That band was exceeded twice on
-        # 2026-08-19 - #2488 (14:27:49Z) and #2489 (15:07:23Z) were both reaped
-        # here, 40 minutes apart, by multi-minute mirror stalls rather than by
-        # anything in their diffs - so the headroom was restored by cutting what
-        # the step downloads (the install below, -30.5%) rather than by raising
-        # this number, because the rest of the job then cost up to ~32 min and
-        # anything above ~13 let a slow apt push the job into the job-level
-        # reap it is meant to prevent. Those figures were sized against the
-        # 45-minute job bound of the time; #2457 raised it to 60, and #3143
-        # re-measures the band against that.
-        timeout-minutes: 12
-        run: |
-          # The GitHub runner image preconfigures third-party apt repos (e.g.
-          # the packages.microsoft.com azure-cli feed) whose mirrors sometimes
-          # serve a corrupt InRelease file ("Clearsigned file isn't valid, got
-          # 'NOSPLIT'"), making a plain `apt-get update` exit 100 and fail the
-          # whole build. The packages we actually need (libosmesa6-dev, ffmpeg)
-          # come from the standard Ubuntu archive, so retry a few times with a
-          # short backoff to ride out transient mirror hiccups before failing.
-          #
-          # The loop is driven by apt-get's *exit status*, so it rides out a
-          # mirror that answers wrongly but not one that never answers: on a
-          # hang the `if` never evaluates, attempt 2 is never reached, and the
-          # echo that would have named apt never prints. `timeout` turns the
-          # hang into exit 124 - the failure this loop already handles - so the
-          # backoff and the diagnostic start working for that case too.
-          #
-          # 180s bounds `update` only, which is the command the loop retries.
-          # It is not a bound on the download: `update` costs ~5s even on the
-          # slow runs (the 455s maximum above was `install` fetching ffmpeg's
-          # dependency closure - 104 packages after the flag below, 116 before),
-          # so a bound tight enough to be useful here would reap a healthy
-          # `install`. `install` is bounded by the step instead.
-          for attempt in 1 2 3; do
-            if sudo timeout 180 apt-get update; then
-              break
-            fi
-            echo "apt-get update failed or hung (attempt ${attempt}/3), retrying in 5s..."
-            sleep 5
-          done
-          # --no-install-recommends because ffmpeg's Recommends closure is
-          # 12 packages and 29.9 MiB of the 98.1 MiB transfer (30.5%), none of
-          # it reachable from this job: VA-API/VDPAU hardware video-acceleration
-          # drivers on a runner with no GPU (MuJoCo renders through OSMesa in
-          # software, which is why libosmesa6-dev is here), Blu-ray DRM, a GTK
-          # decoration plugin, an SVG loader, and pocketsphinx-en-us - 26.2 MiB
-          # of speech-recognition acoustic models, the largest single file in
-          # the set and the one being fetched when #2489 was reaped, pulled in
-          # because ffmpeg -> libavfilter9 -> libpocketsphinx3 is a Depends
-          # chain that then Recommends its model data.
-          #
-          # ffmpeg and every libav* shared library stay: they are Depends, they
-          # carry the h264/hevc/libsvtav1 software encoders video.py names, and
-          # torchcodec links them rather than the ffmpeg binary. Pinned by
-          # tests/test_apt_install_declines_recommends.py.
-          sudo apt-get install -y --no-install-recommends libosmesa6-dev ffmpeg
-
-      # The Device Connect integration (strands_robots/device_connect) can
-      # depend on changes in the device-connect-edge / agent-tools packages
-      # that are not yet on PyPI. When this PR touches the integration, install
-      # those packages from source (DEVICE_CONNECT_SOURCE_REF) so CI exercises
-      # the matching version instead of the published one.
-      - name: Detect Device Connect integration changes
-        id: dc_changed
-        run: |
-          BASE="origin/${{ github.base_ref || 'main' }}"
-          git fetch origin "${{ github.base_ref || 'main' }}" --depth=1 || true
-          if git diff --name-only "$BASE"...HEAD 2>/dev/null | grep -q '^strands_robots/device_connect/'; then
-            echo "changed=true" >> "$GITHUB_OUTPUT"
-            echo "Device Connect integration changed -> will install device-connect from source"
-          else
-            echo "changed=false" >> "$GITHUB_OUTPUT"
-            echo "No Device Connect integration changes -> using published device-connect-edge"
-          fi
-
-      - name: Pin device-connect to source (integration changed)
-        if: steps.dc_changed.outputs.changed == 'true'
-        env:
-          # Source of truth for the device-connect packages while the
-          # corresponding device-connect PR is unreleased. Update the ref (or
-          # repo) here to point at the branch/tag that carries the matching
-          # changes; revert to the published wheel once it ships to PyPI.
-          DEVICE_CONNECT_REPO: ${{ vars.DEVICE_CONNECT_REPO || 'arm/device-connect' }}
-          DEVICE_CONNECT_SOURCE_REF: ${{ vars.DEVICE_CONNECT_SOURCE_REF || 'main' }}
-        run: |
-          # The hatch test env is an ISOLATED uv venv, so an outer `pip install`
-          # would not reach it. Instead we write a uv override file: uv MERGES
-          # UV_OVERRIDE entries with the pyproject [tool.uv] override-dependencies
-          # (torch pins), so this redirects ONLY the device-connect packages to
-          # source without disturbing anything else.
-          #
-          # Two consequences for whoever reads the log. The `pip install -e
-          # ".[all,dev]"` in the next step reads no UV_OVERRIDE, so it fetches
-          # and prints the PUBLISHED device-connect wheels - into the runner
-          # interpreter, which nothing under test imports from. That line is
-          # expected and is not evidence about the pin (#3222 read it as such).
-          # And hatch creates its env silently, so the log shows nothing about
-          # what the suite's interpreter resolved: the verify step after `Run
-          # lint` is what turns the announcement below into a measurement.
-          cat > "${GITHUB_WORKSPACE}/dc-source-override.txt" <<EOF
-          device-connect-edge @ git+https://github.com/${DEVICE_CONNECT_REPO}.git@${DEVICE_CONNECT_SOURCE_REF}#subdirectory=packages/device-connect-edge
-          device-connect-agent-tools @ git+https://github.com/${DEVICE_CONNECT_REPO}.git@${DEVICE_CONNECT_SOURCE_REF}#subdirectory=packages/device-connect-agent-tools
-          EOF
-          echo "UV_OVERRIDE=${GITHUB_WORKSPACE}/dc-source-override.txt" >> "$GITHUB_ENV"
-          # Hand the verify step the same repo and ref this step announced, so
-          # it grades the claim actually made rather than a second copy of it.
-          echo "DEVICE_CONNECT_REPO=${DEVICE_CONNECT_REPO}" >> "$GITHUB_ENV"
-          echo "DEVICE_CONNECT_SOURCE_REF=${DEVICE_CONNECT_SOURCE_REF}" >> "$GITHUB_ENV"
-          echo "Pinned device-connect packages to ${DEVICE_CONNECT_REPO}@${DEVICE_CONNECT_SOURCE_REF}"
-
-      - name: Install dependencies
-        env:
-          UV_TORCH_BACKEND: cpu
-        run: |
-          pip install --no-cache-dir hatch
-          pip install --no-cache-dir -e ".[all,dev]"
+      - name: Install hatch
+        run: pip install --no-cache-dir hatch
 
       - name: Run lint
-        env:
-          UV_TORCH_BACKEND: cpu
         run: hatch run lint
 
-      # Informational, after the install so both trees import: griffe over the
-      # public Python surface and the AgentTool action-contract diff
-      # (.github/scripts/agent_api_snapshot.py). The report goes to the step
-      # summary only - the two bot comments those checks used to post are gone.
-      # A finding is a warning annotation, never a failure; only a broken tool
-      # fails the step.
-      - name: Report public-API and AgentTool-contract drift
-        if: github.event_name == 'pull_request'
-        env:
-          MUJOCO_GL: osmesa
-          UV_TORCH_BACKEND: cpu
-          BASE_REF: ${{ github.base_ref }}
-        run: |
-          pip install --no-cache-dir griffe==2.1.0
-          python3 scripts/ci_guards.py api-drift
-
-      # Only when the pull request touches the docs: the strict build that used
-      # to be docs.yml's pull_request half. docs.yml now only deploys from main.
-      - name: Build the docs when they changed
-        if: github.event_name == 'pull_request'
-        env:
-          BASE_REF: ${{ github.base_ref }}
-        run: |
-          if git diff --name-only "origin/${BASE_REF}...HEAD" | grep -qE '^(docs/|mkdocs\.yml$)'; then
-            pip install --no-cache-dir -r docs/requirements.txt
-            mkdocs build --strict
-          else
-            echo "docs/ and mkdocs.yml unchanged; skipping the docs build"
-          fi
-
-      # The hatch env exists once `Run lint` has created it, and the suite has
-      # not started yet, so a pin that did not take is reported here, in under a
-      # second, rather than as a green 27-minute suite run against the wrong
-      # distribution. Runs THROUGH `hatch run` on purpose: the runner
-      # interpreter holds the published wheel from `Install dependencies`, so
-      # the same script under a bare `python` measures the wrong environment
-      # and fails for the wrong reason (#3222). Pinned by
-      # tests/test_device_connect_source_pin_is_verified.py.
-      - name: Verify the device-connect source pin reached the test env
-        if: steps.dc_changed.outputs.changed == 'true'
-        env:
-          UV_TORCH_BACKEND: cpu
-        run: |
-          hatch run python scripts/check_device_connect_source_pin.py \
-            --repo "${DEVICE_CONNECT_REPO}" --ref "${DEVICE_CONNECT_SOURCE_REF}"
-
       - name: Run tests
-        env:
-          MUJOCO_GL: osmesa
-          # x86 CI is CPU-only. Pin the PyTorch backend to CPU so uv does not
-          # auto-detect a CUDA driver stub (libcuda1 ships with the ffmpeg apt
-          # deps) and resolve a CUDA torch wheel that cannot import on this
-          # GPU-less runner -- which would silently trigger the numpy torch
-          # mock in tests/conftest.py and break torch-dependent tests.
-          UV_TORCH_BACKEND: cpu
-        run: |
-          # `tee` below keeps a copy of the suite's output for the truncation
-          # report in the next step, which needs the `collected N items` line and
-          # the summary line together -- they sit ~35k lines apart in a 6.4 MB
-          # job log, so nobody subtracts them by hand (#3164).
-          #
-          # pipefail is load-bearing, not tidiness. The default shell for `run:`
-          # is `bash -e`, which does NOT set it, so a pipeline exits with the
-          # status of its LAST command -- `tee`, which always succeeds. Without
-          # this line a failing suite would report SUCCESS on the one required
-          # check, and nothing else in this repository would notice.
-          set -o pipefail
-          # Diagnose the torch the hatch test env actually resolved BEFORE
-          # running the suite, so a mock fallback is obvious in the log.
-          hatch run python -c "import torch, sys; print('TORCH_DIAG file=%s version=%s mock=%s' % (getattr(torch,'__file__','?'), getattr(torch,'__version__','MOCK-NO-VERSION'), not hasattr(torch,'__version__')), file=sys.stderr)" || true
-          hatch run test -x --strict-markers | tee "${RUNNER_TEMP}/pytest.log"
+        run: hatch run test -q
 
-      # Runs on failure too: a truncated run is the case this exists for, and
-      # the reporter never fails the job (see its module docstring).
-      - name: Report whether the suite ran to completion
-        if: always()
-        run: python3 scripts/report_truncated_test_run.py "${RUNNER_TEMP}/pytest.log"
+      - name: Build the docs (strict)
+        run: |
+          pip install --no-cache-dir -r docs/requirements.txt
+          mkdocs build --strict

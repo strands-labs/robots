@@ -1,7 +1,0 @@
-### Fixed: the root `<default>` class is read under both of its spellings
-
-MJCF's root default class has two spellings and one identity: MuJoCo names the root `main` and refuses to let a model rename it, so a file may leave its top-level `<default>` unnamed or write `class="main"` and mean the same class. A geom reaches that class by either name, or by naming no class at all.
-
-The Isaac loaders' default-class resolver keyed the root on whichever spelling the file used, so every geom arriving by the other one resolved to nothing and fell through to the `box (0.05, 0.05, 0.05)` fallback. In one direction that is an unnamed root plus `<geom class="main"/>`. In the other it is the whole model, and it is what shipped assets do: Menagerie's `pal_tiago_dual` writes `<default class="main">` declaring `type="mesh" group="1"` and gives none of its 46 geoms a class, so 34 of them - the ones carrying no `type` or `fromto` of their own - reported a 10 cm cube for a mesh under `load_mjcf` reporting success. `group` is read through the same resolver, so group filtering was wrong for all 46.
-
-The root is now registered under both keys, which cannot shadow a distinct class: MuJoCo refuses a nested `class="main"` ("repeated default class name") and a nested unnamed `<default>` ("empty class name"). Both refusals are asserted alongside the fix, so the justification for aliasing is pinned rather than remembered.

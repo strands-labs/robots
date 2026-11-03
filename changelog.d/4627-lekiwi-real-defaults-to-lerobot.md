@@ -1,3 +1,0 @@
-### Fixed: `Robot("lekiwi", mode="real")` builds lerobot's `lekiwi`, which drives the base as well as the arm
-
-`FeetechDriver` no longer registers for `lekiwi`. Its motor map is the six SO-arm joints, so as the default it built a robot whose arm moved and whose three-omniwheel base refused every wheel key at the bus as an "unknown motor". `Robot("lekiwi", mode="real")` now resolves to lerobot's `lekiwi` (`pip install 'strands-robots[lerobot]'`), whose action carries the six arm positions and the base's `x.vel`, `y.vel` and `theta.vel`. `driver="strands"` for `lekiwi` now refuses with the list of robots that have a native driver; to drive only the arm natively, use `Robot("so100", mode="real", port=...)`.

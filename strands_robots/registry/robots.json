@@ -1,8 +1,24 @@
 {
+  "device_types": [
+    "robot_arm",
+    "bimanual_arm",
+    "humanoid",
+    "robot_hand",
+    "gripper",
+    "quadruped",
+    "mobile_base",
+    "mobile_manipulator",
+    "drone",
+    "robot_head",
+    "camera"
+  ],
   "robots": {
     "crazyflie": {
       "description": "Bitcraze Crazyflie 2 Nano-Quadcopter",
       "category": "aerial",
+      "device": {
+        "type": "drone"
+      },
       "joints": 0,
       "asset": {
         "dir": "bitcraze_crazyflie_2",
@@ -21,6 +37,9 @@
     "skydio_x2": {
       "description": "Skydio X2 Autonomous Drone",
       "category": "aerial",
+      "device": {
+        "type": "drone"
+      },
       "joints": 0,
       "asset": {
         "dir": "skydio_x2",
@@ -32,6 +51,9 @@
     "arx_l5": {
       "description": "ARX L5 (6-DOF lightweight arm)",
       "category": "arm",
+      "device": {
+        "type": "robot_arm"
+      },
       "joints": 8,
       "asset": {
         "dir": "arx_l5",
@@ -43,6 +65,9 @@
     "dynamixel_2r": {
       "description": "Dynamixel 2R Educational Arm (2-DOF)",
       "category": "arm",
+      "device": {
+        "type": "robot_arm"
+      },
       "joints": 2,
       "asset": {
         "dir": "dynamixel_2r",
@@ -54,6 +79,9 @@
     "fr3": {
       "description": "Franka Research 3 (7-DOF + gripper)",
       "category": "arm",
+      "device": {
+        "type": "robot_arm"
+      },
       "joints": 7,
       "asset": {
         "dir": "franka_fr3",
@@ -71,6 +99,9 @@
     "fr3_v2": {
       "description": "Franka Research 3 v2 (7-DOF + gripper, updated)",
       "category": "arm",
+      "device": {
+        "type": "robot_arm"
+      },
       "joints": 7,
       "asset": {
         "dir": "franka_fr3_v2",
@@ -88,6 +119,9 @@
     "hope_jr": {
       "description": "HopeJR Arm (high-DOF anthropomorphic arm, Feetech)",
       "category": "arm",
+      "device": {
+        "type": "robot_arm"
+      },
       "hardware": {
         "lerobot_type": "hope_jr_arm"
       }
@@ -95,6 +129,9 @@
     "kinova_gen3": {
       "description": "Kinova Gen3 (7-DOF lightweight)",
       "category": "arm",
+      "device": {
+        "type": "robot_arm"
+      },
       "joints": 7,
       "asset": {
         "dir": "kinova_gen3",
@@ -112,6 +149,9 @@
     "koch": {
       "description": "Koch v1.1 Low Cost Robot Arm (6-DOF, Dynamixel)",
       "category": "arm",
+      "device": {
+        "type": "robot_arm"
+      },
       "joints": 6,
       "asset": {
         "dir": "low_cost_robot_arm",
@@ -120,7 +160,11 @@
         "robot_descriptions_module": "low_cost_robot_arm_mj_description"
       },
       "hardware": {
-        "lerobot_type": "koch_follower"
+        "lerobot_type": "koch_follower",
+        "lerobot_norm": {
+          "*": "range_m100_100",
+          "gripper": "range_0_100"
+        }
       },
       "aliases": [
         "koch_follower",
@@ -131,6 +175,9 @@
     "kuka_iiwa": {
       "description": "KUKA LBR iiwa 14 (7-DOF collaborative)",
       "category": "arm",
+      "device": {
+        "type": "robot_arm"
+      },
       "joints": 7,
       "asset": {
         "dir": "kuka_iiwa_14",
@@ -150,6 +197,9 @@
     "omx": {
       "description": "OMX Robot Arm (ROBOTIS, CAN bus motors)",
       "category": "arm",
+      "device": {
+        "type": "robot_arm"
+      },
       "hardware": {
         "lerobot_type": "omx_follower"
       },
@@ -162,6 +212,9 @@
     "rebot_b601": {
       "description": "Seeed Studio reBot B601-DM (6-DOF + gripper, Damiao CAN motors)",
       "category": "arm",
+      "device": {
+        "type": "robot_arm"
+      },
       "joints": 7,
       "hardware": {
         "lerobot_type": "rebot_b601_follower",
@@ -176,6 +229,9 @@
     "openarm": {
       "description": "Enactic OpenArm (7-DOF, DAMIAO motors, CAN bus)",
       "category": "arm",
+      "device": {
+        "type": "robot_arm"
+      },
       "joints": 18,
       "asset": {
         "dir": "enactic_openarm",
@@ -196,6 +252,9 @@
     "panda": {
       "description": "Franka Emika Panda (7-DOF + gripper)",
       "category": "arm",
+      "device": {
+        "type": "robot_arm"
+      },
       "joints": 9,
       "asset": {
         "dir": "franka_emika_panda",
@@ -204,7 +263,7 @@
         "robot_descriptions_module": "panda_mj_description"
       },
       "gripper": {
-        "actuators": [
+        "keys": [
           "actuator8"
         ],
         "closed": "low",
@@ -230,6 +289,9 @@
     "piper": {
       "description": "AgileX Piper (6-DOF + gripper)",
       "category": "arm",
+      "device": {
+        "type": "robot_arm"
+      },
       "joints": 8,
       "asset": {
         "dir": "agilex_piper",
@@ -244,6 +306,9 @@
     "sawyer": {
       "description": "Rethink Robotics Sawyer (7-DOF)",
       "category": "arm",
+      "device": {
+        "type": "robot_arm"
+      },
       "joints": 7,
       "asset": {
         "dir": "rethink_robotics_sawyer",
@@ -258,6 +323,9 @@
     "so100": {
       "description": "TrossenRobotics SO-ARM100 (6-DOF, Feetech servos)",
       "category": "arm",
+      "device": {
+        "type": "robot_arm"
+      },
       "joints": 6,
       "joint_labels": {
         "Rotation": "shoulder_pan",
@@ -274,11 +342,18 @@
         "robot_descriptions_module": "so_arm100_mj_description"
       },
       "hardware": {
-        "lerobot_type": "so100_follower"
+        "lerobot_type": "so100_follower",
+        "driver": "feetech",
+        "lerobot_norm": {
+          "*": "range_m100_100",
+          "gripper": "range_0_100"
+        },
+        "on_disconnect": "hold",
+        "position_hold": true
       },
       "gripper": {
-        "actuators": [
-          "Jaw"
+        "keys": [
+          "gripper"
         ],
         "closed": "low",
         "open": "high"
@@ -302,6 +377,9 @@
     "so101": {
       "description": "RobotStudio SO-101 (6-DOF, upgraded SO-100)",
       "category": "arm",
+      "device": {
+        "type": "robot_arm"
+      },
       "joints": 6,
       "joint_labels": {
         "1": "shoulder_pan",
@@ -318,11 +396,18 @@
         "robot_descriptions_module": "so_arm101_mj_description"
       },
       "hardware": {
-        "lerobot_type": "so101_follower"
+        "lerobot_type": "so101_follower",
+        "driver": "feetech",
+        "lerobot_norm": {
+          "*": "range_m100_100",
+          "gripper": "range_0_100"
+        },
+        "on_disconnect": "hold",
+        "position_hold": true
       },
       "gripper": {
-        "actuators": [
-          "6"
+        "keys": [
+          "gripper"
         ],
         "closed": "low",
         "open": "high"
@@ -336,6 +421,9 @@
     "ur10e": {
       "description": "Universal Robots UR10e (6-DOF industrial)",
       "category": "arm",
+      "device": {
+        "type": "robot_arm"
+      },
       "joints": 6,
       "spawn_position": [
         0.0,
@@ -355,6 +443,9 @@
     "ur5e": {
       "description": "Universal Robots UR5e (6-DOF industrial)",
       "category": "arm",
+      "device": {
+        "type": "robot_arm"
+      },
       "joints": 6,
       "asset": {
         "dir": "universal_robots_ur5e",
@@ -369,6 +460,9 @@
     "vx300s": {
       "description": "Trossen ViperX 300s (6-DOF + gripper)",
       "category": "arm",
+      "device": {
+        "type": "robot_arm"
+      },
       "joints": 8,
       "asset": {
         "dir": "trossen_vx300s",
@@ -386,6 +480,9 @@
     "wx250s": {
       "description": "Trossen WidowX 250s (6-DOF + gripper)",
       "category": "arm",
+      "device": {
+        "type": "robot_arm"
+      },
       "joints": 8,
       "asset": {
         "dir": "trossen_wx250s",
@@ -402,6 +499,9 @@
     "xarm7": {
       "description": "UFactory xArm 7 (7-DOF + gripper)",
       "category": "arm",
+      "device": {
+        "type": "robot_arm"
+      },
       "joints": 13,
       "asset": {
         "dir": "ufactory_xarm7",
@@ -419,6 +519,9 @@
     "yam": {
       "description": "i2rt YAM Arm (8-DOF)",
       "category": "arm",
+      "device": {
+        "type": "robot_arm"
+      },
       "joints": 8,
       "asset": {
         "dir": "i2rt_yam",
@@ -433,6 +536,9 @@
     "z1": {
       "description": "Unitree Z1 (6-DOF + gripper)",
       "category": "arm",
+      "device": {
+        "type": "robot_arm"
+      },
       "joints": 6,
       "asset": {
         "dir": "unitree_z1",
@@ -447,6 +553,9 @@
     "aloha": {
       "description": "ALOHA Bimanual (2x ViperX 300s, 14-DOF + 2 grippers)",
       "category": "bimanual",
+      "device": {
+        "type": "bimanual_arm"
+      },
       "joints": 16,
       "asset": {
         "dir": "aloha",
@@ -466,6 +575,9 @@
     "bi_openarm": {
       "description": "Bi-manual OpenArm (dual-arm coordination)",
       "category": "bimanual",
+      "device": {
+        "type": "bimanual_arm"
+      },
       "hardware": {
         "lerobot_type": "bi_openarm_follower"
       },
@@ -478,6 +590,9 @@
     "bi_rebot_b601": {
       "description": "Bi-manual reBot B601-DM (dual 6-DOF + gripper, Damiao CAN motors)",
       "category": "bimanual",
+      "device": {
+        "type": "bimanual_arm"
+      },
       "hardware": {
         "lerobot_type": "bi_rebot_b601_follower",
         "requires_lerobot_from_source": true
@@ -490,6 +605,9 @@
     "bi_so_follower": {
       "description": "Bimanual SO-ARM follower (2x SO-100/SO-101, 6-DOF each, Feetech STS3215)",
       "category": "bimanual",
+      "device": {
+        "type": "bimanual_arm"
+      },
       "hardware": {
         "lerobot_type": "bi_so_follower"
       },
@@ -501,6 +619,9 @@
     "trossen_wxai": {
       "description": "Trossen WidowX AI Bimanual",
       "category": "bimanual",
+      "device": {
+        "type": "bimanual_arm"
+      },
       "joints": 8,
       "asset": {
         "dir": "trossen_wxai",
@@ -515,6 +636,9 @@
     "reachy_mini": {
       "description": "Pollen Reachy Mini (6-DOF Stewart head + antennas, 9 actuators)",
       "category": "expressive",
+      "device": {
+        "type": "robot_head"
+      },
       "joints": 16,
       "asset": {
         "dir": "reachy_mini",
@@ -539,6 +663,9 @@
     "ability_hand": {
       "description": "PSYONIC Ability Hand (5-finger prosthetic, 11-DOF)",
       "category": "hand",
+      "device": {
+        "type": "robot_hand"
+      },
       "joints": 10,
       "asset": {
         "dir": "mujoco_xml",
@@ -553,6 +680,9 @@
     "aero_hand": {
       "description": "Tetheria Aero Hand Open (16-DOF dexterous)",
       "category": "hand",
+      "device": {
+        "type": "robot_hand"
+      },
       "joints": 16,
       "spawn_position": [
         0.0,
@@ -573,6 +703,9 @@
     "allegro_hand": {
       "description": "Wonik Allegro Hand (16-DOF dexterous)",
       "category": "hand",
+      "device": {
+        "type": "robot_hand"
+      },
       "joints": 16,
       "spawn_position": [
         0.0,
@@ -592,6 +725,9 @@
     "leap_hand": {
       "description": "LEAP Hand (16-DOF dexterous)",
       "category": "hand",
+      "device": {
+        "type": "robot_hand"
+      },
       "joints": 16,
       "asset": {
         "dir": "leap_hand",
@@ -603,6 +739,9 @@
     "robotiq_2f85": {
       "description": "Robotiq 2F-85 Gripper (2-finger adaptive)",
       "category": "hand",
+      "device": {
+        "type": "gripper"
+      },
       "joints": 8,
       "asset": {
         "dir": "robotiq_2f85",
@@ -620,6 +759,9 @@
     "robotiq_2f85_v4": {
       "description": "Robotiq 2F-85 v4 Gripper (updated model)",
       "category": "hand",
+      "device": {
+        "type": "gripper"
+      },
       "joints": 6,
       "asset": {
         "dir": "robotiq_2f85_v4",
@@ -634,6 +776,9 @@
     "shadow_dexee": {
       "description": "Shadow DexEE Dexterous End-Effector (12-DOF)",
       "category": "hand",
+      "device": {
+        "type": "robot_hand"
+      },
       "joints": 12,
       "asset": {
         "dir": "shadow_dexee",
@@ -645,6 +790,9 @@
     "shadow_hand": {
       "description": "Shadow Dexterous Hand (24-DOF)",
       "category": "hand",
+      "device": {
+        "type": "robot_hand"
+      },
       "joints": 24,
       "spawn_position": [
         0.0,
@@ -661,6 +809,9 @@
     "adam_lite": {
       "description": "PNDbotics Adam Lite Humanoid (26-DOF)",
       "category": "humanoid",
+      "device": {
+        "type": "humanoid"
+      },
       "joints": 25,
       "asset": {
         "dir": "pndbotics_adam_lite",
@@ -675,6 +826,9 @@
     "apollo": {
       "description": "Apptronik Apollo Humanoid (34-DOF)",
       "category": "humanoid",
+      "device": {
+        "type": "humanoid"
+      },
       "joints": 32,
       "asset": {
         "dir": "apptronik_apollo",
@@ -689,6 +843,9 @@
     "asimov_v0": {
       "description": "Asimov V0 Bipedal Legs (12-DOF + 2 passive toes)",
       "category": "humanoid",
+      "device": {
+        "type": "humanoid"
+      },
       "joints": 14,
       "spawn_position": [
         0.0,
@@ -712,6 +869,9 @@
     "booster_t1": {
       "description": "Booster T1 Humanoid (24-DOF)",
       "category": "humanoid",
+      "device": {
+        "type": "humanoid"
+      },
       "joints": 23,
       "asset": {
         "dir": "booster_t1",
@@ -726,6 +886,9 @@
     "cassie": {
       "description": "Agility Cassie Bipedal Robot",
       "category": "humanoid",
+      "device": {
+        "type": "humanoid"
+      },
       "joints": 22,
       "asset": {
         "dir": "agility_cassie",
@@ -740,6 +903,9 @@
     "elf2": {
       "description": "BXI Elf2 Humanoid (25-DOF)",
       "category": "humanoid",
+      "device": {
+        "type": "humanoid"
+      },
       "joints": 25,
       "asset": {
         "dir": "xml",
@@ -754,6 +920,9 @@
     "fourier_n1": {
       "description": "Fourier N1 / GR-1 Humanoid (26-DOF)",
       "category": "humanoid",
+      "device": {
+        "type": "humanoid"
+      },
       "joints": 23,
       "asset": {
         "dir": "fourier_n1",
@@ -773,6 +942,9 @@
     "jvrc": {
       "description": "JVRC-1 Humanoid (HRP-based, 45-DOF)",
       "category": "humanoid",
+      "device": {
+        "type": "humanoid"
+      },
       "joints": 44,
       "asset": {
         "dir": "jvrc_mj_description",
@@ -787,6 +959,9 @@
     "microduck": {
       "description": "Pollen Microduck (14-DOF open-source biped, Dynamixel XL330)",
       "category": "humanoid",
+      "device": {
+        "type": "humanoid"
+      },
       "joints": 14,
       "asset": {
         "dir": "microduck",
@@ -803,12 +978,17 @@
         "pollen_microduck"
       ],
       "hardware": {
-        "driver": "strands"
+        "driver": "microduck",
+        "on_disconnect": "hold",
+        "position_hold": false
       }
     },
     "mujoco_humanoid": {
       "description": "MuJoCo Humanoid (21-DOF reference model)",
       "category": "humanoid",
+      "device": {
+        "type": "humanoid"
+      },
       "joints": 21,
       "asset": {
         "dir": "mujoco_humanoid",
@@ -824,6 +1004,9 @@
     "op3": {
       "description": "ROBOTIS OP3 Humanoid (20-DOF)",
       "category": "humanoid",
+      "device": {
+        "type": "humanoid"
+      },
       "joints": 20,
       "asset": {
         "dir": "robotis_op3",
@@ -838,6 +1021,9 @@
     "open_duck_mini": {
       "description": "Open Duck Mini V2 (16-DOF expressive biped, Feetech servos)",
       "category": "humanoid",
+      "device": {
+        "type": "humanoid"
+      },
       "joints": 16,
       "spawn_position": [
         0.0,
@@ -868,6 +1054,9 @@
     "rby1": {
       "description": "Rainbow Robotics RB-Y1A Mobile Manipulator (31-DOF)",
       "category": "humanoid",
+      "device": {
+        "type": "humanoid"
+      },
       "joints": 31,
       "spawn_position": [
         0.0,
@@ -891,6 +1080,9 @@
     "reachy2": {
       "description": "Pollen Reachy 2",
       "category": "humanoid",
+      "device": {
+        "type": "humanoid"
+      },
       "hardware": {
         "lerobot_type": "reachy2"
       }
@@ -898,6 +1090,9 @@
     "talos": {
       "description": "PAL Robotics TALOS Humanoid (32-DOF)",
       "category": "humanoid",
+      "device": {
+        "type": "humanoid"
+      },
       "joints": 44,
       "asset": {
         "dir": "pal_talos",
@@ -912,6 +1107,9 @@
     "toddlerbot_2xc": {
       "description": "Toddlerbot 2xC Humanoid (45-DOF)",
       "category": "humanoid",
+      "device": {
+        "type": "humanoid"
+      },
       "joints": 44,
       "asset": {
         "dir": "toddlerbot_2xc",
@@ -923,6 +1121,9 @@
     "toddlerbot_2xm": {
       "description": "Toddlerbot 2xM Humanoid (45-DOF)",
       "category": "humanoid",
+      "device": {
+        "type": "humanoid"
+      },
       "joints": 44,
       "asset": {
         "dir": "toddlerbot_2xm",
@@ -932,8 +1133,11 @@
       }
     },
     "unitree_g1": {
-      "description": "Unitree G1 Humanoid (29-DOF)",
+      "description": "Unitree G1 Humanoid (29-DOF + dexterous hands)",
       "category": "humanoid",
+      "device": {
+        "type": "humanoid"
+      },
       "joints": 29,
       "asset": {
         "dir": "unitree_g1",
@@ -943,7 +1147,8 @@
       },
       "hardware": {
         "lerobot_type": "unitree_g1",
-        "driver": "strands"
+        "driver": "unitree",
+        "position_hold": false
       },
       "legacy_urdf": "unitree_g1/g1.urdf",
       "aliases": [
@@ -957,24 +1162,12 @@
         "unitree_g1_wbc"
       ]
     },
-    "unitree_g1_with_hands": {
-      "description": "Unitree G1 Humanoid with Dex3-1 hands (43-DOF: 29 body + 7 per hand)",
-      "category": "humanoid",
-      "joints": 43,
-      "asset": {
-        "dir": "unitree_g1_with_hands",
-        "upstream_dir": "unitree_g1",
-        "model_xml": "g1_with_hands.xml",
-        "scene_xml": "scene_with_hands.xml",
-        "robot_descriptions_module": "g1_mj_description"
-      },
-      "aliases": [
-        "g1_with_hands"
-      ]
-    },
     "unitree_h1": {
       "description": "Unitree H1 Humanoid (19-DOF)",
       "category": "humanoid",
+      "device": {
+        "type": "humanoid"
+      },
       "joints": 19,
       "asset": {
         "dir": "unitree_h1",
@@ -986,12 +1179,16 @@
         "h1"
       ],
       "hardware": {
-        "driver": "strands"
+        "driver": "unitree",
+        "position_hold": false
       }
     },
     "unitree_h1_2": {
       "description": "Unitree H1-2 Humanoid (52-DOF, with hands)",
       "category": "humanoid",
+      "device": {
+        "type": "humanoid"
+      },
       "joints": 51,
       "asset": {
         "dir": "h1_2_description",
@@ -1009,6 +1206,9 @@
     "aliengo": {
       "description": "Unitree Aliengo Quadruped (12-DOF)",
       "category": "mobile",
+      "device": {
+        "type": "quadruped"
+      },
       "joints": 12,
       "spawn_position": [
         0.0,
@@ -1028,6 +1228,9 @@
     "anymal_b": {
       "description": "ANYbotics ANYmal B Quadruped (12-DOF)",
       "category": "mobile",
+      "device": {
+        "type": "quadruped"
+      },
       "joints": 12,
       "asset": {
         "dir": "anybotics_anymal_b",
@@ -1042,6 +1245,9 @@
     "anymal_c": {
       "description": "ANYbotics ANYmal C Quadruped (12-DOF)",
       "category": "mobile",
+      "device": {
+        "type": "quadruped"
+      },
       "joints": 12,
       "spawn_position": [
         0.0,
@@ -1061,6 +1267,9 @@
     "earthrover": {
       "description": "EarthRover Mini Plus (mobile outdoor navigation)",
       "category": "mobile",
+      "device": {
+        "type": "mobile_base"
+      },
       "hardware": {
         "lerobot_type": "earthrover_mini_plus",
         "driver": "lerobot"
@@ -1074,6 +1283,9 @@
     "go1": {
       "description": "Unitree Go1 Quadruped (12-DOF)",
       "category": "mobile",
+      "device": {
+        "type": "quadruped"
+      },
       "joints": 12,
       "spawn_position": [
         0.0,
@@ -1093,6 +1305,9 @@
     "lekiwi": {
       "description": "LeKiwi mobile manipulator (6-DOF arm on 3-omniwheel base, 9 actuators)",
       "category": "mobile_manip",
+      "device": {
+        "type": "mobile_manipulator"
+      },
       "joints": 9,
       "spawn_position": [
         0.0,
@@ -1111,8 +1326,8 @@
         "Jaw": "gripper"
       },
       "gripper": {
-        "actuators": [
-          "Jaw"
+        "keys": [
+          "gripper"
         ],
         "closed": "low",
         "open": "high"
@@ -1128,12 +1343,19 @@
         }
       },
       "hardware": {
-        "lerobot_type": "lekiwi"
+        "lerobot_type": "lekiwi",
+        "lerobot_norm": {
+          "*": "range_m100_100",
+          "gripper": "range_0_100"
+        }
       }
     },
     "yahboom_m3pro": {
       "description": "Yahboom ROSMASTER M3 Pro (mecanum base + DOFBOT-Pro 6-DOF arm: 5 servos + gripper, 9 actuators)",
       "category": "mobile_manip",
+      "device": {
+        "type": "mobile_manipulator"
+      },
       "joints": 10,
       "asset": {
         "dir": "yahboom_m3pro",
@@ -1146,8 +1368,8 @@
         }
       },
       "gripper": {
-        "actuators": [
-          "gripper"
+        "keys": [
+          "rlink1"
         ],
         "closed": "low",
         "open": "high"
@@ -1167,6 +1389,9 @@
     "robot_soccer_kit": {
       "description": "Robot Soccer Kit (multi-robot soccer, 65-DOF total)",
       "category": "mobile",
+      "device": {
+        "type": "mobile_base"
+      },
       "joints": 64,
       "asset": {
         "dir": "robot_soccer_kit",
@@ -1181,6 +1406,9 @@
     "spot": {
       "description": "Boston Dynamics Spot (with arm)",
       "category": "mobile_manip",
+      "device": {
+        "type": "mobile_manipulator"
+      },
       "joints": 19,
       "asset": {
         "dir": "boston_dynamics_spot",
@@ -1198,6 +1426,9 @@
     "stretch": {
       "description": "Hello Robot Stretch (original, mobile manipulator)",
       "category": "mobile_manip",
+      "device": {
+        "type": "mobile_manipulator"
+      },
       "joints": 17,
       "asset": {
         "dir": "hello_robot_stretch",
@@ -1215,6 +1446,9 @@
     "stretch3": {
       "description": "Hello Robot Stretch 3 (mobile manipulator)",
       "category": "mobile_manip",
+      "device": {
+        "type": "mobile_manipulator"
+      },
       "joints": 20,
       "asset": {
         "dir": "hello_robot_stretch_3",
@@ -1233,6 +1467,9 @@
     "tiago_dual": {
       "description": "PAL Robotics TIAGo++ Dual-Arm Mobile (26-DOF)",
       "category": "mobile_manip",
+      "device": {
+        "type": "mobile_manipulator"
+      },
       "joints": 25,
       "asset": {
         "dir": "pal_tiago_dual",
@@ -1250,6 +1487,9 @@
     "unitree_a1": {
       "description": "Unitree A1 Quadruped",
       "category": "mobile",
+      "device": {
+        "type": "quadruped"
+      },
       "joints": 12,
       "spawn_position": [
         0.0,
@@ -1269,6 +1509,9 @@
     "unitree_go2": {
       "description": "Unitree Go2 Quadruped",
       "category": "mobile",
+      "device": {
+        "type": "quadruped"
+      },
       "joints": 12,
       "spawn_position": [
         0.0,
@@ -1285,12 +1528,16 @@
         "go2"
       ],
       "hardware": {
-        "driver": "strands"
+        "driver": "unitree",
+        "position_hold": false
       }
     },
     "google_robot": {
       "description": "Google Robot (mobile base + arm, RT-X)",
       "category": "mobile_manip",
+      "device": {
+        "type": "mobile_manipulator"
+      },
       "joints": 9,
       "asset": {
         "dir": "google_robot",
@@ -1305,6 +1552,9 @@
     "hope_jr_hand": {
       "description": "HopeJR Hand (dexterous anthropomorphic hand, Feetech)",
       "category": "hand",
+      "device": {
+        "type": "robot_hand"
+      },
       "hardware": {
         "lerobot_type": "hope_jr_hand"
       },
@@ -1316,6 +1566,9 @@
     "lekiwi_client": {
       "description": "LeKiwi networked client (drives a remote LeKiwi host over ZMQ)",
       "category": "mobile_manip",
+      "device": {
+        "type": "mobile_manipulator"
+      },
       "hardware": {
         "lerobot_type": "lekiwi_client"
       },

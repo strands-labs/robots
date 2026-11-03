@@ -1,3 +1,0 @@
-### Fixed
-
-- **device_connect**: `SimulationDeviceDriver`'s 10Hz `observationUpdate` published each joint's position by indexing `qpos` with the joint's id rather than its qpos address, so on a robot with a floating base every later joint was shifted by six - a `unitree_g1` payload carried the pelvis height and the base quaternion under leg-joint names - and the free joint itself was emitted as a degenerate scalar. The publisher now reads through the simulation's own `get_observation`, which owns qpos addressing, the free-joint exclusion and the lock that keeps a read from being torn by a concurrent physics step.

@@ -1,3 +1,0 @@
-### Fixed: the "does not read the instruction" note describes your policy, not the mock
-
-When a custom policy declared `reads_instruction = False`, the sentence every task envelope appended said its actions were "a test motion on every joint" - the mock's sinusoid, whatever your policy actually did. The note now takes that clause from the class's own `instruction_free_actions` attribute: the mock still says "a test motion on every joint", a policy that declares nothing is described as having its actions commanded and no motion is invented for it, and a policy that sets the attribute is quoted in its own words.

@@ -1,3 +1,0 @@
-### Fixed: a retained MQTT safety message is never mistaken for a live fleet stop
-
-On the AWS IoT transport `strands/safety/estop` and `strands/safety/resume` are now published as events (`retain=False`), the robot and operator policies grant `iot:Publish` only on the two safety topics (`RetainPublish` stays for `cmd`, `broadcast`, presence and the per-robot `safety/event`), the two safety subscriptions ask the broker not to deliver a retained message at subscribe time, and the safety handlers refuse a delivery whose RETAIN flag is set with a `safety_retained_delivery_rejected` audit record. A retained stop, refreshed once per freshness window, previously locked out every robot that booted or reconnected, and a restart re-delivered it (f013).

@@ -1,2 +1,0 @@
-### Changed
-- `run_policy` / `eval_policy` telemetry now names what ran: `chunk_prefetch_enabled`, `chunk_prefetch_chunks_acquired`, `chunk_prefetch_hits`, `chunk_prefetch_blocks`, `avg_inference_ms`, `max_inference_ms`, plus `policy_rtc_enabled` (the policy's `supports_rtc`). An ACT rollout used to report `rtc_async_enabled: true` although nothing blended a seam - that flag only ever meant the prefetch pipeline. The `rtc_*` spellings are still emitted with identical values for one release.

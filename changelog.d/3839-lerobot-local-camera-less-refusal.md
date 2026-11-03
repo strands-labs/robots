@@ -1,3 +1,0 @@
-### Fixed: an image policy run on a robot with no camera is refused by name
-
-Running a lerobot image policy such as `act_aloha_sim_transfer_cube_human` on a robot whose observation carried no camera frame (a `Robot("so100")` with no camera attached, or `MUJOCO_GL=disable`) failed inside lerobot with a bare `KeyError: 'observation.images.top'`, because the batch router only checked the camera bindings when at least one frame was present and the preprocessor router never checked them at all. Both routers now raise the same refusal a one-camera-short observation already got: "Robot supplies 0 camera(s) [] but the policy requires image input(s) [...]; add the missing camera(s) to the observation or pass camera_key_map."

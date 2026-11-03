@@ -1,3 +1,0 @@
-### Fixed: a shipped driver that fails to import is now warned about
-
-When one of the drivers shipped with the package could not be imported (a broken SDK install, a missing shared library), the registration guard skipped it at `DEBUG`, so under the default logging configuration the robot silently vanished from `list_native_drivers()` and `Robot(name, mode="real", driver="strands")` refused with "No native driver is registered" while never naming the `ImportError` behind it. The skip is now a `WARNING` naming the driver module, its class and the exception text, with the traceback still at `DEBUG`; the other shipped drivers register exactly as before.

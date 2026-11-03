@@ -1,0 +1,11 @@
+{
+  "_doc": "A LeRobot deployment's `semantics` string -> the units its state/action vectors use. LeRobot keeps no registry of these labels; strands does, as data. `rad` = radians as the robot reports them; `lerobot_norm` = per-key LeRobot MotorNormMode (\"*\" is the default); `same_as` = another server's name for a row, read but never written.",
+  "radians-v1": {"units": "rad"},
+  "so101-degrees-gripper-percent-v1": {"lerobot_norm": {"*": "degrees", "gripper": "range_0_100"}},
+  "so101-range-gripper-percent-v1": {"lerobot_norm": {"*": "range_m100_100", "gripper": "range_0_100"}},
+  "so100-degrees-gripper-percent-v1": {"lerobot_norm": {"*": "degrees", "gripper": "range_0_100"}},
+  "so100-range-gripper-percent-v1": {"lerobot_norm": {"*": "range_m100_100", "gripper": "range_0_100"}},
+  "so101-normalized-v1": {"same_as": "so101-range-gripper-percent-v1"},
+  "so100-normalized-v1": {"same_as": "so100-range-gripper-percent-v1"},
+  "koch-range-gripper-percent-v1": {"lerobot_norm": {"*": "range_m100_100", "gripper": "range_0_100"}}
+}

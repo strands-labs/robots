@@ -1,7 +1,0 @@
-### Fixed: the Device Connect state RPC reads an arm's joints through the shared motor bus
-
-`RobotDeviceDriver.getState` reached the wrapped lerobot device directly -- `inner = getattr(self._robot, "robot", None)`, then `asyncio.to_thread(inner.get_observation)` -- so it took no bus lock and read the full observation. The handler around that read logs at debug and returns what it has, so two independent failures both surfaced as a successful RPC whose response simply has no `joints` key: barging in on a reader already holding the bus drew `[TxRxResult] Port is in use!`, and lerobot's `get_observation` sync-reads the motors first and only then loops the cameras, so one dead USB camera threw away the joint positions already in hand.
-
-It now routes through `bus_access.read_joints`, which owns both rules. Measured against a lerobot-shaped follower: a dead camera and a held bus each went from no joints at all to the arm's six positions, and the contended read waits for its turn instead of colliding. A healthy read is byte-identical.
-
-The structural guard from #2614 could not see the site: it matches a device held as `self.robot` or `self.robot.*`, and this one arrives as `getattr(self._robot, "robot", None)` bound to a local, so the shipped rule reported a clean tree. Its sibling half already follows exactly that binding form on `bus_access` itself, and the graded population now does too.

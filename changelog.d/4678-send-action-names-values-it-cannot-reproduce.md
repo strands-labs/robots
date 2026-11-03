@@ -1,3 +1,0 @@
-### Fixed: `send_action` names a value the simulated robot cannot reproduce
-
-On MuJoCo, a value outside the range its actuator is held to (an actuator `ctrlrange`, or the range of the joint an unlimited position servo drives, which is every SO-101 joint) still returned a bare `"success"`, and the only signal was a log warning printed once per key, so the second and every later out-of-range command on that key was silent. The batch is still written and stepped, but the success text now names each such key with the bounds it is held to, and a `json` block `{"clamped": {key: {"commanded", "bounds"}}, "applied": [...]}` carries the same on every call.

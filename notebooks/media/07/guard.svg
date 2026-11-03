@@ -1,0 +1,69 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 320" width="1000" height="320" role="img" aria-labelledby="t">
+<title id="t">A request walks through three checks before it reaches the robot. Host must be this server on loopback, Origin must be this server, and a POST must be application/json. First a same-origin JSON POST passes all three and reaches robot.confirm_act. Then a request from another site carrying Origin https://evil.example stops at the second check with a 403.</title>
+<style>
+  text{font-family:'JetBrains Mono',ui-monospace,monospace;fill:#000}
+  .h{font-size:14px;font-weight:500}
+  .s{font-size:12px;fill:#3d3c3c}
+  .c{fill:#fff;stroke:#000;stroke-width:1.2}
+  .w{fill:none;stroke:#b6b6b6;stroke-width:1.4}
+</style>
+<rect width="1000" height="320" fill="#fff"/>
+<g stroke="#d9d9d9" stroke-width="1">
+  <path d="M0 80H1000M0 160H1000M0 240H1000"/>
+  <path d="M125 0V320M250 0V320M375 0V320M500 0V320M625 0V320M750 0V320M875 0V320"/>
+</g>
+
+<path class="w" d="M40 160H960"/>
+
+<!-- request cards -->
+<g>
+  <animate attributeName="opacity" values="1;1;0;0;1" keyTimes="0;0.46;0.5;0.96;1" dur="10s" repeatCount="indefinite"/>
+  <rect class="c" x="20" y="40" width="210" height="64" rx="8"/>
+  <text class="h" x="34" y="64">page on :8090</text>
+  <text class="s" x="34" y="88">POST .../so101/act  JSON</text>
+</g>
+<g opacity="0">
+  <animate attributeName="opacity" values="0;0;1;1;0" keyTimes="0;0.48;0.52;0.96;1" dur="10s" repeatCount="indefinite"/>
+  <rect class="c" x="20" y="40" width="210" height="64" rx="8"/>
+  <text class="h" x="34" y="64">evil.example tab</text>
+  <text class="s" x="34" y="88">Origin: evil.example</text>
+</g>
+
+<!-- gates -->
+<g>
+  <rect class="c" x="265" y="128" width="150" height="64" rx="8"/>
+  <text class="h" x="279" y="154">Host</text>
+  <text class="s" x="279" y="176">127.0.0.1:port</text>
+  <rect class="c" x="455" y="128" width="150" height="64" rx="8"/>
+  <text class="h" x="469" y="154">Origin</text>
+  <text class="s" x="469" y="176">this server</text>
+  <rect class="c" x="645" y="128" width="150" height="64" rx="8"/>
+  <text class="h" x="659" y="154">Content-Type</text>
+  <text class="s" x="659" y="176">application/json</text>
+  <rect x="830" y="128" width="150" height="64" rx="8" fill="#9fd9b0" stroke="#007a3d" stroke-width="1.6"/>
+  <text class="h" x="844" y="154">confirm_act</text>
+  <text class="s" x="844" y="176" style="fill:#000">safety chain</text>
+</g>
+
+<!-- passing request: green dot through all gates -->
+<circle r="7" cy="160" fill="#007a3d">
+  <animate attributeName="cx" values="230;905;905;230;230" keyTimes="0;0.4;0.5;0.5;1" dur="10s" repeatCount="indefinite"/>
+  <animate attributeName="opacity" values="1;1;0;0;1" keyTimes="0;0.44;0.46;0.99;1" dur="10s" repeatCount="indefinite"/>
+</circle>
+<text class="h" x="836" y="226" style="fill:#007a3d" opacity="0">200
+  <animate attributeName="opacity" values="0;0;1;1;0;0" keyTimes="0;0.38;0.4;0.47;0.48;1" dur="10s" repeatCount="indefinite"/>
+</text>
+
+<!-- refused request: red dot stops at Origin -->
+<circle r="7" cy="160" fill="#cf222e" opacity="0">
+  <animate attributeName="cx" values="230;230;440;440" keyTimes="0;0.5;0.72;1" dur="10s" repeatCount="indefinite"/>
+  <animate attributeName="opacity" values="0;0;1;1;0" keyTimes="0;0.5;0.52;0.96;1" dur="10s" repeatCount="indefinite"/>
+</circle>
+<g opacity="0">
+  <animate attributeName="opacity" values="0;0;1;1;0" keyTimes="0;0.72;0.74;0.96;1" dur="10s" repeatCount="indefinite"/>
+  <rect x="455" y="128" width="150" height="64" rx="8" fill="none" stroke="#cf222e" stroke-width="2"/>
+  <text class="h" x="455" y="226" style="fill:#cf222e">403 cross-site requests are refused</text>
+</g>
+
+<text class="s" x="20" y="290">WebSocket handshakes get the same checks (closed with code 4403). Real robots also need X-Confirm: yes.</text>
+</svg>

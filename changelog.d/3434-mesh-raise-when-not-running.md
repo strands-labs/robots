@@ -1,2 +1,0 @@
-### Changed:
-- `Mesh.broadcast()` and `Mesh.emergency_stop()` now raise `RuntimeError("mesh not running: ...")` when the mesh never started or was stopped, instead of returning `[]`. An e-stop that reached no peer used to be indistinguishable from "every peer was told, none replied"; the local lockout is no longer engaged (and no CRITICAL "EMERGENCY STOP engaged" line is logged) when nothing was sent.

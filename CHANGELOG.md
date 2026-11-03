@@ -5,6 +5,1161 @@ All notable behavioural changes to `strands-robots` are logged here. Follows
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-11-02
+
+0.6.0 is a new package. `Simulation`, `Robot` and `Policy` replace the 0.5.x API, which is removed; code written
+for 0.5.x needs to be ported. The entries below are the changes that make up 0.6.0.
+
+### Fixed: a Feetech `close()` holds the arm, and a degenerate calibration is refused
+
+`close()` now writes `Goal_Position := Present_Position` under torque and leaves torque on, so
+quitting a program never drops a gravity-loaded SO-10x arm; pass
+`disable_torque_on_disconnect=True` for LeRobot's release-on-close. A `JointCalibration` whose
+`range_min >= range_max` (an unswept joint) is refused at build instead of dividing by zero on
+every read (K8).
+
+
+### Docs: shorter pages in plain English
+
+Every docs page and the README are rewritten to be short. Each page says what the feature is in one sentence,
+shows one example, and lists options in tables. Internals, history and measurements that do not change how you
+use a feature are removed.
+
+
+### Changed: the dashboard says how to turn chat and voice on, and the voice controls use the page's buttons
+
+A dashboard started without a model shows "Chat is off" in the chat panel with the command that turns it on
+(`--model <bedrock model id>`, or `model=` to `Dashboard`), and disables Send, instead of answering the first message
+with an error. New `GET /api/chat` reports whether chat is on. `python -m strands_robots.dashboard` takes
+`--voice auto | openai | nova`. The talk and mute buttons use the dashboard's pill buttons in light and dark, a live
+conversation shows a pulsing dot, and mute appears only while a conversation is live.
+
+
+### Added: the dashboard talks: speech to speech over a strands BidiAgent holding every dashboard tool
+
+`Dashboard(sim, voice="openai" | "nova" | "auto")` serves `WS /ws/voice` and `GET /api/voice`. The page's talk button
+streams the microphone (PCM16 mono, 24 kHz for OpenAI, 16 kHz for Nova Sonic) to one `strands.bidi.BidiAgent` per
+conversation (`gpt-realtime-2`, or `amazon.nova-2-5-sonic` on Bedrock), and plays its spoken answer; transcripts and
+tool calls land in the chat log, with a level meter and a mute. The agent holds the chat agent's tools (`sim.tool` and
+every `robot.tool`) plus `dashboard_run` (a policy in the background, as the run button starts it), `dashboard_stop`
+and `dashboard_estop`. Every call is an agent's: voice never carries the page's `X-Confirm`, so a real robot refuses
+to act or run from it, and a policy at a network address from the model is refused as `robot.tool` refuses it. New
+extra `[voice]` (in `[all]`); Nova Sonic also needs `strands-agents[bidi]`.
+
+
+### Added: the dashboard records LeRobot v3 datasets
+
+A Record tab in the dashboard picks robots, their cameras, a task, a target and an fps, and records whatever moves
+them (sliders, a policy run, the chat) through the package's own `recording.Episode`, so the dataset is the one
+`robot.run(record=...)` writes. `POST /api/record/start` begins, `POST /api/record/episode/save|discard` keeps or
+drops the current take, `POST /api/record/stop` ends it, `GET /api/record/status` reports frames, achieved fps,
+frames dropped against the target fps and the saved episodes, and `GET /api/record/options` lists what can be
+recorded. A REC dot in the top bar shows a live take. Several robots record one dataset each (`target/<robot id>`).
+The recorder only observes and never uploads.
+
+
+### Added: the dashboard connects other peers' robots over the mesh, and policies served elsewhere
+
+`GET /api/connect/peers` lists every device on the meshes the page joined (`POST /api/connect/mesh {"address":
+"host:port" | "lan"}`); `POST /api/connect/robot {"peer", "address"}` attaches one as a card through
+`mesh.connect(id, images=True)`. An attached robot is a hardware robot to the page: every act, run and resume needs
+`X-Confirm: yes`, its own device's safety chain still runs, and its e-stop is one ungated click that latches the device
+itself. `POST /api/connect/robot/{id}/resume` asks the device's authority first (the page's operator by default) and
+returns its refusal verbatim. `GET /api/robots/{id}/cameras/{cam}.png` serves a hardware or remote robot's own camera
+frame (never a sim render). `POST /api/connect/policy {"endpoint", "kind": "lerobot-async" | "onnx" | "lerobot" |
+"dataset", "deployment"}` probes a `lerobot-policy-server` for its descriptor (or validates the spec) and lists it in
+`/api/policies`, so the existing run route starts it on any robot.
+
+
+### Changed: the dashboard wears the docs design, and its e-stops never cover the chat
+
+The page now uses the docs site's look (paper/ink and the Strands green, light and dark with a toggle, the docs fonts)
+in a fixed frame: a top bar, the 3D stage, and a side column with tabs over a docked chat. The floating e-stop tray that
+sat over the chat input is gone: **STOP ALL** in the top bar e-stops every robot and mesh device in one click (also
+Shift+Esc), and each robot card's header carries that robot's E-STOP and Resume. Cards collapse, sliders are readable,
+and a **Docs** link sits in the bar. Front-end modules add side-column tabs with `window.SR.registerPanel({id, title,
+mount(el, ctx)})`; the server lists `static/panels/*.js` at `GET /api/panels` and the page imports each in server mode.
+
+
+### Added: the docs homepage shows your running dashboard, and `python -m strands_robots.dashboard` starts one
+
+When a dashboard runs on this machine (`?dashboard=host:port`, else 127.0.0.1:8091, then :8090), the docs hero shows
+it live in an iframe, in the docs' light or dark scheme; otherwise it shows the recording and the one command that
+starts a dashboard: `python -m strands_robots.dashboard [robots...] [--port] [--model]`. The embedding page cannot
+script the frame or press its buttons (another origin; the dashboard's guard refuses its requests), and the dashboard
+now says who may frame it: `Content-Security-Policy: frame-ancestors` allows loopback pages and the published docs site
+only. The dashboard's Docs link points back at the docs that embed it.
+
+
+### Docs: the site and README describe the library as it is
+
+The docs, README and site templates now describe strands-robots as a Python library for building robots, in plain
+factual language, with developer-oriented titles and a reorganised navigation (Get started, Guides, Hardware and
+fleets, Reference). New pages: Installation (extras table, LeRobot, local docs) and Running a LeRobot policy (split
+out of Policies). The device page is now Safety and e-stop (`safety.md`). The build-status page, the design and
+schedule references, the AWS IoT planning notes under `docs/iot/` and five unused design drawings are removed; the
+IoT quotas that shape the design are a table on the AWS IoT Core page. The dashboard page documents the one-line local
+start and the live embed on the docs home page. `tests/test_docs_no_emoji.py` asserts that no page, template or the
+README carries an emoji or a design/schedule reference.
+
+
+### Fixed: each IoT tenant has rule names of its own, so another tenant's `apply_rules` or `delete_rules` never touches them
+
+`rules.rule_name` turned `-`, `.` and `:` into `_` and cut a name at 128 characters, so tenants such as `lab-a` and
+`lab_a`, or two long tenants that start alike, shared all five rule names: the second tenant's `apply_rules` replaced
+the first one's e-stop, events, fault and lifecycle rules, and `delete_rules(iot, "lab_a")` deleted `lab-a`'s. A long
+tenant's `delete_rules` also left its own rules behind, and `delete_rules` read only the first page of the account's
+rules, so a rule listed on a later page was never deleted. A tenant of letters and digits, at most 110 of them, keeps
+`strands_<kind>_<tenant>`; any other tenant's names keep at most its first 97 characters, with `_` for `- . :`, then
+end in `_` and the first 12 hex digits of its SHA-256 (`strands_estop_lab_a_1c327e55b394` for `lab-a`), and
+`delete_rules` reads every page, then deletes exactly the tenant's own five names. Rules that a dev build applied for
+such a tenant keep their old names until deleted by name.
+
+
+### Fixed: run(units=) keeps the units a policy declares, a model cannot set them, and a replay's norm= names the gripper
+
+`run(units="lerobot")` read a degrees replay, a checkpoint's `norm=` and a LeRobot leader in the registry's range
+modes (a replay 85.5° off on the fake bus's wrist_roll), and `units="rad"` read the recorded degrees as radians,
+driving every joint to its stop. A policy that declares its units now keeps them: a scheme that agrees uses the
+policy's own map, in its norm modes, and any other is refused before anything is written, naming both; a scheme still
+says what a policy that declares nothing speaks. `robot.tool` and `sim.tool` no longer offer or accept `units` (a
+model's `"rad"` drove a registered LeRobot-units policy 0.98 rad further under the same approval), and the `RunPlan`
+an operator approves names the units. The real-body refusals spell out the whole `norm=` they ask for, and a replay
+refuses a `"*"` that would give a joint the registry names another mode: `norm={"*": "degrees"}` wrote an SO
+gripper's 50 % as 50°, though LeRobot records it in `range_0_100`.
+
+
+### Fixed: a stop or e-stop between ticks ends a paced run before another write; `on_disconnect` lands at the fault
+
+A `stop()` that landed while a paced run (hardware, or `realtime=True`) waited for its next tick was seen only after
+one more observe, inference and write. An e-stop in that wait, cleared before the next tick wrote, let that tick
+write a target decided after the press, and so did an e-stop pressed and cleared during a policy call. Both loops now
+check the e-stop, then `stop_event`, again after the wait, and before its write a tick checks whether its robot's
+e-stop has been pressed since the run's first tick, resumed or not, and if so writes nothing. A run that ends in a
+fault puts the body in its `on_disconnect` state as soon as the fault is seen, not up to a period later, so an e-stop
+pressed in that period no longer keeps a control whose `on_disconnect` is not `hold` from being sent its target.
+
+
+### Fixed: a paced run keeps its rate when its sleeps wake late, and a recording's setup is no deadline miss
+
+A paced run (hardware, or `realtime=True`) timed a write it held to one period after the previous one from when
+its sleep woke, so every held tick added the host's oversleep to the period: at 50 Hz, sleeps waking 1.5 ms late
+wrote at 46.5 Hz with no deadline miss counted, each write acting on an observation about a period old. A held
+write now counts as written on its floor: on hardware with `deadline_misses == 0`, `RunResult.seconds` is
+`steps / hz_target` to within one period, plus any time a hold waited past its period; two writes may come closer
+than a period by one oversleep, however long; and a tick a late wake starts so late that its write lands past the
+next tick's start is a miss, so a heavily loaded host now counts misses (and `on_miss="fault"` ends the run) where
+it used to slow down. `record=` opens its dataset before the first tick and before a policy's gains go on, so its
+setup no longer makes tick 2 late (`on_miss="fault"` ended a process's first recording there), and a dataset the
+run cannot append to is refused before tick 1 writes.
+
+
+### Fixed: in lock-step no robot writes a tick another robot refused, and an agent is offered `run(on_miss=)`
+
+`Simulation.run` wrote each robot's targets as soon as that robot had decided them, so a robot listed before the one
+that refused a tick (a NaN, an agent's or a dashboard's gate refusing its targets, an e-stop while they decided) had
+already put that tick's target into the world, and the world's next step applied it; an e-stop pressed and resumed in
+that time let the run step the tick itself. Every robot now decides before any robot writes: a refusal, or an e-stop
+on any of them while they decide (even one resumed at once), ends the run with that tick written for none. An e-stop
+after the decisions still finds the robots written: a paced run waits for the world's step after the writes, so a
+press in that wait is still followed by that one step, the pressed robot holding. `robot.tool`'s spec now offers
+`run`'s `on_miss` (`"skip"` or `"fault"`), which it left out.
+
+
+### Fixed: when `record=` refuses a dataset's units, it names each entry that differs, with both values
+
+`record=` refuses to add a run to an existing dataset whose `meta/units.json` differs from the one the run would
+write, before the run's first step. The refusal named only the unit scheme, so where the schemes agree it named no
+difference: a dataset recorded before `record=` wrote each joint's LeRobot norm mode into that file was refused with
+`stored in units 'lerobot'; this run records 'lerobot'`, and so were a degrees run into a dataset in LeRobot's range
+modes and a simulated SO-101 into a hardware SO-101's degrees dataset. The refusal now goes on with each entry that
+differs, with the dataset's value and this run's, such as `shoulder_pan.pos mode none (this run: 'range_m100_100')`.
+The same runs are accepted and refused as before.
+
+
+### Fixed: after `record=`, libav logs where you had it, not to the terminal for the rest of the process
+
+LeRobot's encoder replaces PyAV's libav callback with libav's own stderr printer after every video, and `record=`
+only reset that printer's level to INFO when it finished, so for the rest of the process every libav notice reached
+the terminal: one `No accelerated colorspace conversion` line per decoded frame when reading back through PyAV on
+macOS, and an `av.logging.set_level()` that routed libav into Python logging was bypassed. Each write now hands PyAV
+back the level it found (`None` by default, which drops libav's log), so a process that recorded logs like one that
+never did, and notebook 02 no longer quiets libav again after each `record=`. A caller who had installed libav's own
+printer with `av.logging.restore_default_callback()` gets PyAV's callback back as well: PyAV cannot say which
+callback is installed.
+
+
+### Fixed: an agent or dashboard can hold a body where it is, even a joint resting past its limit
+
+A joint can come to rest a hair past its hard range: MuJoCo joint limits are soft, and on a Feetech arm
+`counts_to_rad` has no clamp, so a servo past its calibrated sweep reads outside `[lo, hi]`. The operator
+gate (`confirm_act`, and every agent-tool and dashboard write through it) graded the whole target against
+`range` with a 1e-9 tolerance, so after any legal move that saturated a joint, holding the body where it is
+(`arm.confirm_act(arm.observe().joints.positions)`) was refused, naming a joint the caller was only echoing.
+The limit check now grades each joint against its range widened to include the body's measured position:
+holding there, or moving back toward the range, is allowed, while a target that drives a joint further out
+than it already sits is still refused. The body is read once, only when the plain check would refuse.
+
+
+### Fixed: a standalone dashboard page keeps a quiet console
+
+With no server, the e-stop panel is hidden and never polls `/api/mesh` (it asked every 2 s, a 404 each time), and the
+re-probe for a server that starts later backs off from 5 s to 60 s instead of asking every 5 s (each probe is a failed
+`GET /api/scene` plus a refused WebSocket). Measured in headless Chromium over the first 60 s: 54 console errors
+before, 8 after. A server that answers later still wins on the next probe.
+
+
+### Changed: a robot's id is the name you wrote
+
+`Robot("g1").id` is now `"g1"` (it was `"unitree_g1"`, the registry name), so `sim.robots`, `sim.run({...})`, the
+dashboard's `/api/robots/g1/...`, mesh selectors and agent tools all take the name the caller typed. `robot.name`
+stays the model's name (`"unitree_g1"`); `id=` still wins; a hardware Robot's default id does not name a LeRobot
+calibration file, only an explicit `id=` does. Docs: `Simulation()` accepts `physics="newton"` and `num_envs > 1`
+with it; the LeRobot matrix admits 12 of 24 policy families.
+
+
+### Fixed: `sim.render()` with no camera frames the robots, not the floor
+
+The overview camera `sim.render()` makes on first use now fits the robots' visible geometry in its 45 degree view
+(10 % margin, still from the -y side, from above). Before, it stood at least 1.8 m back whatever the robots' size: a
+lone SO-101 filled 68 of 480 rows (0.4 % of the pixels) and a G1 standing at the origin was cropped at the top. Now
+the SO-101 spans 341 rows and the G1 is whole. An engine that cannot report its geometry (`Backend.outline()` returns
+None) keeps the old placement.
+
+
+### Fixed: a run limited by `seconds=` reports `stopped_by="seconds"`; a splice session keeps `policy.calls`
+
+`robot.run(policy, seconds=2)` and `sim.run({...}, seconds=2)` now end with `stopped_by="seconds"`, the limit the caller
+gave; `steps=` still reports `"steps"`. Before, both reported `"steps"`, because seconds were converted to steps.
+A remote policy under `execution="splice"` now fills `policy.calls` like a sequential session does (`wall_s`, `rows`,
+`server`, `instruction` per chunk), so the two executions' turnaround can be compared from strands. Before, the list
+stayed empty under splice.
+
+
+### Added: `Robot(name, driver="memory")`, a hardware body with no arm attached
+
+`MemoryDriver` (`strands_robots.robot.drivers`) is a bus with no wire: a write lands at once and the next read
+returns it, with every target logged in `writes` and `holds` / `estops` counted. The operator gate (`confirm=`),
+`approve=`, the e-stop and the watchdog's real-body rule run on it exactly as on an arm, so docs, notebooks and CI
+show and test them without writing a `Driver` by hand. It takes no `port=` and no `cameras=`.
+
+
+### Fixed: the safety surface names things the way a person reads them
+
+The `RunPlan` an operator approves names the policy (`policy='sway'`, or the handle an agent used, `policy='wave'`)
+instead of `<function sway at 0x...>`. An e-stop refusal says who pressed it (`e-stop is engaged by alice
+(estop())`). A `Robot` from `Mesh.connect()` reprs as `remote on <tenant>`, not `hardware`. `from_agent` is a name on
+`strands_robots.robot`.
+
+
+### Fixed: the zenoh extras admit 1.10, the range LeRobot main resolves
+
+The `[lerobot]` and `[mesh]` extras admit eclipse-zenoh 1.10 (`>=1.9.0,<1.11.0`, LeRobot main's own range), so
+installing them next to LeRobot main no longer downgrades zenoh to 1.9.
+
+
+### Added: `Simulation.light()`, a camera re-aimed by name, and `reach` in `describe()`
+
+`sim.light(name, position=, direction=, color=, directional=)` adds a spot or a sun; naming it again recolors or
+moves it and `remove(name)` takes it out (Isaac refuses lights by name). `sim.camera(name, ...)` on a camera that
+exists now re-aims it instead of raising `already exists`; on MuJoCo it writes the compiled camera, no rebuild.
+`describe()["robots"][<id>]["reach"]` (and `robot.describe()["reach"]`) give the farthest link, where it is, and
+how it moves per +1 rad of each joint, so a caller can tell which way an arm faces and which sign raises a joint.
+
+
+### Fixed: recording and loading a LeRobot checkpoint no longer flood the terminal
+
+`record=` now writes its episodes without the SVT-AV1 encoder banner (~25 lines per episode), libav's
+`[mp4 @ ...]` notices or the `datasets` `Map:` progress bar; a caller's own `SVT_LOG` still wins, and the
+progress-bar and libav settings are put back after each write. `Policy(checkpoint, device=...)` and `server_config`
+no longer warn that the checkpoint's saved device (e.g. `cuda` on a Mac) is unavailable, since the device asked for
+replaces it, and no longer print "Loading weights from local directory".
+
+
+### Fixed: what an agent is told about the arm and the world
+
+`act` tells a model each joint's unit and range (`shoulder_pan`: rad, -1.92..1.92) from the manifest, so its first move
+needs no `describe`. Every rpc reads its docstring's first paragraph, in plain text (no RST markup, no `self`), and its
+arguments carry the rest; `contacts` has a description. `add_object` says `size` is metres from the centre out (MuJoCo
+half-sizes; the default is a 10 cm cube). `sim.remove(name)` takes a `name` (a robot, object or camera), not `robot`.
+A robot's `run.policy` offers only the presets that drive it: `so101` is offered none, `unitree_g1` `holosoma`,
+`microduck` `microduck`; `presets.json` records each preset's `robots`.
+
+
+### Added: `[all]` installs every extra a CPU machine can use
+
+`uv pip install -e ".[all]"` now installs mujoco, feetech, onnx, lerobot (zenoh), tools, mesh, iot and dashboard.
+Before, `[all]` did not exist, so the line most people type installed the core alone (pip only warns) and the first
+agent tool or dashboard failed on a missing module. The GPU extras (`isaac`, `newton`) and LeRobot itself (a git
+commit) stay their own lines. README, the quickstart and both notebook pages print the same install.
+
+
+### Fixed: one message that edits the world and renders it no longer races
+
+strands' default `ConcurrentToolExecutor` starts every tool call of one assistant message at once, so `camera c`
+then `render c` could render first (`KeyError: no camera 'c'`) and the retried `camera c` then hit
+`camera 'c' already exists`. Calls on one world — `sim.tool` and the tools of the robots in it — now run one at a
+time in the order the model sent them, under any executor. `Simulation.camera()` and `render()` also check a name
+under the world lock, so a concurrent edit cannot land between the check and the change. Two `run` calls in one
+message now run one after the other (each through `approve=`) instead of the second being refused as a clash.
+
+
+### Fixed: a remote `act` takes `seconds=` and reaches the pose, as the manifest says
+
+`mesh.invoke(id, "act", action=..., seconds=1.0)` now ramps the device to the pose (`Robot.act`'s reach) before it
+answers; before, the device refused `seconds` although its manifest advertised `act(action, steps, seconds)`, so a
+remote caller could only move one control step at a time. `use_mesh` offers `seconds` on `act`, so a model asked to
+move a joint to 0.4 rad gets there instead of 0.015 rad along. `seconds` is refused outside (0, 10]; the caller waits
+that much longer for the reply, and the device's watchdog does not count a reach in progress as a quiet invoker.
+
+
+### Fixed: `sim.pose("<robot>/<link>")` answers where a robot link is, the end effector included
+
+`sim.pose("so101/gripper")` now returns the link's live world pose (position m, quaternion w,x,y,z), for every
+name `describe()["robots"][<id>]["links"]` lists, the same `"<robot>/<link>"` form `camera(attach=)` takes. The
+agent's `sim_world` tool answers `{"rpc": "pose", "pose": {"body": "so101/gripper"}}` the same way. Before, `pose()`
+refused every link (`KeyError: no body 'so101/gripper'`), so neither Python nor an agent could read where the gripper
+was. A bare link name (`"gripper"`) is still refused, and the error now names the qualified form to use.
+
+
+### Fixed: a LeRobot checkpoint's units are checked against its own saved stats, not assumed
+
+`Policy("<owner>/<repo>")` read every checkpoint in the robot's registry convention (`so101`: range mode) without
+looking at the checkpoint. An SO-101 ACT trained in degrees (`robotfuel/act_so101_t16b`, saved `wrist_roll` min
+-155.6) ran as range mode and drove `wrist_roll` toward its limit with nothing said. `server_config` (so a local
+`Policy` and a served one alike) now reads the checkpoint's saved normalizer min/max and refuses, before a session,
+when a joint's numbers are ones LeRobot's normalizer cannot emit in the assumed mode (range modes are
+clamped to their range; degrees spans one motor turn, +-180), naming the joint and the
+`norm=` its data does fit. Explicit `semantics=` / `norm=` are checked the same way; a checkpoint that saved no
+min/max is not checked.
+
+
+### Fixed: a joint an Action leaves out holds its last commanded target instead of sagging
+
+`arm.act({"elbow_flex": 0.4})` filled the five joints it does not name with their *measured* positions on every call,
+so each step re-targeted wherever gravity had already pulled them: on the so101, `shoulder_lift` dropped 0.46 rad in
+200 steps it was never asked to move, and every partial function policy (`lambda obs: {"elbow_flex": 0.4}`) drifted
+the same way. An omitted joint now keeps the last target written to it (`act({})` is a hold at the last targets). The
+measured pose is still the fill before the first write and after `hold()`, an e-stop, `calibrate()` or `sim.reset()`,
+so an arm never swings back toward a target from before a stop, a reset or a hand-moved calibration.
+
+
+### Fixed: under `units=`, a policy may return a `{joint: value}` mapping
+
+`arm.run(lambda obs: {"shoulder_pan": 60.0}, units="lerobot")` now converts each named joint from the policy's units
+to radians and holds the joints it leaves out at their measured position, the same rule as without `units=`. Before,
+it died with a bare `TypeError: float() argument must be ... not 'dict'`. A `JointState` is accepted the same way; an
+unknown or LeRobot `'<joint>.pos'` key is refused by name.
+
+
+### Fixed: `Robot(id=)` names the LeRobot calibration file; an uncalibrated hardware arm warns
+
+`Robot("so101", port=…, id="blue_follower")` now reads the calibration LeRobot wrote for that id
+(`so_follower/blue_follower.json`): the Robot's `id` reaches a driver that takes `robot_id` (LeRobot's `--robot.id`)
+unless the caller named one. Before, the id only named the twin and the mesh; the Feetech driver looked for
+`so101_follower.json`, found other files, and ran uncalibrated with nothing said (joints read as a full turn, LeRobot
+degrees off by the calibration). A hardware Feetech body that finds no calibration now warns, naming where it looked
+and the three ways to give it one (`calibration=`, `robot_id=` / `Robot(id=)`, `calibrate()`).
+
+
+### Added: a remote policy refuses an instruction it was never trained on, naming the trained ones
+
+`Policy("zenoh://…", tasks=[...])` — or a server whose descriptor carries `tasks` — makes `run(instruction=)` with any
+other string a `ValueError` listing what the model was trained to do, raised before the first frame goes out;
+`policy.tasks` exposes them. A chunked policy fine-tuned on a few dozen exact strings (a tic-tac-toe deployment: 18
+place strings and a clean-up) returns a confident plan for `"juggle"` too; the refusal replaces a hand-kept allow-list
+in user code. With no `tasks` known, any instruction is sent as before.
+
+
+### Added: `robot.tool(policies=[...])` — the developer's policies, run by an agent by name
+
+`robot.tool` is the tool as before; `robot.tool(policies=[ttt])` is the same tool with policy **handles** registered.
+The model runs one with `run(policy="ttt", instruction=..., seconds=...)`; with exactly one handle `policy` may be left
+out. A handle is named by its `.name`, else a remote policy's deployment, else the keys of a `{name: policy}` mapping;
+the tool spec lists the names. Handles are objects the developer built — a `Policy("zenoh://…")` included — so an agent
+can drive a remote model without ever typing an address: a model-typed `policy="zenoh://..."` stays refused (and the
+refusal now names the registered handles). On a real arm the run still asks `approve=` once and passes the safety chain
+on every step. Before, the only way to let an agent run a remote policy was a hand-written tool wrapping `robot.run`.
+
+
+### Added: a run starts from the policy's start pose; a Feetech write has a default joint speed cap
+
+**Start pose.** A policy may name where its episodes begin: `start_pose` (in its own units; a mapping of joint — or
+LeRobot `joint.pos` — to value, or a full vector) and `start_seconds` (default 3). `Policy("zenoh://…",
+start_pose={"shoulder_pan": 20.0})` sets it; left out, a server whose descriptor carries `start_pose` is believed.
+`Robot.run` / `Simulation.run` ramp there (smoothstep, `reach`) before step one; an agent's run passes every ramp
+target through the same safety chain as its steps; `run.started` carries the pose. A chunked model trained from one
+rest pose plans its first chunk from there instead of from wherever the arm was left (last night: a 52° first-row jump).
+
+**Speed cap.** `FeetechDriver(max_speed=2.0)` (rad/s, `None` to opt out) caps every write to `max_speed × dt` from
+the last goal — or, on the first write after construction or torque-off, from a read the write takes itself — so a far goal becomes a ramp and the
+next write continues from where the goal got to; trained motion (well under 2 rad/s) is written as given.
+`extras()["max_speed"]`, `extras()["slewed"]` report it. `strands_robots/robot/drivers/slew.py` holds the rule for
+any driver. `Robot.act(far_target)` on hardware therefore no longer snaps: `act(target, seconds=)` reaches a pose.
+
+
+### Added: hardware cameras by the device's own name, sized by the policy
+
+`Robot("so101", port=…, cameras={"front": "Logi 4K", "wrist": "USB2.0_CAM1"})`. A string that is not a path or a
+number is the device's name (or a unique part of it, case-insensitive), resolved at open against what the OS reports
+— AVFoundation on macOS (read through PyAV, the backend that takes names), V4L2 on Linux (`/sys/class/video4linux`,
+metadata nodes skipped) — and refused by name when it matches nothing or several devices, listing what is there.
+Indices shift whenever a phone or a screen capture joins the machine; names do not. `{"name": …, "width": …}` is the
+spec form; a bare index/path and `{index, width, height, fps}` are unchanged. A camera that declared no size takes the
+policy's at `run()` (`Cameras.fit` from the policy's requirements, before the first frame — an open camera reopens),
+so the dict's keys are the policy's image keys and there is no size or rename map to write. The device keeps its own
+frame rate: a camera read at a slower policy rate would wait a whole camera period for a fresh frame.
+A named camera on macOS always opens with a size and a rate (`av_options`): ffmpeg's AVFoundation input refuses every
+open with `OSError(5, 'Input/output error')` when no `framerate` is given, and a rate without a size asks for the
+device's native mode (a hang on one USB camera, the full 4096x2160 sensor on another). A declared or fitted size wins;
+an undeclared one opens at 640x480 @ 30.
+
+
+### Added: a mesh device runs as a Greengrass v2 component and streams its cameras over Kinesis Video Streams
+
+The `[iot]` mesh gains an optional edge. `mesh.iot.greengrass` turns the process that mounts robots into a
+Greengrass v2 component (`recipe()`), the tenant's thing group into the fleet and a deployment into the fleet
+update (`deployment()`/`deploy()`); its `main()` mounts the configured robots on one `Mesh` and stays up until
+SIGTERM, with robot-to-robot traffic staying on zenoh. `mesh.iot.kvs` names one KVS stream and WebRTC signaling
+channel per camera sensor (`camera_entries()`, written into the manifest shadow), builds the measured GStreamer
+pipeline (`pipeline()`) and feeds each camera into `kvssink` on its own thread (`publish_cameras()`); without the
+`kvssink` plugin the producer refuses by name rather than pretend. `import strands_robots.mesh` still loads no
+boto3, awsiot or gi.
+
+
+### Added: `Policy("zenoh://tls/host:7447/<deployment>")` — any zenoh link, and defaults that survive the internet
+
+`zenoh://host:port/<deployment>` stays `tcp/`; `zenoh://<link>/host:port/<deployment>` (or `zenoh+<link>://…`) names the
+locator a server actually listens on (`tls`, `quic`, `ws`, `wss`, `udp`) — the form a hosted lease hands out, written as
+given. Before, `zenoh+tls://…` was "unknown form" and `zenoh://zenoh.example:7447/d` silently built `tcp/…`.
+
+When the endpoint is not on this machine or its LAN, the client's handshake/action/startup timeouts default to 30 s
+instead of LeRobot's 5–10 s (a first call wakes the model and crosses the WAN with two frames), frames go as JPEG, and a
+`tls`/`quic`/`ws` link speaks to the router as a `client`. Once the server has described itself, the action timeout also
+covers its own `limits.action_deadline_s`. Anything the caller names by keyword wins over every default.
+
+
+### Changed: a LeRobot semantics label the table does not know is derived, not refused
+
+LeRobot keeps no registry of `semantics` strings — every server names its own (`so101-normalized-v1`, `lab-so101-deg-v3`,
+`furlongs-v1`) — and by the time units are resolved the deployment has already been checked joint by joint against this
+robot. So an unknown label is now read as words: what it says about the body's mode (`degrees`; `range` / `normalized`;
+`radians`) overrides the robot's own LeRobot convention (`hardware.lerobot_norm` in the registry — the modes its
+calibration JSON is written for), the gripper keeps that convention (`gripper-percent` makes it explicit), and a
+`UserWarning` says exactly what was assumed and how to make it data (a row in `units/semantics.json`). The refusal
+remains for the one case nobody can answer: an unknown label on a robot with no LeRobot convention, naming both.
+Before, `Policy("zenoh://…")` was refused at `attach()` for every label outside the table, and the remote path had no
+`units=` to follow the message's own advice.
+
+
+### Added: a remote policy runs the way it was trained — sequential (hold-for-observation) or splice
+
+`Policy("zenoh://host:7447/<deployment>")` now resolves an **execution** at attach: `"splice"` is LeRobot's engine
+unchanged (the next chunk requested one turnaround before the queue empties, from a moving arm, merged with
+`chunk_merge`/RTC settings); `"sequential"` sends a frame only when the queue is EMPTY, holds the last target
+until the whole chunk arrives, then plays one row per tick — what a model trained on whole chunks from still frames
+expects. `execution="auto"` (default) takes the server's word: a descriptor `execution` field when it has one, else
+`"splice"` only for a deployment that advertises an RTC contract (`rtc_horizon > 0` / `rtc_model_space_v1`),
+`"sequential"` otherwise; `Policy(..., execution="sequential"|"splice")` overrides. `policy.execution` names the one
+running, `policy.calls` lists every chunk a sequential session received (wall seconds, rows, server durations).
+
+A policy may now return `None` from `act()`: a **hold**. The loop writes nothing that tick, the body keeps its last
+target, a world still advances its period, the dataset keeps its frame (state + the last action), and the pacer moves
+its grid one period on — a deliberate wait for the network is `RunResult.holds` / `held_seconds`, never a
+`deadline_miss`. `Perturb` passes a wrapped policy's hold through. Before, the only way to run a chunked WFM
+sequentially on a real arm was ~130 lines of user code around LeRobot's client, and every wait was booked as a miss.
+
+
+### Added: `Simulation("isaac")` takes `add_object(path=)` files
+
+`add_object(name, path="room.xml")` on the Isaac backend was refused by name ("use a shape"), so a scene a script
+built for MuJoCo had no Isaac counterpart beyond primitives. It now imports the MJCF or URDF with Isaac's own
+importer (the conversion a robot gets, cached by content) and references it at `/World/objects/<name>`. A
+`free=False` file is static scenery, placed by its root xform. A `free=True` file is first wrapped in one body with
+a free joint, as the MuJoCo backend attaches it, so bare world geoms become one rigid body here too; the rigid body
+the importer makes of it is the handle, so `pose`, `set_pose` and `remove` behave as on MuJoCo (removal also deletes
+the reference root, which the handle alone would leave behind). A failed import rolls back the object's prim the way a
+robot's is. Isaac's importer keeps geometry, colliders and materials; a file's lights and skybox do not come through.
+A bare mesh file is refused with the fix (wrap it in an MJCF). `camera(attach=)`, friction and mass randomization and
+`set_gains` stay refused by name.
+
+
+### Fixed: a LeRobot-normalised deployment (`so101-normalized-v1`) attaches to an SO-101
+
+A LeRobot policy server whose descriptor says `semantics: "so101-normalized-v1"` (the label servers write for a
+checkpoint trained on LeRobot-normalised data) was refused at attach with `unknown LeRobot semantics`, and the remote
+path has no `units=` to work around it. `units/semantics.json` now reads `so101-normalized-v1` and
+`so100-normalized-v1` as `same_as` the existing range/gripper-percent rows (arm `range_m100_100`, gripper
+`range_0_100`). An alias is read, never written: strands still labels its own deployments
+`so101-range-gripper-percent-v1`.
+
+
+### Changed: `act(action, seconds=)` reaches a pose; `Policy("hold")` is gone
+
+`robot.act(action, seconds=s)` ramps the targets from the measured pose to `action` at 30 Hz, settles there and reads
+back the pose reached; an agent tool's `act` (`confirm_act`) asks the operator gate once, for the target. One
+plain `act` of a far target was read back mid-swing, so an agent reached for `run("hold")` to "move for longer": a run
+that latched the first pose and moved nothing, approved by the operator anyway. `Policy("hold")` is now refused with
+`use robot.hold() to stand still, robot.act(..., seconds=) to reach a pose`, and `hold` is no longer listed as a
+preset. The device verb is unchanged: the `hold` rpc (`robot.hold()`, the mesh `hold`, `broadcast("hold")`) and
+`on_disconnect="hold"` still hold at the measured pose.
+
+
+### Added: a LeRobot leader arm drives a strands robot in one line
+
+A LeRobot `Teleoperator` (or a `Robot` being mirrored) can be handed straight to `run()`:
+`arm.run(leader, hz=30, seconds=60)` is the whole teleop program. Units come from the leader's own bus
+norm modes and the follower converts through its own calibration, matching LeRobot's `teleoperate` to
+within one encoder count. A source with no declared units is refused with the fix, and a LeRobot
+`<joint>.pos` dict handed to `act()` is refused naming the units problem (`act()` takes a `<joint>`
+target in radians).
+
+
+### Added: Robot(**driver_options) reaches every driver parameter, and a misspelt one is refused
+
+`Robot(name, port=, **driver_options)` now hands any extra keyword to the driver unchanged: the feetech
+bus takes `robot_id=` and `baud=`, the unitree and microduck links take `timeout=`. `make_driver` forwards
+them and checks each against `driver_parameters` for that driver, so a misspelt option (`baudrate=` for
+`baud=`) raises a `TypeError` naming what the driver takes instead of being silently dropped, and a new
+inner parameter with no public path fails the pass-through test. A robot in a world has no bus and so takes
+no driver options. Hardware camera specs are `{"index", "width", "height", "fps"}` (LeRobot's
+`OpenCVCameraConfig` field names), checked at the first frame: a camera that delivers another size than
+asked is refused, since every checkpoint is trained at one size.
+
+
+### Fixed: a reader looping on `sim.lock` no longer starves `act()`
+
+`sim.lock` was a plain `threading.RLock`, which lets the releasing thread take it straight back. Beside a reader
+that loops on `with sim.lock: observe(); describe()`, 5 `act()` calls took 7.1 s on aarch64. The world lock is now
+fair (FIFO, still re-entrant): a waiting `act()` gets the world at the next release, and the same 5 calls take 4 ms.
+
+
+### Fixed: robots of one model share one set of meshes in the compiled world
+
+The MuJoCo backend calls `MjSpec.dedup_assets()` (MuJoCo 3.17+) before compiling, so N copies of a robot
+reference one mesh, texture and material each instead of N. Eight so101 in one world now take 729 MB resident
+(1185 MB before), about 17 MB per added arm (80 MB before); the compiled model stays at 62 MB instead of
+growing by 62 MB per arm.
+
+
+### Added: `run(policy="hold")` stands still
+
+`"hold"` is now a policy spec: `robot.run("hold", seconds=5)` and `sim.run({"so101": "hold"}, seconds=5)` keep each
+body at the pose its run started at, exactly where `robot.hold()` plus stepping the world would leave it. Before, the
+word an agent sees as an rpc was refused as `Policy('hold'): unknown form`. The refusal for an unknown preset now lists
+`hold` with the ONNX presets.
+
+
+### Fixed: an agent sees the shipped policy presets before its first call
+
+The `policy` argument of `robot.tool` `run` and `sim.tool` `run` described itself as "a policy spec, e.g. a LeRobot
+checkpoint id", so an agent learned `holosoma` and `microduck` only from the error of a wrong guess. The schema now
+names every preset in the registry and every spec form that crosses a wire (preset with a query, `zenoh://`, a Hub
+repo, a local checkpoint, a recorded dataset). A preset added to `presets.json` appears without touching the schema.
+
+
+### Added: an example where one agent builds a world and drives the arm in it
+
+`notebooks/examples/agent_builds_a_scene.py` hands `sim.tool` and `arm.tool` to one strands `Agent`: it places three
+cubes and a camera, moves `shoulder_pan` by 0.3 rad, renders the camera and prints every tool call it made. A test runs
+it with a scripted model, so the generated tools and their strands wiring are checked on every PR without a network.
+
+
+### Fixed: a headless Linux host renders whatever is imported first
+
+`import strands_robots` now picks `MUJOCO_GL` (EGL, else OSMesa) on a Linux host with no display, before anything
+imports `mujoco`. Before, it was picked only when the first world was built, so a script, notebook or library that
+imported `mujoco` earlier locked GLFW and `render()` failed with `gladLoadGL error` while the message claimed
+`MUJOCO_GL=egl`. If `mujoco` is imported before the package, the error now says which backend MuJoCo really chose and
+what to set. An explicit `MUJOCO_GL` is never overridden.
+
+
+### Fixed: a robot added to a MuJoCo world costs about its compiled model, not 330 MB
+
+The MuJoCo backend no longer keeps the `MjSpec` after compiling the world; the spec held a second copy of every
+mesh. Eight so101 arms in one world now take 1.2 GB resident instead of 3.0 GB (about 90 MB per added arm, from
+about 330 MB). `scripts/profile_robot_rss.py` prints the curve.
+
+
+### Fixed: a script that rendered exits without EGL tracebacks
+
+With `MUJOCO_GL=egl`, every script that rendered ended with `EGL_NOT_INITIALIZED` tracebacks from
+`Renderer.__del__`: MuJoCo registers `eglTerminate` at exit when it makes its first context, after the
+renderers' release hook, so the display was gone before the contexts were freed. The release is now
+re-registered whenever a renderer is made, so it runs first. Nothing is silenced; a GL error during a run still raises.
+
+
+### Fixed: LeRobot range units clamp outside the calibrated travel, as LeRobot's own normalisation does
+
+A `range_m100_100` or `range_0_100` read of a joint resting past its calibrated `range_min`/`range_max`
+now clamps to the end of the range (+-100 / 0..100), exactly as LeRobot's `MotorsBus._normalize` does. A
+write is not clamped, so an agent run still refuses a unit value past the end instead of moving to the limit. Before, the
+map extrapolated linearly and a joint a little past its sweep read hundreds of units out (-900 where
+LeRobot reports -100), so a checkpoint fed that reading saw an action far outside anything it was trained
+on. `degrees` is unbounded and still extrapolates, matching LeRobot.
+
+
+### Added: an IoT device key can live in a PKCS#11 token, never a PEM on disk
+
+An `iot://` link whose `key=` is an RFC 7512 `pkcs11:` URI connects with the private key held in a hardware
+security module (or SoftHSM) through `mtls_with_pkcs11`, so the key never enters the process or a file;
+`module-path=` (or `PKCS11_MODULE`) names the driver and `PKCS11_PIN` the PIN; a
+`pin-value=` on the link is refused, so the PIN never shows in a repr, an error or a tool result. For provisioning
+without a key file, `provision.register(..., csr_pem=, key=)` registers a certificate from an HSM-generated CSR and
+writes only `cert.pem`, with the token URI in the returned query. A PEM key on disk stays the default.
+
+
+### Fixed: a Feetech arm computes every goal before torque comes on
+
+`Robot.act` on a Feetech body now computes (and validates) every joint goal before enabling torque, so a
+non-finite target is refused with the arm still limp. Before, torque was enabled first and only then were the
+goals computed, so a NaN in the command stiffened the arm against a stale `Goal_Position` before raising.
+
+
+### Fixed: a connected robot takes position hold from the registry, never a peer's manifest
+
+`Mesh.connect(id)` builds the remote `Robot` from the announced type's canonical `Description`, so its
+`supports_position_hold` is the registry's `hardware.position_hold` for that type. Before, `connect` copied
+`position_hold` straight from the peer's manifest, so a peer could claim a hold for a type the registry leaves
+undeclared and the operator's `Robot` would believe it. Now an undeclared type reads `False` whatever the
+manifest says, and a declared type keeps its registry answer; the device's own safety chain already gates an
+illegal hold either way.
+
+
+### Changed: an agent's run on a real arm asks the operator once, not on every tick
+
+An agent's `run()` on a real body asked the per-command `confirm=` on every tick (30 dialogs a second), so a
+callable that always said yes was the only way to let a policy move. A real `Robot` now takes
+`approve=callable(RunPlan) -> bool`, asked once with the whole plan (robot, policy, instruction, rate,
+duration) before anything is acquired; without it the run is refused and nothing is written. The safety chain
+(the e-stop, the joint range, the soft `safe` band, the interlocks and the validators) still runs on every
+step, targets are no longer clipped to the limit first (an out-of-range target is refused, not silently
+moved), and a target outside `safe` inside an approved run is refused instead of re-asked. `confirm=` stays
+the per-command gate for `confirm_act` and the dashboard. Two stale-state fixes ride along: `Latch.release`
+now clears `reason`/`engaged_at`/`engaged_wall`, and a robot's `manifest` is regenerated when a camera or twin
+is added after it was first read (it was a `cached_property` that missed them).
+
+
+### Changed: a mesh trusts a claimed name only in-process, and a connected Robot trusts the registry over a manifest
+
+A claimed name is not a credential. A resume by name is now accepted without operator keys only when the
+transport is genuinely in-process (`mem://`, the fake IoT broker); a zenoh endpoint, even one that only listens
+on loopback, accepts connections from any other local process (a container, another user, an `ssh -L` tunnel),
+so resuming over it needs `Mesh(resume_authority=Authority(public_keys=...))` or an explicit `trust_names=True`.
+`Mesh.connect` already took a device's limits and action_keys from the local registry by the announced type, not
+from the peer's manifest; this is now pinned, so a peer cannot widen a device's limits or reorder its keys by
+lying in the manifest it announces.
+
+
+### Fixed: a hardware device mounted without a watchdog is served observe-only
+
+`Mesh.mount(robot, watchdog_ms=None)` turns off the watchdog: whoever moves the device no longer has to stay
+present. On a simulated body that is harmless, but a real arm could be driven by a mover that then vanished, with
+nothing left to recall it to a safe pose. A real body mounted this way is now served observe-only: `observe` and
+`describe` answer as before, while `act` and `hold` are refused by name over the mesh, naming `watchdog_ms=` as the
+way to make it movable. Nothing is written to the bus. Simulated bodies and real bodies mounted with a watchdog are
+unchanged.
+
+
+### Fixed: an invoke's reply answers this request, matched by tenant, device, rpc and seq
+
+`Mesh.invoke` took `replies[0]` without checking it. On a transport where more than one device could answer an
+rpc key, a stale or crossed reply (another caller's, a previous rpc's, another device's mounted under the same id
+in a brief mount race) could be read as this call's result. Now the device echoes the request's seq in its reply,
+and `invoke` keeps the one reply addressed to this tenant, device, rpc and seq; a reply that answers none raises
+instead of being mistaken for a result. A `stop` or `estop` that two peers of a raced id both answer still takes
+the first matching ack, so a tenant-wide e-stop reaches every holder as before.
+
+
+### Fixed: a closed `Mesh` refuses every verb instead of starting threads that outlive it
+
+After `Mesh.close()`, `mount`, `connect`, `invoke`, `broadcast` and `subscribe` raise `RuntimeError` naming the
+closed mesh, the way a closed `Simulation` already does. Before, a mount on a closed mesh was accepted and its
+watchdog and state-stream threads stayed alive after a second `close()`, which returns early.
+
+
+### Changed: the default world is a checker ground under toned lighting, not white on white
+
+`Simulation()` now builds a checker-textured ground and dims the headlight (diffuse 0.5, ambient 0.15), so a
+camera sees edges and colour instead of a blown-out white arm on a white plane: the default scene's mean pixel
+drops from 234 to 93 of 255 and gains a texture. `Simulation(ground=)` chooses the floor: `True`/`"checker"`
+textured, `"plain"` a flat grey plane, `False` none; an unknown value is refused by name. `light_scale` now has
+headroom in both directions.
+
+
+### Fixed: a clock that raises never hides an e-stop, and `Robot(clock=)` refuses what is not a `Clock`
+
+On a hardware `Robot(clock=)` whose `now()` raises, `estop()` latched and ran the body's own stop, then
+re-raised the clock's error before it emitted the `estop` event: a local press, or a `broadcast("estop")`
+on the tenant key alone, reached no subscriber and no mesh peer, and the broadcast logged that the device's
+stop raised. `estop()` now emits `estop`, then a `fault` event naming the clock's error, and returns;
+`estop_latch.engaged_at` stays `None`. A body whose own stop raises still raises. `Robot(clock=)` refuses
+what is not a `Clock` instance (`time.monotonic`, a lambda, the `MonotonicClock` class) with a `TypeError`
+that says what to pass, where the first `act()` used to write and then fail.
+
+
+### Fixed: `Robot.command` refuses a NaN or wrong-length target before the body and clips into the limits, as `act` does
+
+`Robot.command(targets)`, the write without a read that #4797 added, sent its vector as given. On a Feetech arm a
+NaN or infinite target, or a vector of the wrong length, turned torque on before the driver refused it, and on an
+uncalibrated arm a target past a joint's limit went out unclipped; in a world the NaN went into MuJoCo's controls,
+and while one control is NaN MuJoCo drives every actuator in that world as if its control were 0. `command()` now
+checks as `act()` does before anything reaches the body: `NonFiniteTarget` for NaN or inf, a `ValueError` for a
+vector that is not one value per action key, and every joint clipped into its limits. It still never reads the
+body. `coerce(..., measured=)` likewise refuses a `measured` vector of the wrong length, where it raised
+`IndexError` or returned extra targets.
+
+
+### Fixed: a recorded episode replays in the norm mode each joint was recorded in
+
+`meta/units.json` named the unit scheme, `"lerobot"`, but no joint's norm mode, so `Policy("<dataset dir>")`
+rebuilt the registry's range units even for a run recorded under a declared degrees `norm=`: on the repo's fake
+Feetech bus a +45 degree run replayed on a hardware SO-101 landed up to 36 degrees off (wrist_roll), and so did a
+dataset without `units.json` replayed with `units="lerobot"`, as the error advised. `record=` now writes each joint's
+LeRobot norm mode into `meta/units.json`, and the replay rebuilds exactly those units. A dataset that names no modes
+(recorded before this change, or without `units.json`) takes them from the new `norm=` keyword (a key that names no recorded joint is refused); without it a hardware
+`Robot`, a `Mesh.connect()` robot included, refuses the replay before anything reaches the bus, and a simulated robot
+keeps the registry's modes.
+
+
+### Fixed: a refused run leaves no policy session attached
+
+`Robot.run` and `Simulation.run` call a policy's `detach()` on every exit path once its `attach()` has run.
+A failure after `attach` (a wrong-type `hz`, unit resolution, a `requirements()` refusal, `reset()`, or a
+`run.started` listener) used to leave the session open, because the run's `try` began after the bind. A named
+units scheme (`units="lerobot"`, or an unknown one) is now checked before `attach`, so a refusal there opens
+nothing. In lock-step, a partner refused in its bind is detached along with the robots already bound.
+
+
+### Fixed: a real body refuses a LeRobot checkpoint that does not say its norm mode
+
+A LeRobot checkpoint stores no norm mode, so `Policy("<checkpoint>")` took the registry's label for the robot,
+`so101-range-gripper-percent-v1` for an SO-101, while LeRobot has defaulted SO arms to degrees since 0.4.4, the
+pinned commit included. A degrees checkpoint on a real arm was read in the wrong units: commanded to +90 degrees,
+shoulder_lift landed 20.4 degrees off and the full-turn wrist_roll 72 degrees off (on the repo's fake Feetech bus,
+read back with LeRobot's own conversion). On a hardware `Robot`, a LeRobot checkpoint given neither `norm=` nor
+`semantics=`, or an empty one, is now refused when `run` or `start` attaches it, before the checkpoint is fetched or
+loaded and before anything reaches the bus, and the error names both options and both modes. A robot from
+`Mesh.connect()` counts as hardware even when the device is simulated, and a spec string alone (`from_spec`) cannot
+declare a mode. A simulated robot keeps the registry's default.
+
+
+### Fixed: a Feetech arm's calibration is the file `Robot(id=)` names, recorded as LeRobot records it; inf and nan rates are refused; GLFW renders on macOS
+
+`Robot("so101", port=..., id="my_arm")` passes its id to the Feetech driver as LeRobot's `--robot.id`, so it
+loads `so_follower/my_arm.json`, and an id never loads another arm's file: with no `<id>.json` beside other
+files, it loads none and a warning names them, so joints map raw full-turn counts. `calibrate()` saves over the
+file it loaded (else `<lerobot_type>/<id>.json`), so the next connect reads the homing offsets the servos now
+hold. Without an id the only file in a directory still loads, but it may be another arm's, so with `save=True`
+(the default) `calibrate()` refuses to record over it or beside it and asks for `id=` or `calibration=`. With a
+calibration loaded, `calibrate(interactive=True)` asks first, as LeRobot does; Enter keeps it and, unlike
+LeRobot, writes nothing to the servos; `c` re-records, and the offsets are zeroed only after the middle pose is
+confirmed. As in LeRobot, `wrist_roll` is not swept but given the full turn (0..4095), and a sweep that leaves
+another joint without a range is refused before anything is saved; the servos then get back the homing offsets
+they held, so the calibration loaded still maps the arm. `run(hz=)` and `subscribe("state", hz=)` refuse `inf`
+and `nan` (both come out of `json.loads`), at which the bus was read and written with no pause.
+`FeetechDriver.write()` refuses a NaN goal before torque goes on. With `MUJOCO_GL=glfw` on macOS a render runs
+on the thread that asks, where #4789's one GL thread ended the process with SIGTRAP.
+
+
+### Fixed: PD gains survive every scene change, go on only after a run's checks, and are never NaN, infinite or negative
+
+`set_gains` wrote kp and kd into the compiled MuJoCo model, and every scene change rebuilds it, so a holosoma G1
+walking at 0.5 m/s fell after a render. The backend now writes them back after every compile. A run applies its
+policy's gains only after its last check, so a run refused by its checks leaves the gains it found, and a run that
+starts under a latched e-stop on any of its robots applies none and ends at step 0, even if resumed before step one.
+`set_gains` and `run()` refuse a NaN, infinite or negative gain (a NaN made MuJoCo reset the whole world every step),
+and `set_gains` refuses an actuator with no name, whose write could land on another robot's.
+
+
+### Fixed: a state stream survives a failed read, reports it once and resumes at its rate
+
+`Emitter._state_stream` had no `try` around a sample, so the first exception (a corrupted reply, a
+servo that did not answer, an I/O error, a subscriber that raised) ended the robot's `state` thread,
+with no `fault` event and no sample after the bus recovered; the mesh publishes this stream. The
+stream now counts each failure in `Emitter.errors`, reports each run of failures as one `fault`
+event (an error that cannot print itself is named by its type) and keeps sampling; `seq` still
+advances, so a failed tick is a gap. After a failed read the next one is a full period away, so the
+stream does not burst out the ticks it missed once the bus answers again. A stream whose reads keep
+failing still takes the bus a period after each failure, so `estop()` on that robot can wait behind
+a failed read, and a mesh's tenant-wide e-stop, which latches its robots one after another, can
+latch the robots mounted after that one later.
+
+
+### Fixed: a twin never pushes a simulated arm or mirrors a NaN or huge reading; close() waits for the step in progress
+
+A hardware Robot's twin spawns where a simulated robot of its type stands, and since `observe()` places its
+joints there it pushed that robot off its targets. In MuJoCo the twin now touches the floor where its plain
+body would, and nothing else. A NaN reading, or one beyond MuJoCo's 1e10 (`mjMAXVAL`), is no longer mirrored:
+in the twin's `qpos` it made MuJoCo reset the whole default world, its time and every robot in it.
+`Simulation.close()` now waits for a step another thread is taking, and that thread's next `act()` or
+`reset()` raises `RuntimeError` instead of a `TypeError` from MuJoCo; a closed world refuses `camera()`,
+`randomize()` and `render()` instead of compiling again, and a real robot carries on when its twin's world
+closes.
+
+
+### Fixed: the watchdog retries an on_disconnect that raised, and its thread survives it
+
+`Watchdog.poll()` marked a lapse as handled before it applied `on_disconnect`, and the `Watchdog.start()` loop had no
+`try`, so one exception from the apply (an I/O error, or a status reply still corrupted after the driver's read
+retries) ended the watchdog thread with nothing written, and no later lapse was applied. A failed apply now leaves
+the lapse open: the thread counts it in `Watchdog.errors`, reports each run of failures as one `fault` event (an
+error that cannot print itself is named by its type) and retries every period until the robot is closed. `fault`
+subscribers run on that thread, so one that blocks delays the retry, and one may call `Watchdog.stop()`; closing the
+robot during an apply ends the thread without a fault. A lapse while the e-stop is latched is left to it: `poll()`
+reads and writes nothing, so a read that fails during the stop is not retried into a write after `resume()`, and
+neither is an apply that an e-stop interrupts. `start()` converts `period_s` with `float()` and refuses a period
+outside `(0, threading.TIMEOUT_MAX]`, and `Watchdog()`, so also `Mesh.mount(watchdog_ms=)`, refuses a NaN or infinite
+`timeout_ms`: a `Watchdog` with a NaN applied `on_disconnect` at the first poll after every beat and one with an
+infinity never did, and under `Mesh.mount` neither ever applied it.
+
+
+### Fixed: an agent's call reaches the robot it names, and its run is the robot's one task
+
+A tool is named `robot_<id>` and a hardware `Robot`'s id defaults to its registry name, so a simulated and a
+hardware so101, or two so101s on two buses, were both `robot_so101`, and strands kept only the last of two tools of
+one name: an `act` meant for the simulated arm wrote to the hardware bus. A second tool of the same name is now
+refused when the `Agent` is built; give one of the robots an `id=`. An agent's `run` now goes through `Robot.start`
+and waits for its end, so two `run` calls of one model message no longer drive one bus at once: the second is
+refused with "already has a running task; call stop() first", `describe()` shows the run, and `robot.stop()` ends
+it. `start` no longer lets two threads that call it at the same moment both start a run.
+
+
+### Changed: a run reads the body once per tick, never bursts after a stall, and keeps one clock
+
+`Robot.run` and `Simulation.run` now share one step: one `observe()`, one decision, one write. A tick used to
+read the body three times (25 ticks cost 77 reads); joints a policy leaves out now hold the observation the
+tick already took (`coerce(measured=)`), and `Robot.command(targets)` writes without reading. Paced runs
+(hardware, `realtime=True`) space writes at least one period apart; a late write is counted in
+`RunResult.deadline_misses` / `worst_late_s` and re-phased instead of followed by a burst of stale commands,
+and `run(on_miss="fault")` ends the run there with `stopped_by="deadline"`. A hardware robot takes
+`Robot(clock=)`; `robot.clock` (the world's time in a world) stamps `Observation.t`, the e-stop latch's
+`engaged_at`, the watchdog and `RunResult.seconds`; `RunResult.wall_seconds` is the host's time.
+In lock-step one robot's fault or e-stop ends the tick for every robot, and `lockstep(stop_event=)` stops it.
+
+
+### Fixed: a release tag on `dev` publishes 1.0.0rc1, and only the version the package reports
+
+The publish workflow's "Validate version" took only `X.Y.Z`, so the `v1.0.0rc1` tag M2 needs was refused before
+the build, and nothing compared the version with the tag. `pyproject.toml` also held a static version beside
+`strands_robots.__version__`, and the usual bump (`hatch version 1.0.0rc1`) edited only the first, so an rc1
+wheel would have reported `1.0.0.dev0`. The version now has one copy, `strands_robots.__version__`, which the
+wheel is built with (`[tool.hatch.version]`); Validate version takes `X.Y.Z` or `X.Y.Z{a,b,rc}N` and refuses a
+tag that is not `v<version>`.
+
+
+### Fixed: one corrupted Feetech status packet no longer ends a run or an e-stop's hold
+
+`FeetechDriver.read()` made a single `sync_read`, so one status packet with a bad checksum raised
+`ProtocolError` out of whatever was reading: a run, including the read with which a faulted run puts
+the body in its declared `on_disconnect` state, a watchdog lapse, and `estop()` after its latch, which
+then wrote no hold and sent no `estop` event. `read()` now asks again up to `num_read_retries = 2`
+more times, LeRobot's SO follower default, then raises. A servo that does not answer now costs three
+read timeouts before `read()` raises, not one.
+
+
+### Fixed: while the e-stop is latched, a faulted run, a watchdog lapse and hold() write nothing
+
+`apply_on_disconnect`, which a watchdog lapse and, since #4793, a faulted run call, sent a body whose controls all
+hold (every registry robot) to `body.hold()` without checking the e-stop latch, and so did `Robot.hold()`. A
+Feetech hold switches torque on, so a run whose policy faulted after the operator pressed e-stop energised a limp
+SO-101. `hold()` now raises `EStopped` while latched, as `act()` does, and `apply_on_disconnect` writes nothing
+while latched, since `estop()` already asked the body for its own stop. A run that faults while latched now returns
+its fault instead of raising `EStopped` when a control declares `zero`, `safe` or `apply`.
+
+
+### Changed: a run that ends in a fault puts the body in its declared on_disconnect state
+
+When `Robot.run` or `Simulation.run` ends with `stopped_by="fault"` (a policy that can no longer act, a NaN
+target, a lost remote server), each of the body's controls is written to its declared `on_disconnect` target
+(`hold`, `zero`, `safe` or `apply`) before the run returns. Before, the body stayed at its last command, so a
+real arm held wherever the policy left it. In lock-step only the robot that faulted is moved; the rest keep
+running. A sim body whose controls all hold is unchanged.
+
+
+### Changed: the e-stop latch names its stopper and carries a wall clock; `resume` can pin the stop it clears
+
+`Latch` now records `stopped_by` and `engaged_wall` (`time.time`) beside the monotonic `engaged_at`,
+so a stop can be attributed and placed on a calendar in an audit record, and `estop(by=...)` carries
+the operator onto the `estop` event. `resume(..., stop=N)` refuses to clear an engagement whose
+`count` is not `N`, so an operator's yes typed for the stop they saw never clears a later, different
+stop. Both arguments are additive: a local press and an unpinned resume behave as before.
+
+
+### Fixed: the LeRobot install line can record, and a recorded episode replays
+
+The one LeRobot install line `strands_robots` prints now carries LeRobot's `dataset` extra, so after following
+it `record=` works (before, it installed `[remote,feetech]` and `record=` then asked for a second install).
+`Policy("<dataset dir>[?episode=n]")` replays one recorded episode: the `action` column at the dataset's fps, in
+the units `meta/units.json` names. A local directory that is neither a checkpoint nor a dataset is refused by
+name instead of being sent to the Hugging Face Hub as a repo id.
+
+
+### Added: a wrist camera, per-body randomization, `Perturb`, `sim.editing()`, a determinism flag
+
+`sim.camera(..., attach="so101/gripper")` puts a camera on any link (`describe()` lists each robot's
+`links`); a bare robot id still means its base. `randomize(target="cube", mass=..., friction=...)` scales one
+robot or object instead of every body, and `randomize(camera=0.01)` moves every camera up to 1 cm per axis.
+`Perturb(policy, joint_noise=, image_noise=, action_delay=)` gives a policy a real arm's noisy readings and late
+actions. `with sim.editing():` batches scene edits into one rebuild, which on `physics="newton"` means one
+kernel compile; a load slower than 5 s logs the compile time and `WARP_CACHE_PATH`.
+`describe()["physics"]["deterministic"]` is true for MuJoCo and one-env Newton, false for a batch and Isaac.
+A test pins that `Simulation("isaac")` never accepts the Isaac Sim EULA for the user; the isaac extra is
+pinned to `isaacsim<6.2`, the version it was measured on.
+
+
+### Fixed: a NaN never reaches the bus; a mislabelled driver, a LeRobot 0.6 calibration and a second render thread
+
+A NaN target used to pass `coerce()` and, on a Feetech arm, round to `range_min`: a full-speed move to the end
+stop. Every non-finite target now raises `NonFiniteTarget` (a `ValueError`) before any write, and a `run()`
+whose policy emits one ends with `stopped_by="fault"`. A `Driver` instance whose `names` are not the
+description's `action_keys`, in order, is refused, and the `Driver` protocol now names
+`supports_position_hold`, `calibration` and `resolution`. `Robot(..., calibration=path)` takes a LeRobot file,
+the default search finds LeRobot 0.6's `so_follower/<id>.json`, and a missing file lists where it looked.
+`calibrate(interactive=True)` with no terminal refuses before torque goes off. Every MuJoCo render runs on one
+GL thread, so a background `start()` after a `run()` no longer fails (EGL) or hangs (macOS).
+
+
+### Fixed: the twin shows what the arm measured; a closed Simulation refuses; the public types are values
+
+`real.observe()` used to write the measured joints into `real.twin` as targets only, so the twin stood at zero
+until its world had stepped a few hundred times and `real.twin.sim.render()` drew the wrong pose. It now places
+the twin's joints at the measurement (`Backend.set_joints`: positions set, velocities zero, no step); an engine
+that cannot place joints keeps the command-only mirror. `add`, `add_object`, `step`, `control_step`, `reset` and
+`run` on a closed `Simulation` raise `RuntimeError` instead of driving a closed backend. `JointState`, `Pose`,
+`Observation` and `RunResult` compare by value (`==` compares their arrays, for any number of joints) and hash
+consistently, so they work in `assert`, sets and dict keys.
+
+
+### Fixed: `Simulation()` without MuJoCo says how to install it
+
+The first `Robot()` or `Simulation()` on an install without the `mujoco` extra used to fail with a bare
+`ModuleNotFoundError: No module named 'mujoco'` from inside the backend. It now raises an `ImportError` that reads
+`Simulation() needs MuJoCo: pip install 'strands-robots[mujoco]'`, the same hint every other extra gives.
+
+
+### Changed: a policy's optional hooks are read once, and a wrong type is refused by name
+
+`Robot.run` and `Simulation.run` read `hz`, `realtime`, `gains`, `attach`, `detach`, `requirements` and
+`needs_observation` once, before step one, and refuse a hook of the wrong type with a `TypeError` naming it.
+Before, `hz = 0` ran at 30 Hz, `realtime = "no"` paced in wall time and `needs_observation = False` rendered every
+step, all silently; `requirements() -> dict` failed deep in the check.
+
+`Robot.stop(timeout=)` and `Task.stop(timeout=)` raise `TimeoutError` while the run is still going, instead of
+returning `None` as if nothing ran. A run whose policy raised raises that error from `stop()` once; the next
+`stop()` returns `None`.
+
+
+### Changed: a real `act()` steps its twin's world; `RequestRefused` is a top-level name
+
+`act()` on a hardware Robot used to write the bus and mirror the targets into `real.twin` without stepping the
+twin's world, so the twin kept its old pose until the caller stepped `real.twin.sim` by hand. It now advances
+that world one control step, as `act()` on a simulated body does; `manual_time()` still suppresses it and
+`observe()` mirrors without stepping. `from strands_robots import RequestRefused` catches every refusal (the
+operator gate, a validator, the latched e-stop, whose `EStopped` is a subclass); it is still a `PermissionError`.
+
+
+### Added: AWS IoT Core, natively
+
+`Mesh.mount(robot, iot=IotOptions(...))` makes a device a proper IoT thing on an `iot://` mesh: a compact `manifest` named
+shadow written once, a `state` shadow at most 1 Hz with the lockout, and a `control` shadow whose desired targets go
+through `confirm_act` and the safety chain (a refusal comes back verbatim in `reported`; `estop` is never a shadow
+field). `mesh.iot.rules` applies one rule per event kind from the manifest, idempotently; `mesh.iot.provision`
+registers a thing per device with one fleet policy and a certificate from a local CSR with `CN=<device id>`, and
+rotates, retires and revokes it; `mesh.iot.claim` provisions by claim with a hook that refuses a forged CN. A
+certificate-only link sends rpcs as MQTT5 request/response (`?rpc=mqtt`). The `[iot]` extra adds `cryptography`.
+
+
+### Changed: the run loop renders a camera only on a step the policy looks at
+
+`Robot.run` and `Simulation.run` used to render every camera on every step, though a `ChunkedPolicy` reads an
+observation only when it asks its inner policy for a new chunk. A policy now answers
+`needs_observation(instruction=)` (the `Policy` default is `True`, every step); `ChunkedPolicy` answers `True` only
+on a replanning step, so a chunk of 10 renders once per 10 steps. A run with `stop_when=` still sees a frame on every
+step, and `bind` still reads one frame for the requirements check. A robot on a bus still reads its
+cameras every step: the skip is a render saving, and a hardware camera left undrained hands back a stale frame.
+
+
+### Fixed: a Feetech bus read costs the reply, not the read timeout
+
+`FeetechBus` asked pyserial for two bytes more than a status frame holds, so every `ping`, `read`
+and `sync_read` waited out the 50 ms serial timeout: a real SO-101 observed at 18 Hz at most. The
+bus now reads the 4-byte head and then exactly `LEN` more bytes, skips an echoed request and a stray
+byte ahead of the header, and its timeout is 20 ms. `Driver.read()` on six servos drops from 50 ms
+to under a millisecond.
+
+
+### Docs: the v1 site, nine notebooks and a README that says what v1 is (part 12)
+
+`docs/` is rebuilt for v1: a quickstart, one page per concept (a world, a robot, policies, hardware, GPU backends,
+device and safety, the mesh, recording, agent tools, the dashboard), a status page and the API, with the drawings
+rendered from `docs/drawings/scenes`. Edit links point at `dev`. `notebooks/` walks one SO-101 (with a G1 next to it)
+through every part, saved with its outputs. `tests/test_docs_examples.py` runs the first python example of every page
+in a fresh process; a page marks an example that needs CUDA, a real arm or AWS credentials.
+
+
+### Added: the acceptance suite, the 1.0 definition
+
+`tests/acceptance/` is one test per 1.0 check, on real backends (MuJoCo, Zenoh, LeRobot, a real browser, a strands
+agent; the hardware checks drive the feetech driver over a recorded serial line, so every bus frame is visible): a
+sim arm resets, steps and renders; two robots share one world; a LeRobot checkpoint drives the arm locally and over Zenoh; the ONNX presets
+stand and walk; a recorded dataset rereads in a fresh process; two mesh peers exchange state, rpcs and an e-stop; the
+dashboard shows a live robot's joints; a refused command writes nothing; a robot is a device; every agent tool runs
+and refuses through an agent; an e-stop always wins; an agent's run on a real body needs the operator; a plain
+script records two cameras. A check that needs what the machine lacks (LeRobot, a browser, a GPU) skips and names
+it, so `pytest tests/acceptance -rs` is the checklist. Check 9, a physical SO-101, stays in `tests_integ/acceptance/`.
+
+
+### Added: the dashboard, the world in a browser tab
+
+`Dashboard(sim).start()` serves one page on a loopback port that draws the very Simulation it is given (MuJoCo
+WASM in the page, state frames over a websocket): every robot's joints live, an e-stop per robot that shows the
+latch, every world camera's picture (`GET /api/cameras/<name>.png`, what a policy sees), robots added at runtime, the mesh's devices next to the world's, a chat over `robot.tool` / `sim.tool`, and
+a policy run from the page. Every write from the page is the operator gate's (a real body needs `X-Confirm`), and
+cross-site requests are refused. With no server the page runs standalone: the browser steps the world and runs the
+ONNX skills itself (onnxruntime-web); `python -m strands_robots.dashboard.standalone` builds that bundle. The MuJoCo
+and onnxruntime WASM builds are vendored, pinned by sha256, so the page works on a robot LAN with no internet.
+`[dashboard]` extra; without it every entry point (`app`, `start`, `serve`) names the extra. The page changes the
+world with `sim.tool`'s own verbs (`POST /api/world`).
+
+
+### Added: agent tools generated from the manifest
+
+`robot.tool` is a strands agent tool built from the robot's manifest: its rpcs (observe, act, run, stop, estop,
+resume, ...) and their signatures become the tool spec, so a new rpc is a new tool action with nothing hand-written.
+`sim.tool` does the same for a world's public verbs (add a robot, an object or a camera, step, reset, render). A
+command from a tool is an agent's: it goes through the safety chain and the operator gate on every step, including
+`run` and `start` in a background thread. strands is imported only when a tool is built (`[tools]` extra). A policy
+spec string is accepted wherever a policy is.
+
+`describe()` reports where objects are now and each robot's live `pose`; `pose(body)` reads one. Vectors on the
+wire are fixed-length number arrays (a string colour is refused by name), `randomize` takes a `(lo, hi)` range and
+returns what it drew, `reset(keyframe=)` refuses an unknown keyframe, `remove` takes an object or a camera, and
+`Simulation.run({"a": spec, "b": spec})` drives robots in lock-step from the tool.
+
+
+### Added: every run can be a LeRobot v3 dataset
+
+`robot.run(policy, record="data/pick")` appends the run as one episode of a LeRobot v3 dataset: state and action
+in the policy's units (declared in `meta/units.json`), camera frames as video, the instruction as the task. A second
+run, in any process, resumes the same dataset; a different fps or robot is refused. A run that raised or faulted is
+dropped; any other ending (steps, `stop()`, an e-stop) saves it. `record="hf://owner/name"` writes into LeRobot's
+cache and uploads only with `push=True`. Recording needs LeRobot's dataset extra; the run loop calls
+`strands_robots.recording`, never the reverse.
+
+
+### Added: the mesh
+
+`Mesh()` (`from strands_robots import Mesh`) puts robots on one network with no configuration: `mesh.mount(robot)` (or `Robot(..., mesh=mesh)`)
+publishes a robot as a device, `mesh.discover("device(role:arm)")` finds devices by selector (a device id names one robot per tenant: a second peer mounting it is refused), and
+`invoke` / `subscribe` / `connect` call a remote device's rpcs, stream its state and drive it as a `RemoteBody`
+through the same run loop. Presence rides on zenoh liveliness, so a device that dies leaves the mesh; a watchdog
+applies the device's `on_disconnect` when its controller goes quiet. `mesh.broadcast("estop")` sends an e-stop every
+device latches, and only a resume from the authority that is allowed to give one lifts it. Two transports: zenoh
+(peer mode on a LAN, `[mesh]`) and AWS IoT Core (`[iot]`). `mesh.tool` exposes the mesh to an agent as `use_mesh`. Every rpc a device answers leaves one record on the
+`strands_robots.audit` logger (who, peer, outcome); an rpc that misses its deadline raises `TimeoutError` on every
+transport.
+
+
+### Added: Isaac Sim and Newton backends
+
+`Simulation("isaac")` builds the same world on Isaac Sim (PhysX): robots are imported from their MJCF into USD,
+one `SimulationApp` and one open world per process, and the shared-world semantics hold (add, remove, reset and
+reload keep time exact; a removal rebuilds the PhysX views). `Simulation("mujoco", physics="newton", num_envs=N)`
+steps the MuJoCo world on the GPU with MuJoCo-Warp, N copies at once. `Robot.run` and `Simulation.run` drive both
+unchanged. Neither backend imports a GPU stack until it is asked for, and each names its install when it is
+missing. New extras: `[isaac]` (Python 3.12+) and `[newton]`; both need CUDA.
+
+
+### Added: a Robot is a device
+
+Every `Robot` now publishes a manifest generated from its `Description` and the registry: `device_id`,
+`device_type`, labels, sensors and controls (each with its range, its safe band and what happens on disconnect),
+rpcs and events. Every write goes through one safety chain (range, safe band, interlocks, validators, then the
+operator gate for a target outside the safe band); `estop()` bypasses the chain and latches until `resume()`, and a
+watchdog holds or releases a body whose controller goes quiet. `Driver.hold()` and `supports_position_hold` are
+declared per driver, and a LeRobot remote policy refuses a body that cannot hold position. Feetech joints read in
+exact degrees through the bus calibration, matching LeRobot's own conversion.
+
+
+### Added: Policy, every LeRobot policy, local or over Zenoh, and the ONNX skills
+
+`Policy("<owner>/<repo>")` (or a local checkpoint directory) runs any LeRobot checkpoint in-process with its saved
+processors, and `Policy("zenoh://<host>:<port>/<deployment>")` drives a robot from a `lerobot-policy-server`
+deployment over LeRobot's own Zenoh protocol. Joint names, `robot_type`, feature requirements and the checkpoint's
+norm mode (degrees or range) are read from the `Description` and the registry, so no robot is named in the code.
+`Policy("holosoma")` and `Policy("microduck?skill=<name>")` load ONNX presets: the holosoma G1 walker and ten
+microduck skills, fetched from the Hugging Face Hub and checked by sha256. A policy fault stops the run with
+`stopped_by="fault"`. New extras: `[onnx]` and `[lerobot]` (Python 3.12+, zenoh below 1.10); LeRobot itself is
+installed from a pinned commit until `remote_inference` is on PyPI.
+
+
+### Changed: one concept, one package (part 3.5)
+
+Each of the five types is now a package you can read top to bottom -- `simulation/` (with
+`simulation/backends/mujoco`), `robot/` (with `robot/drivers/` and the one run loop in `robot/run/`),
+`policy/`, `description/`, `units/` -- and a type lives with its owner. The top level exports only
+`Robot`, `Simulation`, `Policy`, `Body`, `Description` and the four data types; everything else is
+imported from its package. Facts about a robot (its gripper keys, LeRobot norm modes, its driver) are
+registry data, so the `lerobot_so10x` units become the `lerobot` scheme read from
+`hardware.lerobot_norm`. No file exceeds 250 lines and `import-linter` contracts guard the edges.
+Behaviour is unchanged; a new robot is a registry edit, not a code edit.
+
+
+### Added: acceptance check 9, a feetech `Driver` on a physical SO-101
+
+`STRANDS_SO101_PORT=<port> pytest tests_integ/acceptance` drives the arm through the v1 surface:
+`observe()`, a refused `confirm_act()` that writes nothing, an allowed hold the twin mirrors, and
+`calibrate(interactive=False)` against LeRobot's calibration file. Without an arm it skips and says why.
+
+
+### Added: a `Robot` on a bus, its twin, and the operator gate
+
+`Robot("so101", port=...)` drives an SO-100/101 Feetech bus and reads and writes LeRobot's
+calibration JSON unchanged; `Robot("g1"|"go2"|"h1", port=<iface>)` reads Unitree DDS and
+`Robot("microduck", port=<robotd socket>)` reads the duck's robotd, both observe-only. A hardware
+`Robot` adds a twin to `Simulation.default()` that mirrors every `act` and every measured
+`observe`. `Robot(confirm=callable)` is the operator gate: `confirm_act` on a real body writes
+nothing unless the callable says yes.
+
+
+### Added: `Robot`, a body in a world
+
+`Robot("so101")` joins `Simulation.default()` (or `sim=`) with `observe`, `act`, `run`,
+`start`/`stop`, `set_pose`, `set_gains` and `describe`. `run()` drives it with a `Policy`, anything
+with `act`/`reset`, or a bare callable, checks the policy's requirements before step one, and returns
+a `RunResult`; `Simulation.run` steps many robots in lock-step.
+
+
+### Added: `Simulation`, one world for many robots, on MuJoCo
+
+`Simulation.default()` is the world every robot joins when it is given none: robots get unique
+ids, a control step is `timestep * substeps` for the whole world, `manual_time()` hands stepping
+to the caller, `set_pose` teleports (a fixed base is rebuilt in place with its joint state), and
+`render()` frames every robot. A key naming a tendon or site actuator (the Panda hand) reads the control that holds it. The `Backend` contract has one implementation, `mujoco` (3.3.4 or newer).
+
+
+### Added: the v1 types and `Description`
+
+`strands_robots` now exports the data that flows between a world, a robot and a policy
+(`Observation`, `Action`, `JointState`, `Pose`, `Calibration`, `Contact`, `Physics`,
+`Requirements`, `RunResult`) and `Description.load(name)`, which resolves any of the 76
+registry robots, a `robot_descriptions` name or an MJCF/URDF path to its joints, `action_keys`,
+limits and keyframes. A registry robot with no simulation model refuses by name.
+
+
+### Changed: v1 starts from an empty package on `dev`
+
+The `dev` branch now holds only the package skeleton (`strands_robots.__version__ == "1.0.0.dev0"`),
+the design drawings and the drawing toolkit. v1 lands here part by part (#4749, #3818); `main`
+keeps v0.5.x until v1.0.0.
+
+
+## [0.5.3] - 2026-10-08
+
+Every entry from 0.4.2 to 0.5.3. That line was released from `main` without a per-release split, and its code is
+replaced in 0.6.0.
+
 ### Fixed: a live MJPEG stream refuses options it cannot honor
 
 `mjpeg_frames` is the one media entry point in `strands_robots.rendering` that

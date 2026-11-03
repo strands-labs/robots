@@ -2,20 +2,9 @@
 
 {% block extrahead %}
   <meta property="og:type" content="website">
-  <meta property="og:title" content="{{ page.title if page.title else config.site_name }} | Strands Robots">
+  <meta property="og:title" content="{{ page.title if page.title else config.site_name }} | strands-robots">
   <meta property="og:description" content="{{ config.site_description }}">
-  <meta property="og:image" content="{{ config.site_url }}assets/img/og.png">
-  <meta name="twitter:card" content="summary_large_image">
-  <script type="importmap">
-  {
-    "imports": {
-      "three": "https://cdn.jsdelivr.net/npm/three@0.170.0/build/three.module.js",
-      "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.170.0/examples/jsm/",
-      "@mujoco/mujoco": "https://cdn.jsdelivr.net/npm/@mujoco/mujoco@3.14.0/mujoco.js"
-    }
-  }
-  </script>
-  <link rel="preconnect" href="https://cdn.jsdelivr.net" crossorigin>
+  <meta name="twitter:card" content="summary">
 {% endblock %}
 
 {% block content %}
@@ -24,4 +13,10 @@
   {% else %}
     {{ super() }}
   {% endif %}
+{% endblock %}
+
+{% block footer %}
+  {{ super() }}
+  {#- The Strands frog wanders along the bottom of every page. Click it. -#}
+  <div class="sr-frog" aria-hidden="true" data-say="strands"><span class="sr-frog__face"><span class="sr-frog__hop">{% include "partials/frog.svg" %}</span></span></div>
 {% endblock %}

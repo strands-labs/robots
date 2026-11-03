@@ -1,3 +1,0 @@
-### Fixed: a lerobot_local observation that mixes `observation.state` with a bare camera name routes the camera
-
-Passing `{"top": frame, "observation.state": vector}` to a `lerobot_local` policy used to die inside lerobot with a bare `KeyError: 'observation.images.top'`, because one `observation.*` key made the whole dict count as already LeRobot-formatted and the camera routing was skipped. Prefixed keys now pass through per key while bare cameras still bind to the declared image features by name, so the mixed observation answers actions like the fully prefixed and the fully native spellings do.

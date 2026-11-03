@@ -1,7 +1,0 @@
-### Fixed: an Isaac entity lookup reports any name instead of raising on it
-
-Every name-taking lookup on the Isaac backend now resolves through the shared `registered()` / `registry_entry()` rule that the MuJoCo and Newton backends already use, so a name of any type gets a verdict. Previously the membership test itself raised `TypeError: unhashable type` for a list, dict, set or bytearray name, which meant the unknown-entity error path that the lookup guards was never reached and the exception escaped the `{"status", "content"}` envelope those methods document as their only failure channel. Twelve methods were affected - `remove_robot`, `remove_object`, `remove_camera`, `move_object`, `set_object_kinematic`, `set_object_collision`, `set_robot_pose`, `set_joint_positions`, `install_action_controller`, `get_body_state`, `robot_joint_names` and `get_observation` - and the escape needed no entities registered.
-
-`get_camera_params` reports a miss through an exception rather than an envelope, and its contract names `KeyError`; it now raises that for an unhashable name too, instead of a `TypeError` no caller handling the documented failure would catch.
-
-The AST check that keeps a lookup added later inside this rule now covers all three backends. It previously listed only the `SimWorld` registry attributes, so a backend that keeps its entity state on the engine itself - as Isaac does, in `_robots` / `_objects` / `_cameras` - sat outside the check while appearing to be inside it.

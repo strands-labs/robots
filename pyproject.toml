@@ -1,1391 +1,181 @@
 [build-system]
-# hatchling 1.32+ emits Metadata-Version 2.5, which the PyPI publisher's twine
-# rejects (v0.5.2 publish, run 35206733145); 1.31 built v0.5.1. Lift the pin
-# once pypa/gh-action-pypi-publish ships a twine that knows 2.5.
-requires = ["hatchling<1.32", "hatch-vcs"]
+requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
 name = "strands-robots"
+# One copy of the version, strands_robots.__version__ ([tool.hatch.version] below), so the wheel and the package
+# cannot disagree: a release sets it (`hatch version 1.0.0rc1`) in the release commit, and the publish workflow
+# refuses a tag that is not v<version>.
 dynamic = ["version"]
-description = "AI-powered robot control, simulation, and training for Strands Agents - integrates with MuJoCo, Isaac Sim, Newton, and many more"
+description = "A Simulation is a world, a Robot is a body in a world (or on a bus), a Policy turns an observation into an action."
 readme = "README.md"
-requires-python = ">=3.12"
-license = {text = "Apache-2.0"}
-authors = [
-    {name = "AWS", email = "opensource@amazon.com"},
-]
-keywords = [
-    "robots", "agents", "strands", "sdk",
-    "mujoco", "simulation", "lerobot", "reinforcement-learning",
-    "gr00t", "isaac-sim", "vla",
-    "robot-learning", "imitation-learning",
-    "teleoperation", "manipulation", "strands-agents",
-]
-classifiers = [
-    "Development Status :: 4 - Beta",
-    "Intended Audience :: Developers",
-    "Intended Audience :: Science/Research",
-    "License :: OSI Approved :: Apache Software License",
-    "Operating System :: OS Independent",
-    "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.12",
-    "Programming Language :: Python :: 3.13",
-    "Topic :: Scientific/Engineering :: Artificial Intelligence",
-    "Topic :: Scientific/Engineering :: Physics",
-    "Topic :: Software Development :: Libraries :: Python Modules",
-    "Typing :: Typed",
-]
-
+license = "Apache-2.0"
+requires-python = ">=3.10"
 dependencies = [
-    # CAPABILITY floor, not a nominal lower bound. The package imports
-    # ``strands.types.tools.ToolContext`` (first shipped in strands-agents
-    # 1.5.0), ``strands.types._events.ToolResultEvent`` (first shipped in
-    # 1.7.0) and ``strands.hooks.BeforeToolCallEvent`` (usable from 1.13.0,
-    # and what sets this floor), all at module import time. Measured
-    # against the released wheels, every release below 1.7.0 leaves
-    # ``strands_robots.simulation.mujoco.simulation`` and
-    # ``strands_robots.hardware_robot`` unimportable, so a resolve inside an
-    # older-but-declared range yields an install where ``import
-    # strands_robots`` succeeds (those are lazy exports) and
-    # ``strands_robots.Simulation`` simply does not exist. Below 1.10.0 the
-    # dashboard's human-in-the-loop motion gate
-    # (``strands_robots.dashboard.agent_hitl``) raises on import instead, since
-    # that package is not lazy.
-    #
-    # The bound is 1.13.0 rather than 1.10.0 because the hook event's name and
-    # the method that gate calls on it ship in different releases: the class
-    # enters ``strands.hooks.__all__`` at 1.10.0, but ``interrupt`` only enters
-    # its MRO at 1.13.0. On 1.10.0-1.12.x the gate therefore imports cleanly and
-    # raises ``AttributeError`` at the moment it should pause a real robot, which
-    # is a worse outcome than refusing the install. The same release ships the
-    # rest of the interrupt machinery the real-hardware ``Robot`` tool's
-    # operator gate uses at module import time,
-    # ``strands.interrupt.InterruptException`` and
-    # ``strands.types._events.ToolInterruptEvent`` (both absent from the 1.12.0
-    # wheel), so they sit on the floor rather than raise it.
-    #
-    # The bound is 1.57.2 rather than 1.13.0 because the dashboard's voice
-    # console (``strands_robots.dashboard.voice``) drives the bidirectional-
-    # streaming agent, which 1.57.2 promotes out of ``strands.experimental``:
-    # ``strands.bidi.BidiAgent``, ``strands.bidi.models.bedrock.BedrockNovaSonicModel``,
-    # ``strands.bidi.models.openai.OpenAIRealtimeModel`` and
-    # ``strands.bidi.types.media.AudioDelta`` first ship there in 1.57.2, which
-    # is what sets this floor. See
-    # tests/test_strands_agents_floor_ships_the_imported_api.py, which owns that
-    # measurement, grades the members the gate calls, and fails the moment a
-    # newer strands symbol is imported without raising this floor.
-    "strands-agents>=1.57.2,<2.0.0",
-    "numpy>=1.21.0,<3.0.0",
-    "opencv-python-headless>=4.5.0,<5.0.0",
-    # Pillow < 12.3.0 carries eleven HIGH advisories (heap OOB write in
-    # ImageCmsTransform / Image.paste / RankFilter, decompression bombs in
-    # PdfParser and the font-file loaders, GHSA-9hw9-ch79-4vh6 et al.); 12.3.0
-    # is the first release that clears all of them.
-    "Pillow>=12.3.0,<13.0.0",
+    "numpy>=1.26",
+    "robot_descriptions>=1.12",
 ]
 
 [project.optional-dependencies]
-cosmos3-service = [
-    # Self-contained msgpack+NumPy WebSocket client for the Cosmos 3 RoboLab
-    # policy server (cosmos_framework.scripts.action_policy_server_robolab).
-    #
-    # No openpi-client dependency: the wire protocol is implemented directly
-    # via `websockets` + `msgpack` plus a vendored numpy packer
-    # (strands_robots/policies/cosmos3/_msgpack_numpy.py). This keeps the
-    # extra numpy-version agnostic so it composes cleanly with `lerobot`
-    # (numpy>=2) for dataset recording in the same env.
-    "msgpack>=1.0.0,<2.0.0",
-    # >=17.0 is the floor of the websockets behaviour the package relies on, not
-    # a preference. `Server.shutdown()` closes accepted connections and waits
-    # for their handlers from 17.0 on; through 16.x it closed the listening
-    # socket and nothing else, so `PolicyServer.stop()` returned while a client
-    # that was already connected went on being served - the wrapped policy still
-    # driving the arm after the operator was told the server stopped. Measured
-    # against the released wheels: 16.1.1 still serves that client, 17.0 does
-    # not. (13.0 remains the floor of the API *names* reached for -
-    # `websockets.sync.server.Server`.) 17.1 is the release that adds the
-    # `legacy=True` flag to `websockets.sync.client.connect`, the supported way
-    # to hold a connection outside a `with` block; without it 17.1 warns on
-    # every service connect and announces a behaviour change. One environment
-    # resolves one websockets, so this floor and [inference]'s are deliberately
-    # the same number. Owned and measured by
-    # tests/test_websockets_floor_ships_the_imported_api.py.
-    "websockets>=17.1",
-]
-# In-process Cosmos 3 backend (Cosmos3Policy(backend="diffusers")). Loads the
-# Cosmos3OmniPipeline directly via native Hugging Face `diffusers` (no RoboLab
-# policy server, no GPU isolation) - one forward pass returns the predicted
-# world video + sound + action chunk. This is a HEAVY GPU stack (diffusers +
-# torch + transformers); the default backend stays "service", so a plain
-# `pip install strands-robots[cosmos3-service]` (msgpack + websockets only) is
-# unaffected. diffusers composes with numpy>=2, so this extra is co-installable
-# with cosmos3-service and lerobot.
-#
-# The floor is the CAPABILITY floor, not a nominal lower bound: measured against
-# the released wheels, Cosmos3OmniPipeline + CosmosActionCondition first ship in
-# diffusers 0.39.0 (0.36.0/0.37.1/0.38.0 carry neither symbol), so any floor below
-# it resolves to a diffusers that cannot build the pipeline at all. A checkpoint
-# newer than the floor can still need a newer diffusers than it (Cosmos3-Edge is
-# built against 0.40.0.dev0); that is a per-checkpoint fact a version range cannot
-# express, so Cosmos3DiffusersBackend reports it at load time instead.
-cosmos3-diffusers = [
-    "diffusers>=0.39",
-    "torch>=2.0",
-    "transformers>=4.40",
-    "accelerate>=0.26",
-]
-# Cosmos 3 -> MuJoCo sim-loop bridge. The diffusers backend emits the model's
-# raw unified action ([-1, 1] quantile-normalized relative end-effector pose,
-# not joint radians); turning that into joint targets a MuJoCo arm can track
-# needs de-normalization (bundled per-domain q01/q99 stats, pure NumPy) plus an
-# inverse-kinematics solve. This extra pulls `mink` (differential IK on the same
-# mujoco.MjModel) + `mujoco`. Install it to drive a sim arm with
-# Cosmos3Policy(backend="diffusers") via decode_cosmos_chunk_to_targets /
-# MinkIKBridge. numpy>=2 compatible (co-installable with cosmos3-diffusers,
-# cosmos3-service, sim-mujoco, and lerobot).
-cosmos3-sim = [
-    "mink>=0.0.4",
-    "mujoco>=3.5.0,<4.0.0",
-    # qpsolvers QP backend for mink.solve_ik. quadprog is the dependency-light
-    # default that is always available; the bridge auto-selects whatever
-    # qpsolvers reports (preferring daqp when present).
-    "qpsolvers[quadprog]>=4.0.0",
-]
-# MoveIt2 sidecar client (ROS 2 / moveit_py runs out-of-process; the
-# client is a lightweight ZMQ + msgpack peer so users without ROS 2
-# sourced are unaffected). See policies/moveit2/server/ for the
-# sidecar reference implementation.
-moveit2 = [
-    "pyzmq>=27.0.0,<28.0.0",
-    "msgpack>=1.0.0,<2.0.0",
-]
-# cuRobo collision-aware motion planning. Runs in-process as a CUDA
-# library (no sidecar, unlike MoveIt2). Users without a CUDA-capable GPU
-# should not install this extra. See policies/curobo/ for the policy
-# wrapper.
-#
-# IMPORTANT: cuRobo is NOT distributed on PyPI. The package named
-# ``nvidia-curobo`` on PyPI is an unrelated v0.1 squatter — installing
-# it does not get you a working cuRobo. The real cuRobo is published
-# only as source on GitHub at https://github.com/NVlabs/curobo. Users
-# must install it from source before using this policy:
-#
-#   git clone https://github.com/NVlabs/curobo.git
-#   pip install -e ./curobo
-#
-# Once cuRobo's API surface stabilises and a real PyPI release exists,
-# this extra will pin to it. Until then, keep the extra empty so
-# ``pip install strands-robots[curobo]`` is a no-op rather than a
-# silently-broken install of the squatter package. Tracked in the
-# follow-up issue linked from PR #306.
-curobo = []
-# FLUX 3 Action (Black Forest Labs, 2026-09-22): in-process flow-matching VLA with an
-# SO-101 checkpoint (black-forest-labs/flux-3-action-so101). The inference
-# package `flux-action` is NOT on PyPI - it installs from
-# github.com/black-forest-labs/flux-action (Python 3.12, torch>=2.10 CUDA) and
-# needs `natten` from the wheel index at https://whl.natten.org/ (a wheel per
-# torch/CUDA pair, including aarch64 for Jetson Thor). Pin torch + natten to
-# the same CUDA first, then `pip install "flux-action @ git+https://github.com/black-forest-labs/flux-action"`.
-# Like curobo, the extra is empty on purpose: pinning a git URL here would break
-# the PyPI publish. See policies/flux3_action/ and docs/learn/policies/flux3-action.md.
-flux3 = []
-# GR00T Whole-Body-Control (SONIC) locomotion policy. Runs the ONNX
-# controllers in-process via onnxruntime (no torch, no sidecar) - a light
-# extra, like the client side of moveit2. Model weights are NOT bundled;
-# they are fetched at runtime under the NVIDIA Open Model License
-# (e.g. nvidia/GEAR-SONIC). See policies/wbc/ and issue #466.
-wbc = [
-    "onnxruntime>=1.17.0,<2.0.0",
-    # The upstream GR00T-WBC checkpoint config (g1_gear_wbc.yaml) is YAML;
-    # WBCConfig.from_file reads it via pyyaml. JSON configs work without it.
-    "pyyaml>=5.1,<7.0.0",
-    # Resolving a HuggingFace model id checkpoint (e.g. the default
-    # nvidia/GEAR-SONIC, or any "org/repo") downloads it via huggingface_hub.
-    # Required so create_policy("wbc") with no local checkpoint works out of the
-    # box - WBCPolicy._maybe_download_checkpoint raises RuntimeError naming the
-    # [wbc] extra when it is absent.
-    # Floor at >=1.5 (cap the MAJOR only, <2.0.0): the docs' bucket-sync
-    # guidance (README streamed-training section + dataset_recorder.sync_to_bucket)
-    # instructs `pip install -U "huggingface_hub>=1.5"` because the `hf buckets`/
-    # `hf sync` CLI subcommands first ship in huggingface_hub 1.5.0
-    # (huggingface_hub/cli/buckets.py, registered by cli/hf.py). Every earlier
-    # release installs an `hf` entry point WITHOUT them - 0.36.x, but also
-    # 1.0-1.4.x, which answer `hf buckets create` with
-    # "Error: No such command 'buckets'". A floor below 1.5 therefore lets a
-    # fresh resolve land on a CLI that cannot run a bucket sync while satisfying
-    # the documented minimum. lerobot floors it higher still
-    # (lerobot 0.6.1 requires huggingface-hub>=1.6.0) and [wbc] is pulled into
-    # [all] alongside lerobot, so the two co-resolve on the stricter of the two.
-    "huggingface_hub>=1.5,<2.0.0",
-]
-kimodo = [
-    # Kimodo text-conditioned motion diffusion for the Unitree G1. Drives a
-    # `diffusers` pipeline checkpoint (one carrying a `model_index.json`) with
-    # `trust_remote_code=True` (gated by STRANDS_TRUST_REMOTE_CODE at the
-    # factory layer). NVIDIA's own `nvidia/Kimodo-G1-RP-v1` publishes bare
-    # weights for its own runtime instead, so that checkpoint is driven through
-    # a `motion_agent=` sampler rather than by this extra alone. Weights are
-    # fetched on demand; nothing bundled.
-    # See strands_robots/policies/kimodo/ and docs/reference/policies/kimodo.md.
-    "torch>=2.0.0",
-    "diffusers>=0.30.0",
-    "transformers>=4.40.0",
-    # Same >=1.5 floor and MAJOR-only cap as [wbc]: the documented bucket-sync
-    # guidance needs the `hf buckets`/`hf sync` CLI subcommands, which first
-    # ship in huggingface_hub 1.5.0. See the [wbc] comment for the full reason.
-    "huggingface_hub>=1.5,<2.0.0",
-    "accelerate>=0.30.0",
-    "scipy>=1.10.0",
-]
-protomotions = [
-    # ProtoMotions Generalist Tracking Policy (GTP) - the ONNX whole-body
-    # motion tracker that turns a kinematic reference clip (e.g. one Kimodo
-    # samples) into balanced joint targets for the Unitree G1. Same three
-    # support libraries as [wbc], for the same three reasons: onnxruntime runs
-    # the exported graph, pyyaml reads the `unified_pipeline.yaml` sidecar next
-    # to it, and huggingface_hub fetches the checkpoint from a model id. Weights
-    # are NOT bundled. See strands_robots/policies/protomotions/ and
-    # docs/reference/policies/protomotions.md.
-    "onnxruntime>=1.17.0,<2.0.0",
-    "pyyaml>=5.1,<7.0.0",
-    # Same >=1.5 floor and MAJOR-only cap as [wbc]: the documented bucket-sync
-    # guidance needs the `hf buckets`/`hf sync` CLI subcommands, which first
-    # ship in huggingface_hub 1.5.0. See the [wbc] comment for the full reason.
-    "huggingface_hub>=1.5,<2.0.0",
-]
-holosoma = [
-    # Amazon FAR Holosoma locomotion for the Unitree G1 - ONNX actors whose PD
-    # gains, joint names and command ranges ride in the ONNX metadata, so the
-    # provider self-configures from the file. onnxruntime runs the graph;
-    # huggingface_hub fetches a bare file name from the Hub mirror of the
-    # Apache-2.0 upstream tree (github.com/amazon-far/holosoma). Weights are NOT
-    # bundled. Same resolver window as [microduck] / [wbc]. See
-    # strands_robots/policies/holosoma/ and docs/learn/policies/holosoma.md.
-    "onnxruntime>=1.17.0,<2.0.0",
-    "huggingface_hub>=1.5,<2.0.0",
-]
-microduck = [
-    # Pollen Microduck locomotion policies - ONNX actors with the input
-    # normaliser fused into the exported graph. onnxruntime runs the graph;
-    # the provider self-configures from the ONNX metadata, so nothing else is
-    # needed to load a weight file. Weights are NOT bundled - Pollen publishes
-    # them on the Hub at pollen-robotics/microduck-policies (the policies/
-    # directory of their git repo is gone), and huggingface_hub fetches a bare
-    # weight name from there. A MuJoCo rollout uses the separate [sim-mujoco]
-    # extra. See strands_robots/policies/microduck/ and docs/reference/policies/microduck.md.
-    "onnxruntime>=1.17.0,<2.0.0",
-    # Floor 1.5 for the same reason as [wbc]: hf_hub_download is old, but every
-    # other extra that reads the Hub already pins this window, so one resolver
-    # window for the whole install.
-    "huggingface_hub>=1.5,<2.0.0",
-]
-# Bitcraze client library for the Crazyflie 2.x native driver: CRTP over a
-# Crazyradio dongle (or the USB cable), the commander/high-level-commander
-# setpoint surface, and the log framework the driver's telemetry block uses. A
-# pure-Python package plus pyusb; no build step, no CUDA, so it installs on the
-# aarch64 edge machines that fly these.
-#
-# cflib is GPLv3 (its wheel METADATA declares `License: GPLv3`), and this project
-# is Apache-2.0. It is therefore deliberately NOT a member of [all]: a copyleft
-# dependency is only ever installed by a caller who names it, the way the NVIDIA
-# Open Model License weights above are only ever fetched by a caller who asked
-# for that policy. Nothing in [all]'s CI/exploration role needs it - the driver
-# degrades cleanly without cflib (_resolve_cflib returns a reason naming this
-# extra), so `pip install strands-robots[all]` still imports, registers and
-# tests the driver. See strands_robots/drivers/crazyflie.py and
-# docs/robots/mobile.md.
-crazyflie = [
-    "cflib>=0.1.25,<0.2.0",
-]
-# Universal Robots RTDE client for the UR native driver
-# (strands_robots/drivers/ur.py). ur_rtde is the single distribution that supplies
-# both importables the driver resolves -- rtde_control (servoJ, speedJ, the
-# freedrive and dashboard verbs) and rtde_receive (joint positions and velocities,
-# the TCP pose, the safety and robot mode words) -- so one requirement is the
-# remedy for either name.
-#
-# Deliberately NOT a member of [all]: ur_rtde is a compiled Boost/pybind11
-# binding whose published wheels cover manylinux x86_64/i686 and win_amd64 only,
-# up to cp312. On a Python 3.13 interpreter or an aarch64 host -- the edge
-# machines this project runs on -- pip falls back to the sdist and needs a C++
-# toolchain plus Boost to build it, so folding it into [all] would put a compiler
-# in front of `pip install strands-robots[all]`. The driver degrades cleanly
-# without the SDK (_resolve_rtde returns a reason naming this extra), so [all]
-# still imports, registers and tests it. See docs/robots/arms.md.
-ur = [
-    "ur-rtde>=1.6.0,<2.0.0",
-]
-# UFactory xArm client for the xArm 7 native driver (strands_robots/drivers/xarm.py).
-# Pure Python with no dependencies of its own, so it is a member of [all]: the
-# driver's surface test grades its fake against the real XArmAPI.
-xarm = [
-    "xarm-python-sdk>=1.18.0,<2.0.0",
-]
-# HTTP transport for the EarthRover Mini Plus native driver
-# (strands_robots/drivers/earthrover.py). The driver talks to the vendor's
-# earth-rovers-sdk over HTTP -- GET /data for telemetry, POST /control to drive --
-# so `requests` is what makes a rover move, not a developer convenience. It is
-# gated (the module imports and registers without it, and connect_eagerly()
-# returns a reason naming this extra), which is why it is an extra rather than a
-# core dependency; but nothing else declares it, so before this extra existed the
-# only bound the project stated lived in [tool.hatch.envs.default], an
-# environment no install reaches. A member of [all]: pure Python, no build step,
-# and the driver's URL-property tests import requests to drive a real
-# http.server, so they run only where an install declares it.
-earthrover = [
-    "requests>=2.28.0,<3.0.0",
-]
-# Rainbow Robotics client for the RB-Y1 native driver (strands_robots/drivers/rby1.py):
-# gRPC to the robot's control manager, plus the dynamics model the driver reads
-# its range and velocity gates from. Prebuilt cp312/cp313 wheels for linux
-# (x86_64, aarch64), macOS arm64 and win_amd64, depending only on numpy, so it is
-# a member of [all]: the driver's surface test grades its fake robot against the
-# real SDK.
-rby1 = [
-    "rby1-sdk>=0.10.0,<0.11.0",
-]
-# Boston Dynamics client for the Spot native driver (strands_robots/drivers/spot.py).
-# Pure Python over grpcio and protobuf, so it is a member of [all]: the driver's
-# surface test grades its fake robot and the robot-state messages it parses
-# against the real SDK.
-spot = [
-    "bosdyn-client>=5.0.0,<6.0.0",
-]
-# Hello Robot client for the Stretch native driver (strands_robots/drivers/stretch.py).
-# Not a member of [all]: the wheel pulls open3d, pyrealsense2, jupyter and the
-# Stretch factory tools, which belong on the robot's own computer.
-stretch = [
-    "hello-robot-stretch-body>=0.7.0",
-]
-# pyserial for the native Feetech and Dynamixel bus drivers
-# (strands_robots/drivers/feetech/bus.py, drivers/dynamixel/bus.py) and the
-# serial_tool and pose_tool agent tools. Pure Python, so a member of [all]; the
-# refusal at each of those doors names this extra, the way [earthrover]'s does.
-serial = [
-    "pyserial>=3.5,<4.0",
-]
-lerobot = [
-    # [dataset] bundles the read-back stack the streaming data loop needs:
-    # datasets + pandas + pyarrow (parquet streaming) + av + torchcodec
-    # (remote video decode for StreamingLeRobotDataset / StreamingDatasetReader).
-    # Declaring it here makes `sim.stream_dataset(...)` work out of the box
-    # instead of pushing torchcodec/av plumbing onto user code. See
-    # reports/STREAMING_DATA_LOOP_DEEP_DIVE.md Appendix C.
-    #
-    # lerobot 0.6 ships mature, platform-correct torch/torchvision/torchcodec
-    # dependency markers, so the codec/decoder stack resolves ABI-consistently
-    # on every platform (torch 2.11 + torchcodec 0.11.x + torchvision 0.26 on
-    # linux x86_64/aarch64 and macOS arm64) WITHOUT the per-platform torchcodec
-    # overrides the 0.5.1 range needed. The aarch64 torch>=2.11 requirement --
-    # which fixes the NVIDIA Thor/Jetson sm_110 cuBLAS bug present in torch 2.10
-    # -- now falls out of lerobot 0.6's own `torchcodec>=0.11,<0.12; aarch64`
-    # marker. NOTE: torch/torchcodec ship as +cuXXX wheels resolved by
-    # UV_TORCH_BACKEND; a plain `pip install` on Thor may need the matching CUDA
-    # index -- see the README Installation section for the Thor/Jetson caveat.
-    #
-    # The floor is 0.6.1 rather than 0.6.0 because bucket streaming
-    # (`stream_dataset(repo_type="bucket")`) needs a StreamingLeRobotDataset
-    # that accepts `repo_type`, and 0.6.1 is the first release that does
-    # (0.6.0's constructor has no such parameter). Flooring here makes the
-    # flagship streaming path resolver-guaranteed instead of docs-guaranteed;
-    # `strands_robots.utils.BUCKET_STREAMING_MIN_LEROBOT` carries
-    # the same version for the runtime guard that protects an environment with
-    # a pre-existing older lerobot.
-    "lerobot[feetech,dataset]>=0.6.1,<0.7.0",
-    # Process-lifecycle dependency of the two session tools this extra exists to
-    # serve. `lerobot_train` and `lerobot_teleoperate` each launch a DETACHED
-    # background process and then answer `status` / `stop` / `list` about it, and
-    # both import `psutil` at module scope -- directly, and again through
-    # `strands_robots/tools/_process_stop.py`, which owns the two questions a
-    # session verb cannot answer without it: did the signalled process actually
-    # exit, and is this pid still the process the session record was written for.
-    #
-    # Nothing declared it. `pip install 'strands-robots[lerobot]'` -- the command
-    # `lerobot_teleoperate` itself prints as the remedy for its own absent
-    # dependency -- resolves to 129 packages with no psutil among them, so
-    # importing either tool raised `ModuleNotFoundError: No module named
-    # 'psutil'` before it could reach that message. It arrived in CI only as a
-    # transitive of `accelerate` under the GPU extras ([molmoact2], [smolvla],
-    # [kimodo], [cosmos3-diffusers]), which is why a suite installed from `[all]`
-    # was green over it while the extra a user is told to install was not.
-    #
-    # The floor is a CAPABILITY floor: 6.0.0 is the first release publishing a
-    # manylinux aarch64 wheel (every 5.9.x is Linux x86_64 only), so below it an
-    # arm64 robot host has to build the C extension from source. The API surface
-    # `_process_stop` calls -- `pid_exists`, `boot_time`, `Process` with
-    # `create_time` / `is_running` / `wait`, and the `NoSuchProcess` /
-    # `AccessDenied` / `TimeoutExpired` exceptions -- is present on both sides of
-    # that line, so wheel availability is what sets the number rather than an API
-    # name. Owned and measured by
-    # tests/test_session_process_dependency_is_declared.py.
-    "psutil>=6.0.0,<8.0.0",
-]
-# MolmoAct2 transformers-native VLA (e.g. allenai/MolmoAct2-SO100_101). The
-# MolmoAct2Policy ships in lerobot >= 0.6 (landed via lerobot PR #3604). Rather
-# than hand-mirror lerobot's aux-dep pins here (transformers/peft/scipy) -- which
-# silently drifts whenever lerobot bumps them -- we defer entirely to lerobot's
-# own ``[molmoact2]`` extra. That extra pulls lerobot[transformers-dep],
-# lerobot[peft-dep], lerobot[scipy-dep] at exactly the versions the MolmoAct2
-# modeling/processor code was built against, so the two stay in lock-step by
-# construction. The base ``strands-robots[lerobot]`` pin (>=0.6.1,<0.7.0) already
-# fixes the lerobot floor; ``lerobot[molmoact2]`` just adds the aux deps.
-molmoact2 = [
-    "strands-robots[lerobot]",
-    "lerobot[molmoact2]>=0.6.1,<0.7.0",
-]
-# SmolVLA transformers-native VLA (e.g. lerobot/smolvla_base). The SmolVLAPolicy
-# ships in lerobot >= 0.6 and is a first-class `lerobot_local` policy type
-# (`resolution.py` lists it; `policy.py` imports `transformers` for its
-# tokenizer). Like [molmoact2], defer to lerobot's own [smolvla] extra for the
-# aux-dep pins rather than hand-mirroring them here (which drifts when lerobot
-# bumps them). lerobot[smolvla] pulls lerobot[transformers-dep] (>=5.4.0,<5.6.0)
-# -- the SAME specifier [molmoact2] resolves, so there is one transformers pin
-# across [all] -- plus num2words (SmolVLA's SmolVLM backbone processor,
-# transformers/models/smolvlm/processing_smolvlm.py, imports it) and
-# lerobot[accelerate-dep]. None of these arrive through the base
-# strands-robots[lerobot] extra (lerobot[feetech,dataset]), so without this a
-# `strands-robots[lerobot]` install running SmolVLA fails at first use. The base
-# strands-robots[lerobot] pin (>=0.6.1,<0.7.0) already fixes the lerobot floor.
-smolvla = [
-    "strands-robots[lerobot]",
-    "lerobot[smolvla]>=0.6.1,<0.7.0",
-]
-# GR00T N1.7 (nvidia/GR00T-N1.7-3B and its fine-tunes) as a first-class
-# `lerobot_local` policy type: lerobot >= 0.6 ships the N1.7 port in
-# lerobot/policies/groot (self-contained, no Isaac-GR00T checkout), so
-# `create_policy("lerobot_local", pretrained_name_or_path=..., policy_type="groot")`
-# resolves through the same generic path as act/smolvla. Like [molmoact2] and
-# [smolvla], defer to lerobot's own [groot] extra for the aux-dep pins
-# (transformers, peft, diffusers, timm, dm-tree; decord on x86_64 only). The
-# base strands-robots[lerobot] pin (>=0.6.1,<0.7.0) already fixes the floor.
-# There is no ZMQ service mode any more: a GPU box elsewhere runs
-# `strands_robots.inference.server.PolicyServer` and the robot uses the
-# `remote` provider.
-groot = [
-    "strands-robots[lerobot]",
-    "lerobot[groot]>=0.6.1,<0.7.0",
-]
-sim = [
-    # 1.23.0 is the oldest release that ships a description module for every
-    # robot the built-in registry names, not merely the oldest that imports.
-    # registry/robots.json declares 57 ``asset.robot_descriptions_module``
-    # values and the package grows one module per new robot, so an older
-    # release is missing some of them outright: 1.11.0 lacks 27 (including
-    # so100 and so101), and every release below 1.23.0 lacks at least one
-    # (openarm's ``openarm_v1_mj_description`` arrives last). None of those
-    # robots declares an ``asset.source`` GitHub fallback, so
-    # assets.download.auto_download_robot has nothing to fall back to and
-    # ``Robot("so101", mode="sim")`` fails to resolve a model file.
-    # tests/test_robot_descriptions_floor_ships_the_registry_modules.py owns
-    # the number and derives it from the registry; keep the two in step.
-    "robot_descriptions>=1.23.0,<2.0.0",
-]
-# From-scratch RL (strands_robots.training.rl: PPO, FastSAC, FastTD3, the
-# SimEnv/VecSimEnv adapters and the GymSimEnv wrapper). torch is what every
-# trainer and the replay buffer compute in; gymnasium is what GymSimEnv presents
-# a SimEnv as, for external RL libraries. Both were previously reachable only
-# through other extras (torch via kimodo / lerobot, gymnasium via lerobot), so
-# `create_trainer("ppo")` on any install without one of those died on the
-# interpreter's `No module named 'torch'`. The env adapters step a SimEngine,
-# which is why the MuJoCo backend is folded in.
-rl = [
-    "strands-robots[sim-mujoco]",
-    "torch>=2.0.0",
-    "gymnasium>=0.29,<2.0",
-]
-sim-mujoco = [
-    "strands-robots[sim]",
-    # 3.5.0 is the oldest release the backend can drive, not merely import:
-    # every scene is built through the MjSpec procedural API, and URDF loading
-    # through it first works in 3.5.0 (3.4.0 and earlier refuse add_robot with
-    # "Could not find decoder for resource '<path>.urdf'"), while MjSpec.delete
-    # - which world creation needs on its first call - first ships in 3.3.4.
-    # simulation.mujoco.backend._MUJOCO_API_FLOOR owns the number and refuses an
-    # older build at the import funnel; keep the two in step.
-    "mujoco>=3.5.0,<4.0.0",
-    "imageio>=2.28.0,<3.0.0",
-    "imageio-ffmpeg>=0.4.0,<1.0.0",
-    # Differential-IK solver stack. `move_to`, the Cartesian transport
-    # primitive in this backend's agent-callable action enum, solves IK on the
-    # same mujoco.MjModel via strands_robots.simulation.ik.MinkIKBridge, so the
-    # solver is part of what this extra ships rather than an add-on the caller
-    # has to name themselves. `qpsolvers` is declared here because
-    # simulation/ik.py imports it directly, and the `[daqp]` backend extra
-    # because qpsolvers on its own solves nothing: with no backend installed
-    # `mink.solve_ik` cannot run and `move_to` returns "IK bridge unavailable:
-    # No qpsolvers backend is installed", whose remedy names THIS extra. daqp is
-    # both the bridge's first preference (ik._PREFERRED_QP_SOLVERS) and the
-    # backend `mink` pulls for itself, so this changes nothing about what
-    # resolves - it stops the guarantee resting on a transitive of `mink` that
-    # this extra does not control. `[cosmos3-sim]`, which drives the same
-    # mink + qpsolvers stack, declares its backend the same way.
-    "mink>=0.0.4",
-    "qpsolvers[daqp]>=4.0.0",
-]
-# Newton GPU-native backend (newton-physics/newton on NVIDIA Warp +
-# MuJoCo-Warp). GPU-batched parallel envs, headless ray-traced rendering, and
-# the same MJCF assets as the MuJoCo backend. Requires an NVIDIA GPU (Maxwell+,
-# driver 545+, CUDA 12); on CPU-only hosts Warp falls back to the CPU device.
-# trimesh loads the collision/visual meshes referenced by the MJCF assets;
-# mujoco-warp provides the GPU MuJoCo solver used by the default `solver`.
-#
-# The two MuJoCo pins and the `newton` range are ONE decision, because newton
-# enforces its MuJoCo requirement at RUNTIME from a declaration the RESOLVER
-# never sees. newton declares it only under its own `[sim]` extra
-# (`mujoco~=3.11.0; extra == "sim"`), which this extra does not install, so
-# nothing bounds either package at resolution time -- while
-# `newton._src.solvers.mujoco.solver_mujoco._warn_if_mujoco_versions_mismatch`
-# reads newton's own METADATA at first solver construction and matches
-# `^mujoco(?=[<>=!~])([^;]+)`, which truncates at the `;` and so DISCARDS the
-# `extra == "sim"` marker. The pins are therefore unreachable by uv and binding
-# at import, which is why declaring them here is the only fix available on this
-# side: an unbounded resolve took mujoco and mujoco-warp to 3.12.0 against
-# newton 1.5.1 and warned, naming `.[examples]` -- newton's extra, not one of
-# ours -- as the remedy (#3012).
-#
-# The range moves with the pins rather than after them, because the requirement
-# is per newton MINOR and the ones the old `>=1.3.0,<2.0.0` admitted are
-# mutually exclusive: 1.3.0 requires `~=3.8.0`, 1.4.0 `~=3.10.0`, 1.5.0 and
-# 1.5.1 `~=3.11.0`. So no single mujoco pin satisfies that range and capping
-# MuJoCo alone cannot close this -- and for the same reason the cap here is a
-# MINOR one, deviating from the "cap the major" convention above. `<2.0.0` would
-# admit a newton 1.6 whose requirement is its own to choose, reopening this with
-# no edit to blame; a minor cap turns that into an unresolved bump somebody has
-# to look at. Both MuJoCo pins carry ONE series for one newton minor: capping
-# only `mujoco-warp` would leave the `mujoco` half of the warning standing.
-#
-# `mujoco` is named here rather than inherited because `[sim-mujoco]`'s
-# `>=3.5.0,<4.0.0` admits 3.12.0, so only the intersection narrows it. It stays
-# inside that range, so no `[sim-mujoco]`-only install is refused a version its
-# own extra allows, and `_MUJOCO_API_FLOOR` (3.5.0) is untouched -- this floor
-# is Newton's requirement, not an API floor of ours.
-#
-# Bumping newton means re-reading its `[sim]` extra and moving both MuJoCo pins
-# with it. tests/test_dependency_audit.py grades the shape that has to hold for
-# any such bump, so it cannot be half-applied.
-# The URDF long tail of robot_descriptions (84 descriptions with no MJCF) is
-# compiled into MuJoCo assets by strands_robots.assets.urdf. Meshes that MuJoCo
-# does not decode (Collada .dae above all) are converted with trimesh, which
-# reads Collada through pycollada. Without this extra a URDF whose meshes are
-# all STL/OBJ still builds; one that needs a conversion is refused with the
-# sentence that names the extra. The trimesh floor matches [sim-newton]'s;
-# the ceiling admits 5.x, which is what the loader was graded on.
-sim-urdf = [
-    "strands-robots[sim-mujoco]",
-    "trimesh>=4.0.0,<6.0.0",
-    "pycollada>=0.8,<1.0",
-    # 23 descriptions ship xacro and no URDF; robot_descriptions renders them
-    # with xacrodoc (which brings xacro and rospkg) on first use.
-    "xacrodoc>=2.0.0,<3.0.0",
-]
-sim-newton = [
-    "strands-robots[sim-mujoco]",
-    "newton>=1.5.0,<1.6.0",
-    "warp-lang>=1.14.0,<2.0.0",
-    "mujoco>=3.11.0,<3.12.0",
-    "mujoco-warp>=3.11.0,<3.12.0",
-    "trimesh>=4.0.0,<5.0.0",
-]
-# mjlab GPU-vectorized MuJoCo backend (mujocolab/mjlab: Isaac-Lab-shaped API
-# on MuJoCo-Warp, rsl_rl training, ONNX export). Selected via
-# create_simulation("mjlab", num_envs=N) / Robot(..., backend="mjlab"). Shares
-# newton's MuJoCo 3.11 pins (mjlab pins mujoco~=3.11 + mujoco-warp~=3.11).
-# GPU/heavy - kept OUT of `[all]`. Known conflict: mjlab needs torch>=2.14
-# while `[lerobot]` (lerobot>=0.6.1) caps torch<2.12, so the two extras do not
-# resolve together in one step; install `[lerobot]` first, then this extra
-# (the LeRobot v3 recorder still imports on torch 2.14). onnxruntime serves
-# the exported policies through strands_robots.policies.rsl_rl_onnx.
-sim-mjlab = [
-    "strands-robots[sim-mujoco]",
-    "mjlab>=1.6.0,<2.0.0",
-    "mujoco>=3.11.0,<3.12.0",
-    "mujoco-warp>=3.11.0,<3.12.0",
-    "warp-lang>=1.14.0,<2.0.0",
-    "onnxruntime>=1.17.0,<2.0.0",
-]
-# Isaac Sim GPU-native backend (NVIDIA Isaac Sim / Omniverse). Selected via
-# create_simulation("isaac") / Robot(..., backend="isaac"); the vendored
-# in-tree backend lives at strands_robots.simulation.isaac (parent epic #1144).
-# Provides photorealistic RTX rendering, synthetic-data generation, and
-# GPU-batched sensor simulation. GPU/heavy - kept OUT of `[all]` (like
-# sim-newton's spirit but even more so: Isaac Sim needs an RTX GPU + an
-# out-of-band Kit runtime).
-#
-# IMPORTANT: Isaac Sim itself is NOT installed by this extra. It is an Omniverse
-# Kit application provisioned separately - via the runtime's own pip wheels
-# (`pip install 'isaacsim[all,extscache]==6.0.*' --extra-index-url
-# https://pypi.nvidia.com`, viable on Python 3.12; the `extscache` extra is
-# required, and see docs/reference/simulation/isaac.md for the coverage-downgrade /
-# EULA / torch-bump caveats, #1803), the NVIDIA Omniverse Launcher,
-# Isaac Lab (`./isaaclab.sh -i`), or the NGC docker image
-# (`nvcr.io/nvidia/isaac-sim:6.0`; see
-# strands_robots/simulation/isaac/_install.py for the pinned image tag). Those
-# routes ship a complete, bootable Kit (Python 3.12 interpreter + the
-# full `isaacsim-*` / `isaacsim-extscache-*` extension set that `SimulationApp`
-# needs to boot). We still do NOT pin `isaacsim` here: the bare `isaacsim[all]`
-# metapackage is incomplete on its own (it omits the `isaacsim-extscache-*`
-# packages, so `SimulationApp` aborts resolving its extension graph), it needs
-# the NVIDIA extra index, and its transitive pins (coverage==7.4.4, a
-# torch/torchvision bump) would degrade every non-Isaac install of this extra.
-#
-# This extra pulls ONLY the pip-installable Python helpers the backend uses
-# out-of-band from an Isaac Sim install:
-#   * `usd-core` - pure-Python USD runtime used by the procedural scene
-#     builders / loaders (loaders.load_usd) even when Kit isn't booted. usd-core
-#     uses CalVer (25.x/26.x); per AGENTS.md `>=1.0` deps cap the major.
-#   * `imageio` / `imageio-ffmpeg` - rollout-video encoding.
-#   * `mujoco` / `mink` / `qpsolvers[daqp]` - the IK stack `move_to` solves on.
-# All heavy omni/isaacsim imports stay lazy - installing this extra never
-# imports Isaac Sim.
-sim-isaac = [
-    "strands-robots[sim]",
-    "usd-core>=25.5,<27.0.0",
-    "imageio>=2.28.0,<3.0.0",
-    "imageio-ffmpeg>=0.4.0,<1.0.0",
-    # `move_to` is in this backend's action enum, and isaac/motion_primitives.py
-    # solves its IK on a mujoco.MjModel of the loaded description through the
-    # same MinkIKBridge as [sim-mujoco] - so the solver stack ships here too,
-    # with the same bounds and the same `[daqp]` backend reasoning (see
-    # [sim-mujoco]). Isaac Sim 6.1's own wheels pin mujoco==3.11.0, inside this
-    # range.
-    "mujoco>=3.5.0,<4.0.0",
-    "mink>=0.0.4",
-    "qpsolvers[daqp]>=4.0.0",
-]
-# 3D Gaussian Splatting hybrid rendering (strands_robots.rendering:
-# GsplatBackground + HybridCompositor). GPU/heavy - kept OUT of `[all]`
-# (sim-isaac precedent).
-#
-# IMPORTANT: `gsplat` ships to PyPI as a source distribution that JIT-compiles
-# its CUDA kernels with `nvcc` on FIRST USE (same supply-chain class as cuRobo
-# above). On a box with a CUDA *runtime* but no CUDA *toolkit* - e.g. the
-# Isaac Sim container - `pip install gsplat` succeeds and imports fine, yet the
-# first rasterization call fails ("No CUDA toolkit found"). Call
-# `strands_robots.rendering.gsplat_rasterizer_available()` to probe an install
-# before relying on it, or install a pre-built wheel from the gsplat wheel
-# index (ships compiled kernels, no nvcc needed):
-# https://docs.gsplat.studio/main/installation.html
-# `PanoramaBackground` is the zero-GPU-dep fallback; torch is pinned without a
-# CUDA constraint (the probe fails loud on CPU-only builds instead of dying
-# deep inside the first frame).
-sim-gs = [
-    "gsplat>=1.4.0,<2.0.0",
-    "plyfile>=1.0.0,<2.0.0",
-    "torch>=2.2.0,<3.0.0",
-]
-# Peer-to-peer robot mesh. The floor is set by the wire-level source
-# attribution the safety handlers depend on: `zenoh.SourceInfo` (publisher
-# side) and `Sample.source_info` (receiver side) both first ship in
-# eclipse-zenoh 1.6.1. Every release from 1.0.0 through 1.5.1 exposes
-# neither, so a resolve there silently drops the cross-session forgery
-# defence, and a receiver on such a release refuses an e-stop published by
-# a capable peer. See
-# tests/test_zenoh_floor_ships_wire_source_attribution.py, which owns the
-# measurement and fails if the mesh reaches for a newer zenoh name without
-# raising this floor.
-mesh = [
-    "eclipse-zenoh>=1.6.1,<2.0.0",
-    "json5>=0.9.0,<1.0.0",
-    # Ed25519 resume assertions (strands_robots.mesh.resume_authority).
-    "cryptography>=50.0.0",
-]
-# AWS IoT Core integration for the mesh - MQTT5/mTLS transport, Device
-# Shadow mirror, S3 camera offload, account-wide bootstrap (Rules /
-# Lambda / DynamoDB / Fleet Provisioning template). Requires:
-#   * awsiotsdk (high-level MQTT5 + mTLS client builder)
-#   * awscrt    (low-level CRT runtime; pulled in by awsiotsdk but pinned
-#                here for transitive predictability)
-#   * boto3     (used for IoT control-plane provisioning + S3 frame upload,
-#                and the SigV4 leg of AWS IoT Core Direct Messaging)
-#   * botocore  (boto3 pins it 1:1; floored explicitly because the floor is
-#                about ITS service model: 1.43.17 is the first release whose
-#                iot-data model carries SendDirectMessage. An older pair
-#                raises ParamValidation-free AttributeError on the call.)
-mesh-iot = [
-    "strands-robots[mesh]",
-    "awsiotsdk>=1.21.0,<2.0.0",
-    "awscrt>=0.20.0,<1.0.0",
-    "boto3>=1.43.17,<2.0.0",
-    "botocore>=1.43.17,<2.0.0",
-]
-# Device Connect - device-aware networking layer (discovery, RPC, events,
-# safety). The primary transport in server mode; when this extra is not
-# installed, robot_mesh() falls back to the built-in Zenoh mesh.
-device-connect = [
-    "device-connect-edge>=0.2.0",
-    "device-connect-agent-tools>=0.1.0",
-]
-# ROS 2 bridge for the use_ros tool (strands_robots/tools/use_ros.py). The tool
-# runs entirely in-process through rclpy - no `ros2` CLI shelling, no docker. It
-# needs `rclpy` + `rosidl_runtime_py` importable in the interpreter, which means
-# a sourced system ROS 2 distro (e.g. `source /opt/ros/jazzy/setup.bash`).
-# Those core client libraries are NOT distributed on PyPI - they ship with the
-# system ROS 2 install (apt / RoboStack / conda) and cannot be `pip install`ed.
-# So, like the [curobo] extra, this stays minimal: it pulls only the
-# pip-installable cyclonedds Python binding (a DDS RMW rclpy can use). Installing
-# this extra does NOT by itself provision ROS 2 - source a real distro first.
-# The ceiling admits the 11.x series because that is where the wheels are:
-# cyclonedds publishes cp37-cp310 wheels up to 0.10.5 and cp310-cp313 wheels from
-# 11.0.1, so under `requires-python = ">=3.12"` every version below 11 resolves
-# to the sdist, whose build needs a CycloneDDS C install (`CYCLONEDDS_HOME`).
-# A ceiling below 11 therefore contradicts the "self-contained pip wheel" this
-# extra exists to deliver. That wheel exists for macOS, Windows and Linux x86_64
-# only: no cyclonedds release publishes a linux aarch64 wheel, so on a Jetson /
-# onboard PC the extra resolves to the sdist and needs a Cyclone DDS C install
-# (CYCLONEDDS_HOME) - docs/reference/rtps-integration.md#linux-aarch64-jetson.
-# `tests/test_lockfile_parity_gate.py` pins that the locked artifact is a wheel,
-# since a resolution inside the declared bounds is what `uv lock --check` grades.
-ros2 = [
-    "cyclonedds>=0.10.2,<12",
-]
-# Local-LLM agent path (no API key / no AWS -- the natural choice on an edge
-# device): strands.models.ollama.OllamaModel does a top-level `import ollama`.
-# Delegate to strands-agents' own [ollama] extra (bounded pin, ollama>=0.4.8,<1.0.0)
-# so the client version stays in sync with the code that imports it.
-ollama = [
-    "strands-agents[ollama]>=1.57.2,<2.0.0",
-]
-# Live Foxglove view and MCAP recording (strands_robots/foxglove/). foxglove-sdk
-# is a Rust wheel (abi3, about 16 MB) that serves the Foxglove WebSocket
-# protocol and writes MCAP; mcap is the pure-Python reader used to verify a
-# file independently of the writer. The ceiling admits 0.25 to 0.27 so the
-# extra resolves next to lerobot[viz], which pins foxglove-sdk>=0.25.1,<0.26.0;
-# widen both together or the two extras stop installing into one environment.
-foxglove = [
-    "foxglove-sdk>=0.25.1,<0.28.0",
-    "mcap>=1.5.0,<2.0.0",
-]
-# Remote policy inference (client/server split): stream observations from a
-# CPU/edge robot host to a remote GPU PolicyServer and receive action chunks
-# back over a portable WS-JSON WebSocket protocol. Pulls only `websockets`
-# (numpy-version agnostic, so it composes with lerobot's numpy>=2). See
-# strands_robots/inference/ and docs/reference/inference/remote.md.
-inference = [
-    # See [cosmos3-service]: 17.0 is where `Server.shutdown()` starts closing
-    # the connections it accepted, which is what makes `PolicyServer.stop()`
-    # stop the server *serving*; 17.1 adds the `connect(..., legacy=True)` flag
-    # RemotePolicy holds its connection with, and both extras must declare the
-    # same floor.
-    "websockets>=17.1",
-]
-# rosbridge WebSocket transport: drive ROS1 (or remote ROS 2) robots from a host
-# with no ROS install at all. Pure-pip `roslibpy` speaks the rosbridge JSON
-# protocol over a WebSocket. See strands_robots/tools/use_rosbridge.py and
-# docs/reference/rosbridge-integration.md.
-rosbridge = [
-    "roslibpy>=1.7.0,<2.0.0",
-]
-# SageMaker trainer transport (strands_robots/training/sagemaker.py): submit a
-# TrainSpec as a managed AWS training job wrapping a containerized trainer
-# image. Needs only boto3 (CreateTrainingJob / DescribeTrainingJob) - the heavy
-# `sagemaker` Python SDK is deliberately NOT pulled in, because the provider is
-# transport-only and the low-level API is all it speaks. Same boto3 bounds as
-# [mesh-iot] (>=1.0 dep: cap the major).
-sagemaker = [
-    "boto3>=1.34.0,<2.0.0",
-]
-# The operator dashboard (``strands_robots.dashboard``) is a FastAPI + WebAuthn
-# app served with uvicorn. ``[tool.hatch.build.targets.wheel]`` packages
-# ``strands_robots`` entire, so the dashboard modules ship in every install while
-# these five do not -- this extra is what makes them reachable, and
-# ``strands_robots/dashboard/__init__.py`` names it in the refusal a caller gets
-# without it, rather than letting a bare ModuleNotFoundError read as a broken env.
-#
-# PyJWT is here because ``auth`` signs and verifies the operator session token
-# with it. It is absent from every other extra and from the core dependencies, so
-# without this line the only copy in a developer environment arrives transitively
-# through an unrelated package -- which is why the gap survived local runs.
-dashboard = [
-    "fastapi>=0.110,<1.0",
-    # [standard] carries websockets, which every /ws/* route needs; without it uvicorn answers 404.
-    "uvicorn[standard]>=0.27,<1.0",
-    "webauthn>=2.0,<4.0",
-    "python-multipart>=0.0.9,<1.0",
-    "PyJWT>=2.0,<3.0",
-    # The device roster: serial ports for arms, cameras for previews and recording.
-    "strands-robots[serial]",
-    "opencv-python-headless>=4.8,<5.0",
-    # The Train and Policies tabs search the Hub for LeRobot datasets and
-    # checkpoints. Floor: see the [wbc] comment.
-    "huggingface_hub>=1.5,<2.0.0",
-]
-# The dashboard's voice operator (``strands_robots.dashboard.voice``): the
-# bidirectional-streaming agent (``strands.bidi``) and its two speech-to-speech
-# backends, Nova Sonic and OpenAI Realtime. Separate from [dashboard] because
-# ``[bidi]`` pulls the Bedrock runtime SDK, which an operator who never opens
-# the microphone should not have to install; the /ws/voice route refuses with
-# this extra's name when it is absent. Not a member of [all]: [bidi] pins awscrt
-# to one exact release and [mesh-iot]'s awsiotsdk to another, so the bundle
-# would not resolve. The OpenAI backend needs only
-# ``websockets``, which [inference] floors at >=17.1 (strands' own
-# ``bidi-openai`` extra would cap it below 17). Gemini Live is not offered:
-# its SDK, google-genai, caps websockets below 17 as well, so it cannot be
-# installed next to this package.
-voice = [
-    "strands-agents[bidi]>=1.57.2,<2.0.0",
-]
-all = [
-    "strands-robots[moveit2]",
-    "strands-robots[lerobot]",
-    "strands-robots[sim-mujoco]",
-    "strands-robots[sim-urdf]",
-    "strands-robots[rl]",
-    "strands-robots[mesh]",
-    "strands-robots[mesh-iot]",
-    "strands-robots[device-connect]",
-    "strands-robots[wbc]",
-    "strands-robots[holosoma]",
-    "strands-robots[kimodo]",
-    "strands-robots[protomotions]",
-    "strands-robots[molmoact2]",
-    "strands-robots[smolvla]",
-    "strands-robots[groot]",
-    "strands-robots[ollama]",
-    "strands-robots[inference]",
-    "strands-robots[foxglove]",
-    "strands-robots[rby1]",
-    "strands-robots[rosbridge]",
-    "strands-robots[sagemaker]",
-    "strands-robots[earthrover]",
-    "strands-robots[xarm]",
-    "strands-robots[spot]",
-    "strands-robots[serial]",
-    "strands-robots[dashboard]",
-    # Not [voice]: strands-agents[bidi] pins awscrt to one exact release through
-    # aws-sdk-bedrock-runtime[awscrt], and awsiotsdk ([mesh-iot]) pins awscrt to
-    # a different exact release, so the two extras cannot resolve into one
-    # environment. Voice is installed on its own, next to [dashboard].
-]
-dev = [
-    "pytest>=6.0,<10.0.0",
-    "pytest-cov>=4.0.0,<6.0.0",
-    "ruff>=0.15.12,<0.16.0",
-    "mypy>=1.0.0,<2.0.0",
-    "pytest-timeout>=2.0.0,<3.0.0",
-    # The suite runs in one process; the plugin is here so the cells that grade
-    # a distributed session (tests/test_session_truncation_is_reported.py) can
-    # spawn one. Installing it does not distribute anything on its own. It is
-    # pinned again in [tool.hatch.envs.default].dependencies, because that list
-    # -- not this extra -- is what `hatch run test` installs.
-    "pytest-xdist>=3.0.0,<4.0.0",
-]
-
-[project.scripts]
-strands-robots = "strands_robots.__main__:main"
-
-[project.urls]
-Homepage = "https://github.com/strands-labs/robots"
-Documentation = "https://github.com/strands-labs/robots#readme"
-Repository = "https://github.com/strands-labs/robots.git"
-Issues = "https://github.com/strands-labs/robots/issues"
-Changelog = "https://github.com/strands-labs/robots/releases"
+mujoco = ["mujoco>=3.3.4"]
+feetech = ["pyserial>=3.5"]
+# ONNX policies (holosoma, microduck presets): CPU inference, weights fetched from the Hugging Face Hub.
+onnx = ["onnxruntime>=1.18", "huggingface_hub>=0.24"]
+# LeRobot policies, local or over Zenoh (Python 3.12). remote_inference is on LeRobot main only (0.6.1 on PyPI
+# predates it) and a wheel cannot carry a git reference, so LeRobot itself is installed by hand: see _extras.LEROBOT.
+# zenoh <1.11: the range LeRobot main's `remote` extra resolves, so installing both never downgrades it.
+lerobot = ["eclipse-zenoh>=1.9.0,<1.11.0 ; python_version >= '3.12'"]
+# GPU worlds (CUDA). Measured on an L40S with isaacsim 6.1.0 (index https://pypi.nvidia.com), mujoco-warp 3.11.0,
+# warp-lang 1.19 and mujoco 3.11.
+isaac = ["isaacsim[all,extscache]>=6.1,<6.2 ; python_version >= '3.12'"]
+newton = ["mujoco-warp>=3.11", "warp-lang>=1.10"]
+# robot.tool / sim.tool: the strands agent tool generated from the manifest (pillow encodes the images it returns).
+tools = ["strands-agents>=1.0", "pillow>=10"]
+# The mesh over zenoh (peer mode, zero config on a LAN). Same pin as above.
+mesh = ["eclipse-zenoh>=1.9.0,<1.11.0", "cryptography>=42"]
+# The mesh over AWS IoT Core (Direct Messaging for rpcs, MQTT for state).
+iot = ["awsiotsdk>=1.31", "boto3>=1.43.17", "cryptography>=42"]  # cryptography: the local CSR with CN=<device id>
+# The dashboard: a loopback web server and the world in a browser tab (the page's chat also needs [tools]).
+dashboard = ["fastapi>=0.115", "uvicorn>=0.35", "websockets>=13"]
+# The dashboard's voice (WS /ws/voice): a strands BidiAgent (strands.bidi, 1.62+) on OpenAI gpt-realtime-2. Amazon Nova
+# Sonic also needs `strands-agents[bidi]` (Bedrock's event stream), installed by hand: it pins an awscrt older than
+# awsiotsdk's, so with [iot] put `awscrt>=0.36` back after it.
+voice = ["strands-agents>=1.62", "websockets>=13"]
+# Everything that installs from PyPI on any machine (the GPU extras isaac/newton are their own lines, LeRobot is
+# _extras.LEROBOT): `uv pip install -e ".[all]"`.
+all = ["strands-robots[mujoco,feetech,onnx,lerobot,tools,mesh,iot,dashboard,voice]"]
+dev = ["pytest>=8", "pytest-timeout", "ruff>=0.6", "mypy>=1.10", "import-linter>=2.1", "onnx>=1.16", "moto[iot]>=5"]
 
 [tool.hatch.version]
-source = "vcs"
-
-# The version is read from the nearest tag. Without the --match, git describe
-# picks the nearest tag containing ANY digit, and a clone that also carries a
-# fork's artifact tags (artifact-902-action-keys, artifacts-pc020-obstruction,
-# ...) fails to build outright: "Can't parse version from tag". Only release
-# tags (v0.5.1) carry a version, so only they are candidates.
-[tool.hatch.version.raw-options]
-git_describe_command = ["git", "describe", "--dirty", "--tags", "--long", "--match", "v[0-9]*"]
+path = "strands_robots/__init__.py"
 
 [tool.hatch.build.targets.wheel]
 packages = ["strands_robots"]
 
 [tool.hatch.envs.default]
-installer = "uv"
-features = ["all"]
-# Development tooling only. `features = ["all"]` above installs the project and
-# every extra the bundle folds in, so a runtime distribution named here would be
-# a second copy of a bound that can drift from the one an install resolves --
-# with this environment (which is what `hatch run test` runs) staying green over
-# the drift. Pillow, msgpack, pyzmq and requests were such copies; they are
-# declared in [project.dependencies] and the [moveit2] and
-# [earthrover] extras respectively. Graded by
-# tests/test_earthrover_http_extra_is_declared.py.
-dependencies = [
-    "pytest>=6.0,<10.0.0",
-    "pytest-cov>=4.0.0,<6.0.0",
-    "pytest-timeout>=2.0.0,<3.0.0",
-    # Spawned, never inherited: the cells in
-    # tests/test_session_truncation_is_reported.py run a nested `pytest -n 2`,
-    # and without the plugin in this environment that run exits 4 on
-    # `unrecognized arguments: -n` with nothing on stdout. Same bound as [dev].
-    "pytest-xdist>=3.0.0,<4.0.0",
-    "ruff>=0.15.12,<0.16.0",
-    "mypy>=1.0.0,<2.0.0",
-]
-
-# ---------------------------------------------------------------------------
-# uv resolution overrides.
-#
-# lerobot 0.6 declares platform-correct torch/torchvision/torchcodec markers
-# (torch>=2.7,<2.12; on linux aarch64 its `torchcodec>=0.11,<0.12` marker pulls
-# torch 2.11 -- the build that fixes the NVIDIA Thor/Jetson sm_110 cuBLAS bug
-# that afflicts torch 2.10), so the whole torch/torchvision/torchcodec stack
-# resolves ABI-consistently on every platform (torch 2.11 + torchcodec 0.11.x +
-# torchvision 0.26) with NO strands torch override. Paired with
-# UV_TORCH_BACKEND=auto below, a Thor `hatch env` resolves the +cu130 wheels and
-# inference runs on GPU. The sole remaining override is the diffusers security
-# floor.
-[tool.uv]
-# [voice] and [mesh-iot] each pin awscrt to a different exact release (through
-# aws-sdk-bedrock-runtime[awscrt] and awsiotsdk), so no one environment holds
-# both; declaring the conflict lets the universal lock resolve each on its own.
-# [sim-mjlab] reaches websockets<17 through mjlab's viser viewer, while
-# [inference] and [cosmos3-service] floor websockets at 17.0 (a measured
-# behaviour floor, see those extras), so no one environment holds mjlab next
-# to either of them or to [all]; declaring the conflicts lets the universal
-# lock resolve each on its own. mjlab still installs next to [sim-mujoco],
-# [lerobot] and [dev], which is what its tests and the recorder need.
-conflicts = [
-    [
-        { extra = "voice" },
-        { extra = "mesh-iot" },
-    ],
-    [
-        { extra = "voice" },
-        { extra = "all" },
-    ],
-    [
-        { extra = "sim-mjlab" },
-        { extra = "inference" },
-    ],
-    [
-        { extra = "sim-mjlab" },
-        { extra = "cosmos3-service" },
-    ],
-    [
-        { extra = "sim-mjlab" },
-        { extra = "all" },
-    ],
-    [
-        { extra = "stretch" },
-        { extra = "sim-mjlab" },
-    ],
-]
-# SECURITY floors for transitive packages. Each of these arrives only through
-# another dependency (cbor2/ujson under autobahn, twisted under roslibpy,
-# pyopenssl under twisted), so nothing in [project] declares a version for
-# them and the resolver is free to pick any release the graph allows --
-# including one inside a HIGH advisory range. A constraint bounds a transitive
-# without claiming it as a direct dependency, and unlike an override it fails
-# the resolution loudly if something genuinely requires less, which is the
-# wanted behaviour for a security floor.
-#
-# Each floor is the first version that clears every HIGH/CRITICAL advisory for
-# that package, not the version currently resolved: the floor states the
-# requirement, so it stays correct as the resolution moves.
-constraint-dependencies = [
-    # GHSA-3c37-wwvx-h642 (HIGH): uncontrolled recursion DoS in cbor2.loads, <= 5.8.0.
-    "cbor2>=5.9.0",
-    # GHSA-grgv-6hw6-v9g4 (HIGH): twisted.names DNS compression-pointer DoS,
-    # <= 25.5.0. First patched in 26.4.0rc2; 26.4.0 is the first stable release
-    # that clears it, and a floor at the rc would admit a prerelease.
-    "twisted>=26.4.0",
-    # GHSA-c38f-wx89-p2xg (HIGH): memory leak in ujson.dump() on write failure, <= 5.12.0.
-    "ujson>=5.12.1",
-    # GHSA-5pwr-322w-8jr4 (HIGH): DTLS cookie-callback buffer overflow, >= 22.0.0 < 26.0.0.
-    "pyopenssl>=26.0.0",
-    # GHSA-284h-m62q-gf8w (CRITICAL) + sixteen HIGH option-injection / file
-    # disclosure advisories in GitPython <= 3.1.58 (under robot-descriptions);
-    # 3.1.59 clears the whole series.
-    "gitpython>=3.1.59",
-    # GHSA-82r6-8w77-94w6 (CRITICAL): TLSStream IDNA 2003 host-name encoding
-    # defeats certificate checks, < 4.14.2 (under httpx / mcp / starlette).
-    "anyio>=4.14.2",
-    # GHSA-g6cj-pr64-35w5 (HIGH): PKCS#7 EnvelopedData Bleichenbacher oracle,
-    # >= 44.0.0 < 50.0.0 (under autobahn / pyjwt / pyopenssl / webauthn).
-    "cryptography>=50.0.0",
-    # GHSA-cq5v-8q36-5273 (HIGH): OOB heap read in the C response parser,
-    # <= 3.14.2 (under fsspec).
-    "aiohttp>=3.14.3",
-    # GHSA-vj7q-gjh5-988w (HIGH): WebSocket server transport skips Host /
-    # Origin validation, < 1.28.1 (under strands-agents).
-    "mcp>=1.28.1",
-    # GHSA-h35f-9h28-mq5c (MEDIUM): MANIFEST.in exclusion bypass via Unicode
-    # normalisation, < 83.0.0. lerobot 0.6.1 caps setuptools < 82.0.0, so the
-    # real floor lives in override-dependencies below, which replaces that cap.
-    "setuptools>=83.0.0",
-    # GHSA-xrqw-3rrv-vx5w (HIGH, transformers < 5.10.0) is floored the same
-    # way (override-dependencies, since lerobot[transformers-dep] caps < 5.6.0).
-    # GHSA-rrmf-rvhw-rf47 (LOW, torch <= 2.12.1, torch.jit.script memory
-    # corruption) is floored there too, with the torchvision and torchcodec
-    # releases built against that torch.
-    # GHSA-hxp9-w8x3-p566 (MEDIUM): permessage-deflate bypasses
-    # maxMessagePayloadSize, < 26.7.1 (under roslibpy).
-    "autobahn>=26.7.1",
-    # GHSA-8988-9cw3-xx77 (HIGH): HTTPS proxy TLS configuration ignored or
-    # overridden; GHSA-vxq7-64xx-v4gw (HIGH): read_chunked() buffers an unbounded
-    # chunk-size line; GHSA-gh4c-6fx4-qh6g (MEDIUM): chunked Deflate streaming
-    # infinite loop. All < 2.8.0 (under botocore / requests).
-    "urllib3>=2.8.0",
-    # GHSA-27vj-qcqg-25rc (HIGH): server-side template injection in
-    # ReferenceFileSystem lets a crafted reference spec run code, < 2026.6.0
-    # (under datasets / huggingface-hub / torch).
-    "fsspec>=2026.6.0",
-    # GHSA-54p9-h82j-f925 (MEDIUM): reference leak in the C extension on
-    # update paths, < 6.9.1 (under aiohttp / yarl).
-    "multidict>=6.9.1",
-]
-override-dependencies = [
-        # SECURITY + CAPABILITY: diffusers <0.36 is vulnerable to a GHSA
-    # trust_remote_code bypass + a TOCTOU RCE (fixed in 0.38.0). uv *overrides*
-    # replace a requirement rather than intersecting with it, so this pin is the
-    # effective floor for the whole resolution and must not fall below the
-    # cosmos3-diffusers extra's own floor - at 0.38.0 it silently discarded that
-    # floor and locked a diffusers carrying no Cosmos3OmniPipeline. 0.39 clears
-    # both bounds (the CVE fix landed in 0.38.0; the pipeline first ships in
-    # 0.39.0). diffusers is only exercised by the cosmos3-diffusers extra
-    # (Cosmos3Policy backend="diffusers"); lerobot core does not import it.
-    "diffusers>=0.39",
-    # SECURITY: GHSA-h35f-9h28-mq5c (setuptools < 83.0.0) and
-    # GHSA-xrqw-3rrv-vx5w (transformers < 5.10.0, save_pretrained path
-    # traversal through chat template names). lerobot 0.6.1 caps setuptools
-    # < 82.0.0 and transformers < 5.6.0 (transformers-dep extra), and 0.6.1 is
-    # its newest release, so a plain floor cannot resolve. The override
-    # replaces lerobot's caps; verified 2026-09-28 on transformers 5.17.0 /
-    # setuptools 84.0.0: lerobot 0.6.1 imports, SmolVLA (lerobot/smolvla_base)
-    # and ACT rollouts drive the MuJoCo so101, tests/policies/lerobot_local
-    # and tests/test_robot_factory.py pass. Drop both lines when lerobot lifts
-    # the caps.
-    "setuptools>=83.0.0",
-    "transformers>=5.10.0",
-    # SECURITY: GHSA-rrmf-rvhw-rf47 (torch <= 2.12.1, memory corruption in
-    # torch.jit.script; strands_robots never calls it). lerobot 0.6.1 caps
-    # torch < 2.12.0 and torchvision < 0.27.0, so the same override lifts the
-    # three wheels that must move together (torchvision and torchcodec are
-    # built against one torch). Verified 2026-09-28 on torch 2.14.0 /
-    # torchvision 0.29.0 / torchcodec 0.16.0: SmolVLA and ACT rollouts, and
-    # record -> LeRobotDataset read-back (torchcodec decode) -> replay, all
-    # pass on macOS arm64. Drop when lerobot lifts the caps.
-    "torch>=2.13.0",
-    "torchvision>=0.28.0",
-    "torchcodec>=0.13.0",
-    # SECURITY: GHSA-379c-qx7v-6h59 / CVE-2026-66007 (MEDIUM, datasets < 5.0.1):
-    # the folder-based builders join an unvalidated ``file_name`` metadata
-    # field onto the dataset directory, so a crafted dataset reads arbitrary
-    # local files into save_to_disk / push_to_hub output. lerobot 0.6.1 (its
-    # newest release, and its main branch) caps datasets < 5.0.0 through the
-    # [dataset] extra, so a plain floor cannot resolve; the override replaces
-    # that cap. strands_robots never touches the folder builders (LeRobotDataset
-    # reads parquet + video), so the only behaviour change 5.0 brings is
-    # IterableDataset.shuffle buffering from several input shards. Drop when
-    # lerobot lifts the cap.
-    "datasets>=5.0.1",
-]
-
-# Auto-select the right PyTorch wheel for the host accelerator. On NVIDIA
-# Thor / Jetson (linux + aarch64) the plain-PyPI torch wheel is CPU-ONLY, so
-# torch.cuda.is_available() is False and all inference silently runs on CPU.
-# "auto" makes uv probe the local driver/SoC and resolve the matching build
-# (e.g. +cu130 on Thor) WITHOUT changing the pinned version.
-#
-# IMPORTANT: uv's "auto" detection is HOST-based, not target-platform based.
-# If "auto" is hardcoded here it contaminates EVERY resolution -- including
-# x86 CI -- with the build host's CUDA variant. On a Thor that means x86 CI
-# resolves +cu130 wheels (proven: `uv pip compile --python-platform
-# x86_64-unknown-linux-gnu` yields torchcodec==0.10.0+cu130), which cannot
-# import on the GPU-less runner, so tests/conftest.py silently falls back to
-# the numpy torch mock and torch-dependent tests break.
-#
-# So we INHERIT the value from the process env and only DEFAULT to "auto":
-#   - Thor/Jetson dev: nothing set -> "auto" -> GPU wheels.
-#   - x86 CI: workflow exports UV_TORCH_BACKEND=cpu -> CPU wheels, importable.
-# A hatch pyproject env-var normally OVERRIDES the process env; the
-# {env:VAR:default} form is what lets the process value win.
-[tool.hatch.envs.default.env-vars]
-UV_TORCH_BACKEND = "{env:UV_TORCH_BACKEND:auto}"
+features = ["dev", "mujoco", "onnx", "mesh", "tools", "iot", "dashboard"]
 
 [tool.hatch.envs.default.scripts]
-# The unit suite distributes over the cores, one worker per file. The flags
-# live on this script and not in `[tool.pytest.ini_options].addopts`, which
-# every pytest invocation rooted here inherits: `tests_integ/` binds fixed
-# ports, named containers, one GPU and physical serial buses, so two of its
-# files in flight at once is two writers on one arm. `test-integ` and a bare
-# `pytest` therefore stay in one process; pinned by
-# tests/test_the_suite_distributes_only_where_it_measured.py.
-#
-# `logical` and not `auto`: with psutil importable (it is, through the
-# `lerobot` extra `all` folds in) xdist resolves `auto` to
-# `psutil.cpu_count(logical=False)`, the PHYSICAL core count, and the
-# `ubuntu-latest` pool mixes two-core VMs with one-core/two-thread VMs. On the
-# second kind `auto` is one worker - measured on one such runner, 9,456 tests
-# with coverage on: `-n auto` -> `created: 1/1 worker`, 249.08 s at 48% CPU;
-# `-n logical` -> `created: 2/2 workers`, 118.57 s at 101% CPU - which puts the
-# required check back in the 60-minute reap band #3869 exists to leave.
-# `logical` reads the CPUs the kernel schedules on, so it is 2 on both kinds.
-#
-# `--maxprocesses=2` is the ceiling that keeps `logical` a FLOOR: on a
-# two-core/four-thread runner `logical` is 4, and four workers do not finish
-# this suite - three consecutive attempts of one commit were killed mid-session
-# with "the runner has received a shutdown signal" at 85%, 17 min and 98%, each
-# reporting `created: 4/4 workers`, where every completed run of the same suite
-# had two. Two is the measured count, and the cap says so without taking
-# `logical`'s floor away from a one-core/two-thread runner.
-#
-# `scripts/select_tests.py` hands every argument to pytest unchanged, except on a
-# pull_request event with no test path named: there it adds the test files the
-# change reaches and `--no-cov`; a push to main runs the whole suite (#3818,
-# "CI on a PR <= 12 min"). The script's docstring says what "reaches" means.
-test = "python scripts/select_tests.py -n logical --maxprocesses=2 --dist loadfile {args:tests}"
-test-integ = "pytest tests_integ/ -v --timeout=300 {args}"
-lint = ["ruff check strands_robots tests tests_integ", "ruff format --check strands_robots tests tests_integ", "mypy strands_robots tests tests_integ"]
+lint = [
+    "ruff check strands_robots tests tests_integ",
+    "ruff format --check strands_robots tests tests_integ",
+    "mypy strands_robots",
+    "lint-imports",
+]
 format = ["ruff check --fix strands_robots tests tests_integ", "ruff format strands_robots tests tests_integ"]
-# Whole-tree graders a diff-scoped selector cannot see. Runs the tests whose
-# input is the rest of the repository rather than the file under change
-# (docstring xref roles, host-path literals, dependency audit, agent-tool
-# parameter descriptions, del-precedes-body, test-module names). Fixed roster,
-# no arguments -
-# the script is the safety net for a narrow local pytest run that would
-# otherwise ship a defect one of these graders would catch on CI. See
-# scripts/check_whole_tree_graders.py and issue #2940.
-whole-tree-check = "python scripts/check_whole_tree_graders.py"
+test = "pytest {args}"
+
+# The LeRobot policy tests need the [lerobot] extra (torch, Python 3.12): `hatch run lerobot:test`.
+[tool.hatch.envs.lerobot]
+python = "3.12"
+features = ["dev", "mujoco", "lerobot"]
+dependencies = ["lerobot[remote,feetech,dataset] @ git+https://github.com/huggingface/lerobot@53feaef37b67e8f4c23b6953e880ff535e39d6fe"]
+
+[tool.hatch.envs.lerobot.scripts]
+test = "pytest tests/policy tests/recording tests/test_policy_factory.py tests/test_units_lerobot_modes.py tests/test_units_lerobot_calibrated.py {args}"
 
 [tool.ruff]
 line-length = 120
-target-version = "py312"
+target-version = "py310"
 
 [tool.ruff.lint]
-select = [
-    "E",     # pycodestyle errors
-    "W",     # pycodestyle warnings
-    "F",     # pyflakes
-    "I",     # isort
-    "UP",    # pyupgrade
-    # Two flake8-bugbear codes, selected individually rather than as "B".
-    # They carry the no-op-statement capability that CodeQL's
-    # py/ineffectual-statement used to nominally provide before
-    # .github/codeql/codeql-config.yml filtered it (#1810): every one of that
-    # rule's 27 alerts was a `...` typing-construct body, which ruff exempts,
-    # so the rule reported only unavoidable idioms while the real bug class
-    # went unenforced by any merge-blocking check. Ruff is that check here.
-    "B015",  # useless comparison - `x == 1` as a statement, the real bug class
-    "B018",  # useless expression - a value computed and discarded
-    # The pydocstyle PRESENCE rules, and only those. A public surface with no
-    # docstring at all is the one docstring defect a caller cannot work around:
-    # there is nothing to read but the source. This was previously asserted by
-    # fourteen copies of one AST walk under tests/, one per package, and the
-    # copies covered fourteen of the package's forty-one directories - all
-    # twenty-two undocumented surfaces they were meant to catch sat in a
-    # directory none of them walked (dashboard/, rtps/idl/, tools/g1/). Selected
-    # here instead, so the rule is enforced over the whole package by the
-    # merge-blocking lint gate. The FORMAT rules (D205 summary layout, D401
-    # imperative mood, D413 section spacing, ...) are deliberately NOT selected:
-    # 2,051 findings, none of them a missing docstring.
-    "D100",  # undocumented public module
-    "D101",  # undocumented public class
-    "D102",  # undocumented public method
-    "D103",  # undocumented public function
-    "D106",  # undocumented public nested class
-]
-ignore = [
-    "E501",  # line too long - handled by formatter
-]
-
-[tool.ruff.lint.per-file-ignores]
-# The presence rules govern the PACKAGE's public surface - what a caller reads
-# to drive the API. A test, an example script and a repo helper are read as
-# whole files by whoever edits them, their names are already sentences (graded
-# by tests/test_test_case_names_describe_behaviour.py), and the fourteen guards
-# these rules replace scanned strands_robots/ alone, so the scope is unchanged.
-"tests/**" = ["D100", "D101", "D102", "D103", "D106"]
-"tests_integ/**" = ["D100", "D101", "D102", "D103", "D106"]
-"examples/**" = ["D100", "D101", "D102", "D103", "D106"]
-"scripts/**" = ["D100", "D101", "D102", "D103", "D106"]
-".github/scripts/**" = ["D100", "D101", "D102", "D103", "D106"]
-
-[tool.ruff.lint.isort]
-known-first-party = ["strands_robots"]
-
-[tool.ruff.format]
-quote-style = "double"
-indent-style = "space"
+select = ["E", "F", "I", "UP", "B"]
 
 [tool.mypy]
 python_version = "3.12"
-warn_return_any = true
-warn_unused_configs = true
-disallow_untyped_defs = true
-ignore_missing_imports = false
-
-# Third-party libs without type stubs
-[[tool.mypy.overrides]]
-module = ["lerobot.*", "tyro", "draccus.*", "msgpack.*", "websockets", "websockets.*", "zmq.*", "huggingface_hub.*", "serial.*", "psutil.*", "torch.*", "torchvision.*", "transformers.*", "einops.*", "robot_descriptions.*", "mujoco.*", "imageio.*", "pyarrow", "pyarrow.*", "zenoh.*", "boto3", "boto3.*", "awscrt", "awscrt.*", "awsiot", "awsiot.*", "botocore.*", "strands_robots.policies.cosmos3._msgpack_numpy", "diffusers", "diffusers.*", "accelerate", "accelerate.*", "openpi_client", "openpi_client.*", "openpi_server", "openpi_server.*", "openpi", "openpi.*", "device_connect_edge", "device_connect_edge.*", "device_connect_agent_tools", "device_connect_agent_tools.*", "rclpy", "rclpy.*", "cyclonedds", "cyclonedds.*", "roslibpy", "roslibpy.*", "rosidl_runtime_py", "rosidl_runtime_py.*", "moveit", "moveit.*", "moveit_configs_utils", "moveit_configs_utils.*", "geometry_msgs", "geometry_msgs.*", "mink", "mink.*", "qpsolvers", "qpsolvers.*", "onnxruntime", "onnxruntime.*", "trimesh", "trimesh.*", "stable_baselines3", "stable_baselines3.*", "strands_robots_sim", "strands_robots_sim.*", "isaacsim", "isaacsim.*", "omni", "omni.*", "gsplat", "gsplat.*", "plyfile", "plyfile.*", "unitree_sdk2py.*", "booster_robotics_sdk_python", "booster_robotics_sdk_python.*", "stretch_body", "stretch_body.*", "kortex_api", "kortex_api.*", "bosdyn", "bosdyn.*", "webauthn", "webauthn.*", "requests", "requests.*", "flux_action", "flux_action.*", "natten", "natten.*", "isaaclab", "isaaclab.*", "isaaclab_tasks", "isaaclab_tasks.*", "isaaclab_rl", "isaaclab_rl.*", "rsl_rl", "rsl_rl.*", "mjlab", "mjlab.*", "mujoco_warp", "mujoco_warp.*", "warp", "warp.*", "onnx", "onnx.*", "tensorboard", "tensorboard.*"]
 ignore_missing_imports = true
-
-# Typed libraries the package only calls into from inside a function: mypy
-# would otherwise analyse their whole source (and google.* through them) on
-# every run - a third of the lint step - to type a few lazy imports. Imports
-# from them read as Any; tests/test_mypy_untyped_third_party_imports.py keeps
-# them out of module scope, where an Any would reach a signature.
-[[tool.mypy.overrides]]
-module = ["diffusers", "diffusers.*", "transformers", "transformers.*", "warp", "warp.*", "google", "google.*"]
-follow_imports = "skip"
-
-# Device Connect drivers - thin wrappers over the untyped device_connect_edge
-# SDK; their RPC handlers return dicts that bubble Any (same posture as tools.*).
-# disallow_untyped_defs stays relaxed because the SDK's @rpc/@emit/@on
-# decorators are themselves untyped (they make decorated methods "untyped" to
-# mypy, which the global config cannot see through). disallow_any_generics is
-# enabled to keep the public dict/list/Callable surfaces fully parameterized
-# rather than silently bare (which a developer's IDE/strict mypy would flag).
-[[tool.mypy.overrides]]
-module = ["strands_robots.device_connect.*"]
-disallow_untyped_defs = false
-disallow_any_generics = true
-warn_return_any = false
-
-# @tool decorator injects runtime signatures mypy cannot check
-[[tool.mypy.overrides]]
-module = ["strands_robots.tools.*"]
-disallow_untyped_defs = false
-warn_return_any = false
-ignore_missing_imports = true
-
-# RL trainers (training.rl.*) build torch modules with dynamic tensor-dict
-# returns; torch's untyped surface makes warn_return_any noise here, same as the
-# policies posture. Public signatures are still annotated.
-[[tool.mypy.overrides]]
-module = ["strands_robots.training.rl.*"]
-warn_return_any = false
-disallow_untyped_defs = false
-
-# mjlab task definitions (training.mjlab_tasks.*) subclass mjlab's untyped
-# manager terms and return torch tensors the stubs cannot see through; same
-# posture as training.rl.*. Public signatures are still annotated.
-[[tool.mypy.overrides]]
-module = ["strands_robots.training.mjlab_tasks.*"]
-warn_return_any = false
-
-# LeRobot local policy uses dynamic attr access via draccus PreTrainedConfig
-[[tool.mypy.overrides]]
-module = ["strands_robots.policies.*"]
-warn_return_any = false
-disallow_untyped_defs = false
-
-# Robot core - complex dynamic assembly, optional deps
-[[tool.mypy.overrides]]
-module = ["strands_robots.robot"]
-disallow_untyped_defs = false
-warn_return_any = false
-
-# RTPS IDL bundle - cyclonedds IdlStruct uses metaclass keyword args (typename=)
-# that mypy reads as __init_subclass__ kwargs on object. The classes are dynamic
-# by construction (DDS type registration), so relax call-arg checking here.
-[[tool.mypy.overrides]]
-module = ["strands_robots.rtps.idl"]
-disable_error_code = ["call-arg"]
-disallow_untyped_defs = false
-
-# __init__.py has lazy import helpers
-[[tool.mypy.overrides]]
-module = ["strands_robots.__init__"]
-disallow_untyped_defs = false
-
-# AWS IoT bootstrap modules - boto3 always returns Any from API calls.
-# We type the public surface explicitly (ProvisionedThing, BootstrappedAccount)
-# but the internal helpers naturally bubble Any from boto3.
-[[tool.mypy.overrides]]
-module = ["strands_robots.mesh.iot.*", "strands_robots.mesh.transport.iot_transport"]
-warn_return_any = false
-
-# Registry modules - dynamic JSON loading returns Any
-[[tool.mypy.overrides]]
-module = ["strands_robots.registry.*"]
-warn_return_any = false
-disallow_untyped_defs = false
-
-# MuJoCo simulation - mixins use cooperative self._world patterns
-# attr-defined: Mixins access self._world/self._lock/etc. from Simulation (cooperative pattern)
-# assignment: PEP 484 implicit Optional (= None on typed params)
-# override: Subclass signatures extend base with extra params (orientation, mesh_path)
-# misc: Multiple inheritance method resolution conflicts between mixin + ABC
-[[tool.mypy.overrides]]
-module = ["strands_robots.simulation.mujoco.*"]
-disallow_untyped_defs = false
-warn_return_any = false
-
-# Isaac Sim backend - same override-signature / cooperative-mixin patterns as
-# the MuJoCo backend. The subclass extends the SimEngine ABC with extra,
-# backend-specific params on add_robot (mjcf_path / usd_path) and add_object
-# (**kwargs escape hatch), and narrows send_action's action type to the
-# dict|ndarray the Isaac articulation API consumes -- all deliberate,
-# documented extensions. Heavy omni/isaacsim imports are untyped (no stubs).
-# override: add_robot / add_object / send_action extend the base signature.
-[[tool.mypy.overrides]]
-module = ["strands_robots.simulation.isaac.*"]
-disallow_untyped_defs = false
-warn_return_any = false
-disable_error_code = ["override"]
-
-# Async utils and dataset recorder - thin wrappers with dynamic types
-[[tool.mypy.overrides]]
-module = ["strands_robots._async_utils", "strands_robots.dataset_recorder"]
-disallow_untyped_defs = false
-warn_return_any = false
-
-# Test files - relaxed type checking for mocks, fixtures, and test utilities
-[[tool.mypy.overrides]]
-module = ["tests.*", "tests_integ.*"]
-disallow_untyped_defs = false
-warn_return_any = false
+check_untyped_defs = true
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-addopts = "-v --cov=strands_robots --cov-report=term-missing --cov-fail-under=80 --strict-markers --timeout=120"
-# A passed test's tmp_path is removed at its own teardown. Every test that asks
-# for one creates one (the autouse store redirects in tests/conftest.py build
-# none for a test that does not), and pytest's default "all" keeps each until
-# the session ends, while
-# make_numbered_dir lists the whole base temp to name the next one. So a
-# worker's N-th test scans the N-1 directories before it: ~10-20 ms of setup
-# on each of 29,000 tests, which no per-cell tail shows. Measured on the
-# two-vCPU runner with trivial tests under one autouse tmp_path fixture,
-# `-n 2 --dist loadfile`: 10,000 tests 34.3 s -> 21.1 s, 20,000 tests
-# 96.7 s -> 42.7 s (12.9 s with no tmp_path at all, so the tests are not the
-# cost). A failed test's directory is kept, which is the one anyone inspects.
-# Pinned by tests/test_tmp_path_of_a_passed_test_is_not_kept.py (#3869).
-tmp_path_retention_policy = "failed"
-markers = [
-    "gpu: requires CUDA GPU and real model weights (run with: pytest -m gpu)",
-    "slow: long-running test (deselect with: pytest -m 'not slow')",
-    "integration: requires live Device Connect infra (Zenoh router + etcd via Docker); skipped unless DEVICE_CONNECT_ALLOW_INSECURE is set (deselect with: pytest -m 'not integration')",
-    "moveit2: requires a running MoveIt2 sidecar (ROS 2 / moveit_py). Run with: pytest -m moveit2",
-    "curobo: requires NVIDIA cuRobo + a CUDA-capable GPU. Run with: pytest -m curobo (set CUROBO_LIVE=1)",
-    "wbc: requires onnxruntime + a downloaded GR00T-WBC (SONIC) checkpoint + mujoco. Run with: pytest -m wbc (set WBC_LIVE=1)",
-    "molmoact2: requires lerobot >= 0.5.2 (from source) + the [molmoact2] extra (transformers, peft, scipy). Run with: pytest -m molmoact2",
-    "rtps: requires cyclonedds ([ros2] extra) + a live ROS 2 peer (e.g. turtlesim) on the DDS domain. Run with: RTPS_LIVE=1 pytest -m rtps",
-    "hardware: requires a real serial arm. Run with: STRANDS_HW_PORT=/dev/tty... pytest -m hardware",
+timeout = 300
+markers = ["network: talks to the internet (GitHub / Hugging Face); deselect with -m 'not network'"]
+
+[tool.importlinter]
+root_package = "strands_robots"
+
+[[tool.importlinter.contracts]]
+name = "types is a leaf: it imports nothing else in the package"
+type = "forbidden"
+source_modules = ["strands_robots.types"]
+forbidden_modules = [
+    "strands_robots.geometry",
+    "strands_robots.description",
+    "strands_robots.simulation",
+    "strands_robots.robot",
+    "strands_robots.policy",
+    "strands_robots.units",
 ]
 
-[tool.coverage.run]
-# Collect line coverage through PEP 669 (`sys.monitoring`) instead of the
-# default C trace function. The two report the same measurement; what differs is
-# what it costs. Measured over 17,102 tests
-# (tests/{drivers,mesh,policies,training,rendering}), same selection, same
-# reports, one machine, only the core varying:
-#
-#     core                  wall clock   cost of measuring
-#     none (no --cov)          321.19 s   -
-#     ctrace (the default)     567.36 s   +76.6%
-#     sysmon                   347.47 s    +8.2%
-#
-# So the tracer, not the tests, was the larger half of the growth in an
-# instrumented run: sysmon returns 219.89 s of the 246.17 s the default core
-# spends. All three runs agreed on the verdict (4 failed, 17102 passed, 36
-# skipped) and the two instrumented runs agreed on the measurement - the same
-# 303 files, the same 51,904 statements, the same 605 exclusions, 56% either
-# way. Exactly one line differed, and it is one that also differs between two
-# runs of the *same* core: the FSM-refresher join-timeout branch in
-# `strands_robots/drivers/g1.py`, whose execution depends on thread scheduling.
-#
-# `branch` is deliberately absent. The equivalence above was measured for
-# statements, which is what `--cov-fail-under` in `[tool.pytest.ini_options]`
-# grades; turning branch coverage on means re-measuring before trusting this
-# core for it. `tests/test_coverage_runs_on_the_sysmon_core.py` pins both the
-# setting and that boundary.
-core = "sysmon"
+[[tool.importlinter.contracts]]
+name = "description depends only on types, _gl, _extras"
+type = "forbidden"
+source_modules = ["strands_robots.description"]
+forbidden_modules = [
+    "strands_robots.geometry",
+    "strands_robots.simulation",
+    "strands_robots.robot",
+    "strands_robots.policy",
+    "strands_robots.units",
+]
+
+[[tool.importlinter.contracts]]
+name = "simulation does not import robot or policy (except the lazy Simulation.run edge)"
+type = "forbidden"
+source_modules = ["strands_robots.simulation"]
+forbidden_modules = ["strands_robots.robot", "strands_robots.policy"]
+ignore_imports = [
+    # Simulation.run delegates to the one run loop by a lazy import inside the method, and the two
+    # TYPE_CHECKING-only names it annotates with; none is a runtime module-level edge.
+    "strands_robots.simulation.simulation -> strands_robots.robot.run.lockstep",
+    "strands_robots.simulation.simulation -> strands_robots.robot.run.result",
+    "strands_robots.simulation.simulation -> strands_robots.robot",
+    "strands_robots.simulation.simulation -> strands_robots.policy",
+    # Simulation.tool builds the agent tool by a lazy import inside the property.
+    "strands_robots.simulation.simulation -> strands_robots.tools.agent",
+]
+
+[[tool.importlinter.contracts]]
+name = "policy imports neither simulation nor the drivers"
+type = "forbidden"
+source_modules = ["strands_robots.policy"]
+forbidden_modules = ["strands_robots.simulation", "strands_robots.robot.drivers"]
+
+[[tool.importlinter.contracts]]
+name = "the mesh never imports policy"
+type = "forbidden"
+source_modules = ["strands_robots.mesh"]
+forbidden_modules = ["strands_robots.policy"]
+# The mesh imports robot.safety (RequestRefused), and the robot package runs policies; no mesh module may.
+allow_indirect_imports = true
+
+[[tool.importlinter.contracts]]
+name = "robot.safety and robot.device import no policy, no simulation backend"
+type = "forbidden"
+source_modules = ["strands_robots.robot.safety", "strands_robots.robot.device"]
+forbidden_modules = ["strands_robots.policy", "strands_robots.simulation.backends"]
+allow_indirect_imports = true
+
+[[tool.importlinter.contracts]]
+name = "recording depends only on types, description and units (the run loop calls it, never the reverse)"
+type = "forbidden"
+source_modules = ["strands_robots.recording"]
+forbidden_modules = [
+    "strands_robots.geometry",
+    "strands_robots.simulation",
+    "strands_robots.robot",
+    "strands_robots.policy",
+]
+
+[[tool.importlinter.contracts]]
+name = "units depends only on types and description"
+type = "forbidden"
+source_modules = ["strands_robots.units"]
+forbidden_modules = [
+    "strands_robots.geometry",
+    "strands_robots.simulation",
+    "strands_robots.robot",
+    "strands_robots.policy",
+]
+

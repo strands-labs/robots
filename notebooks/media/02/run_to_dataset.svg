@@ -1,0 +1,28 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 300" width="900" height="300" role="img" aria-labelledby="t">
+<title id="t">Left, robot.run(policy, hz=20, record="so101-waves") three times; each run drops one episode card into a LeRobot v3 dataset folder on the right, which holds meta/info.json, meta/units.json, data/ parquet and videos/ mp4. Below, LeRobotDataset reads the folder back.</title>
+<style>
+text{font-family:'JetBrains Mono',ui-monospace,monospace;fill:#000}
+.h{font-size:15px;font-weight:600}.s{font-size:12.5px;fill:#3d3c3c}
+.card{fill:#fff;stroke:#3d3c3c;stroke-width:1.2}.w{fill:none;stroke:#3d3c3c;stroke-width:1.2}
+.ep{fill:#fff;stroke:#007a3d;stroke-width:2}
+.e1{animation:drop 6s infinite 0s}.e2{animation:drop 6s infinite 2s}.e3{animation:drop 6s infinite 4s}
+@keyframes drop{0%{opacity:0;transform:translateX(-160px)}12%{opacity:1;transform:translateX(0)}100%{opacity:1}}
+.run{fill:none;stroke:#007a3d;stroke-width:3;animation:on 2s infinite}
+@keyframes on{0%,100%{opacity:0}8%,40%{opacity:1}55%{opacity:0}}
+</style>
+<rect width="900" height="300" fill="#fff"/>
+<g stroke="#d9d9d9"><path d="M0 75H900M0 150H900M0 225H900M225 0V300M450 0V300M675 0V300"/></g>
+<g transform="translate(20,60)"><rect class="card" width="330" height="90" rx="8"/><rect class="run" width="330" height="90" rx="8"/>
+<text class="h" x="14" y="30">arm.run(policy, hz=20, steps=40,</text><text class="h" x="14" y="52">  record="so101-waves",</text><text class="h" x="14" y="74">  instruction="wave right")</text></g>
+<path class="w" d="M350 105H420"/><path class="w" d="M412 99l8 6-8 6"/>
+<g transform="translate(430,30)"><rect class="card" width="450" height="240" rx="8"/>
+<text class="h" x="16" y="28">so101-waves/  (LeRobot v3)</text>
+<text class="s" x="16" y="52">meta/info.json  meta/units.json</text><text class="s" x="16" y="72">data/*.parquet  videos/observation.images.front/*.mp4</text>
+<g class="e1"><rect class="ep" x="16" y="92" width="130" height="56" rx="6"/><text class="s" x="28" y="116">episode 0</text><text class="s" x="28" y="136">40 frames</text></g>
+<g class="e2"><rect class="ep" x="160" y="92" width="130" height="56" rx="6"/><text class="s" x="172" y="116">episode 1</text><text class="s" x="172" y="136">40 frames</text></g>
+<g class="e3"><rect class="ep" x="304" y="92" width="130" height="56" rx="6"/><text class="s" x="316" y="116">episode 2</text><text class="s" x="316" y="136">40 frames</text></g>
+<text class="s" x="16" y="186">same folder again: the next episode appends</text>
+<text class="s" x="16" y="210">another fps / robot / units: refused before step one</text></g>
+<g transform="translate(20,190)"><rect class="card" width="330" height="70" rx="8"/><text class="h" x="14" y="30">LeRobotDataset("local/so101-waves",</text><text class="h" x="14" y="52">              root="so101-waves")</text></g>
+<path class="w" d="M350 225H430" stroke-dasharray="4 4"/>
+</svg>

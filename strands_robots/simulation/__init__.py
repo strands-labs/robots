@@ -1,193 +1,26 @@
-"""Strands Robots Simulation - multi-backend simulation framework.
+"""One world: a Simulation owns time and holds many robots; a Backend steps the physics.
 
-A backend-agnostic layer built around the :class:`~strands_robots.simulation.base.SimEngine`
-ABC, shared dataclasses (:class:`~strands_robots.simulation.models.SimWorld`,
-:class:`~strands_robots.simulation.models.SimRobot`,
-:class:`~strands_robots.simulation.models.SimObject`, ...), a shared
-URDF/MJCF resolver (:mod:`strands_robots.simulation.model_registry`), and a
-:func:`~strands_robots.simulation.factory.create_simulation` factory that
-selects a registered backend. The default backend is
-:mod:`strands_robots.simulation.mujoco` (CPU physics + offscreen rendering, no
-GPU required); the Isaac Sim and Newton backends load lazily on demand.
-
-Usage::
-
-    # Default (MuJoCo) via factory
-    from strands_robots.simulation import create_simulation
-    sim = create_simulation()
-
-    # Direct class access
-    from strands_robots.simulation import Simulation
-    sim = Simulation()
-
-    # Explicit backend
-    from strands_robots.simulation.mujoco import MuJoCoSimulation
-
-    # Shared types (no heavy deps)
-    from strands_robots.simulation import SimWorld, SimRobot, SimObject
-
-    # ABC for custom backends
-    from strands_robots.simulation.base import SimEngine
-
-Future backends::
-
-    from strands_robots.simulation.isaac import IsaacSimulation
-    from strands_robots.simulation.newton import NewtonSimulation
+MuJoCo is the first backend and is imported lazily (``load_backend``), so ``import strands_robots``
+never pulls in ``mujoco``.
 """
 
-import importlib as _importlib
-from typing import TYPE_CHECKING, Any
+from __future__ import annotations
 
-# TYPE_CHECKING-only eager imports so mypy can resolve the heavy classes
-# below to concrete types instead of the dynamic __getattr__ -> Any. PEP 562.
-if TYPE_CHECKING:
-    from strands_robots.simulation.isaac.config import IsaacConfig
-    from strands_robots.simulation.isaac.simulation import IsaacSimulation
-    from strands_robots.simulation.mujoco.simulation import MuJoCoSimEngine, Simulation
-    from strands_robots.simulation.mujoco.simulation import Simulation as MuJoCoSimulation
-    from strands_robots.simulation.mujoco.spec_builder import SpecBuilder
-
-# Light imports (no heavy deps - stdlib + dataclasses only)
-from strands_robots.simulation.base import SimEngine
-from strands_robots.simulation.benchmark import (
-    BenchmarkCompatibilityError,
-    BenchmarkProtocol,
-    StepInfo,
-    get_benchmark,
-    list_benchmarks,
-    register_benchmark,
-    unregister_benchmark,
-)
-from strands_robots.simulation.benchmark_spec import (
-    DeclarativeBenchmark,
-    register_benchmark_from_file,
-)
-from strands_robots.simulation.builtin_benchmarks import (
-    builtin_benchmark_specs,
-    register_builtin_benchmarks,
-)
-from strands_robots.simulation.factory import (
-    create_simulation,
-    list_backends,
-    register_backend,
-)
-from strands_robots.simulation.model_registry import (
-    list_available_models,
-    list_registered_urdfs,
-    register_urdf,
-    resolve_model,
-    resolve_urdf,
-)
-from strands_robots.simulation.models import (
-    SimCamera,
-    SimObject,
-    SimRobot,
-    SimStatus,
-    SimWorld,
-    TrajectoryStep,
-)
-from strands_robots.simulation.observers import (
-    ActionResolution,
-    LegacyHookOutcome,
-    RunPolicyEnded,
-    RunPolicyEvent,
-    RunPolicyObserver,
-    RunPolicyOutcome,
-    RunPolicyStarted,
-    RunPolicyStep,
-    StoppedReason,
-)
-from strands_robots.simulation.predicates import (
-    PREDICATE_REGISTRY,
-    make_predicate,
-    register_predicate,
-)
-
-# Heavy imports (lazy - need strands SDK + mujoco)
-_LAZY_IMPORTS: dict[str, tuple[str, str]] = {
-    "MuJoCoSimEngine": ("strands_robots.simulation.mujoco.simulation", "MuJoCoSimEngine"),
-    "Simulation": ("strands_robots.simulation.mujoco.simulation", "MuJoCoSimEngine"),
-    "MuJoCoSimulation": ("strands_robots.simulation.mujoco.simulation", "MuJoCoSimEngine"),
-    "SpecBuilder": ("strands_robots.simulation.mujoco.spec_builder", "SpecBuilder"),
-    # Isaac Sim backend (heavy - needs NVIDIA Isaac Sim / Omniverse, installed
-    # out-of-band). Kept lazy so ``import strands_robots.simulation`` never
-    # triggers an omni/isaacsim import.
-    "IsaacSimulation": ("strands_robots.simulation.isaac.simulation", "IsaacSimulation"),
-    "IsaacConfig": ("strands_robots.simulation.isaac.config", "IsaacConfig"),
-    "_configure_gl_backend": ("strands_robots._mujoco_gl", "_configure_gl_backend"),
-    "_ensure_mujoco": ("strands_robots.simulation.mujoco.backend", "_ensure_mujoco"),
-    "_is_headless": ("strands_robots._mujoco_gl", "_is_headless"),
-}
-
+from .backend import Backend
+from .object import Object
+from .physics import Contact, Physics
+from .scene import Scene, SceneCamera, SceneLight, SceneObject, SceneRobot
+from .simulation import Simulation
 
 __all__ = [
-    # ABC
-    "SimEngine",
-    # Factory
-    "create_simulation",
-    "list_backends",
-    "register_backend",
-    # Default backend alias
-    "MuJoCoSimEngine",
     "Simulation",
-    "MuJoCoSimulation",
-    # Isaac Sim backend (lazy - heavy NVIDIA Isaac Sim / Omniverse deps)
-    "IsaacSimulation",
-    "IsaacConfig",
-    # Shared dataclasses
-    "SimStatus",
-    "SimRobot",
-    "SimObject",
-    "SimCamera",
-    "SimWorld",
-    "TrajectoryStep",
-    # Read-only rollout observability (light - stdlib dataclasses only)
-    "ActionResolution",
-    "LegacyHookOutcome",
-    "RunPolicyOutcome",
-    "StoppedReason",
-    "RunPolicyStarted",
-    "RunPolicyStep",
-    "RunPolicyEnded",
-    "RunPolicyEvent",
-    "RunPolicyObserver",
-    # MuJoCo scene builder (MjSpec-based, replaces MJCFBuilder)
-    "SpecBuilder",
-    # Model registry
-    "register_urdf",
-    "resolve_model",
-    "resolve_urdf",
-    "list_registered_urdfs",
-    "list_available_models",
-    # Benchmark protocol + registry
-    "BenchmarkProtocol",
-    "BenchmarkCompatibilityError",
-    "StepInfo",
-    "register_benchmark",
-    "unregister_benchmark",
-    "get_benchmark",
-    "list_benchmarks",
-    # Declarative DSL + predicates
-    "DeclarativeBenchmark",
-    "register_benchmark_from_file",
-    "register_builtin_benchmarks",
-    "builtin_benchmark_specs",
-    "PREDICATE_REGISTRY",
-    "make_predicate",
-    "register_predicate",
+    "Scene",
+    "SceneRobot",
+    "SceneObject",
+    "SceneCamera",
+    "SceneLight",
+    "Object",
+    "Backend",
+    "Physics",
+    "Contact",
 ]
-
-
-def __getattr__(name: str) -> Any:
-    if name in _LAZY_IMPORTS:
-        module_path, attr_name = _LAZY_IMPORTS[name]
-        module = _importlib.import_module(module_path)
-        value = getattr(module, attr_name)
-        globals()[name] = value
-        return value
-    raise AttributeError(f"module 'strands_robots.simulation' has no attribute {name!r}")
-
-
-# NOTE: MuJoCo GL backend configuration lives in the top-level
-# strands_robots/__init__.py to ensure it runs before any `import mujoco`.
-# Do NOT duplicate it here - that module is the canonical location.
