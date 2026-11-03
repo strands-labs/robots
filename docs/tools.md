@@ -25,7 +25,7 @@ The tools are built from the robot's manifest. A new joint or skill appears in t
 Each joint lists its unit and range, so the agent sees them.
 
 Calls to one world run in the order the agent sent them.
-[`agent_builds_a_scene.py`](https://github.com/strands-labs/robots/blob/dev/notebooks/examples/agent_builds_a_scene.py)
+[`agent_builds_a_scene.py`](https://github.com/strands-labs/robots/blob/main/notebooks/examples/agent_builds_a_scene.py)
 shows an agent building a scene and looking at it.
 
 ## Give the agent your policies
