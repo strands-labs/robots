@@ -19,10 +19,13 @@ HUB = Path(os.environ.get("HF_HUB_CACHE", Path.home() / ".cache" / "huggingface"
 
 
 def needs_module(name: str, why: str) -> None:
-    """Skip unless ``name`` imports; ``why`` names the part that ships it."""
+    """Skip unless ``name`` imports; ``why`` names the part that ships it.
+
+    ``ImportError``, not only ``ModuleNotFoundError``: LeRobot's package ``__init__`` raises it for a missing extra.
+    """
     try:
         found = importlib.util.find_spec(name) is not None
-    except ModuleNotFoundError:
+    except ImportError:
         found = False
     if not found:
         pytest.skip(f"needs {name} ({why})")
