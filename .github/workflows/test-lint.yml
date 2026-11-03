@@ -1,6 +1,6 @@
 name: Test and Lint
 
-# v1 (dev branch): the required check is lint + the test suite, nothing else.
+# The required check: the changelog fragment check (pull requests only), lint, the test suite and the strict docs build.
 # The job id and name stay `test-lint` / "Test and Lint" so the ruleset's required
 # context `call-test-lint / Test and Lint` (called from ci.yml) is unchanged.
 on:
@@ -25,12 +25,29 @@ jobs:
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
         with:
           ref: ${{ inputs.ref }}
+          # Need history so the fragment check can diff the branch against the base.
+          fetch-depth: 0
           persist-credentials: false
 
       - name: Set up Python
         uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5.6.0
         with:
           python-version: "3.12"
+
+      # Before anything is installed: a branch that writes a `### ` entry straight
+      # into CHANGELOG.md's [Unreleased], or adds a fragment the assembler refuses,
+      # hears about it here in seconds instead of after the suite (changelog.d/README.md).
+      # HEAD_SHA is the pull request head, deliberately not the merge commit this job
+      # checks out: a merge commit already contains the base tip, which defeats the
+      # diff. The head is the merge commit's second parent, so it is reachable.
+      - name: Changelog fragment
+        if: github.event_name == 'pull_request'
+        env:
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          BASE_REF: ${{ github.base_ref }}
+        run: |
+          git fetch --no-tags origin "${BASE_REF}" || true
+          python3 scripts/check_changelog_fragment.py --base-ref "${BASE_REF}" --head "${HEAD_SHA}"
 
       - name: Install system dependencies (EGL for headless MuJoCo)
         timeout-minutes: 10
