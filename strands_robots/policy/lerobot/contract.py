@@ -27,7 +27,9 @@ def lerobot() -> Any:
     """Import lerobot (with its remote extra) or fail with the one install line."""
     try:
         import lerobot as lr
-        import lerobot.remote_inference  # noqa: F401  (zenoh + msgpack)
+        import lerobot.remote_inference  # noqa: F401
+        import msgpack  # noqa: F401  (LeRobot imports msgpack and zenoh at first use, and names a PyPI line)
+        import zenoh  # noqa: F401
     except ImportError as e:
         raise ImportError(f"LeRobot policies need the lerobot extra: {hint('lerobot')} ({e})") from e
     return lr
