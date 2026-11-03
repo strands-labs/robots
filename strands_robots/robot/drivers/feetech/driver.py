@@ -51,8 +51,7 @@ class FeetechDriver:
         max_speed: float | None = MAX_SPEED,
         disable_torque_on_disconnect: bool = False,
     ) -> None:
-        """``max_speed`` (rad/s) caps how far one write may move a joint from the last goal (``slew.Slew``);
-        ``None`` writes every goal as given."""
+        """``max_speed`` (rad/s) caps one write's move from the last goal (``slew.Slew``); ``None``: as given."""
         if port is None and bus is None:
             raise ValueError("FeetechDriver needs port= (e.g. /dev/tty.usbmodem...)")
         self.slew = Slew(max_speed)
@@ -160,8 +159,7 @@ class FeetechDriver:
 
     def hold(self) -> None:
         """Goal_Position := Present_Position under torque: the measured pose, never speed-capped (K8)."""
-        present = np.array(self.read().positions, dtype=float)
-        self.slew.reset(present)
+        self.slew.reset(present := np.array(self.read().positions, dtype=float))
         self.write(present)
 
     def estop(self) -> None:
@@ -241,10 +239,12 @@ class FeetechDriver:
         self.bus.write(motor_id, REG_LOCK, b"\x01")
 
     def close(self) -> None:
-        """Under torque the arm HOLDS its pose unless built with ``disable_torque_on_disconnect=True`` (K8)."""
-        if self._torque_on:
-            self.hold()
-            if self.disable_torque_on_disconnect:
-                self.torque(False)
-        self.cameras.close()
-        self.bus.close()
+        """Holds a torqued arm (K8; ``disable_torque_on_disconnect`` then releases); port + cameras close anyway."""
+        try:
+            if self._torque_on:
+                self.hold()
+                if self.disable_torque_on_disconnect:
+                    self.torque(False)
+        finally:
+            self.cameras.close()
+            self.bus.close()

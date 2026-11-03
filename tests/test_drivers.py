@@ -778,3 +778,23 @@ def test_robot_id_names_the_lerobot_calibration_file_and_an_uncalibrated_arm_war
         bare = Robot("so101", port="/dev/fake", id="nobody", twin=False)
     assert bare.body.calibration is None
     bare.close()
+
+
+def test_close_releases_the_port_even_when_the_servos_went_dark():
+    """K8: the servo supply is cut, then the program quits: the hold fails loudly, the port still closes."""
+
+    class DarkSerial(FakeSerial):
+        dark = False
+
+        def write(self, data):
+            if not self.dark:
+                return super().write(data)
+            self.frames.append(bytes(data))
+            return len(data)
+
+    d, s = make_driver(serial=DarkSerial())
+    d.write(np.zeros(6))
+    s.dark = True
+    with pytest.raises(ft.ProtocolError):
+        d.close()
+    assert s.closed
