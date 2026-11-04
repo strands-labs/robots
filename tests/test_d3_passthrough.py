@@ -38,7 +38,7 @@ def test_d3_every_driver_parameter_is_reachable_from_robot(kind: str, monkeypatc
     monkeypatch.setattr(importlib.import_module(mod), name, Spy)
     options = {p: SENTINEL for p in params - ROBOT_NAMED}
     named = {p: SENTINEL for p in params & ROBOT_NAMED}
-    model = "so101" if kind == "feetech" else "unitree_g1" if kind == "unitree" else "microduck"
+    model = "so101" if kind == "feetech" else "unitree_g1" if kind in ("unitree", "ros") else "microduck"
     with pytest.raises(RuntimeError, match="received"):
         Robot(model, driver=kind, twin=False, **{**named, **options})
     for p in params:

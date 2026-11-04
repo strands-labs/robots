@@ -42,9 +42,12 @@ dashboard = ["fastapi>=0.115", "uvicorn>=0.35", "websockets>=13"]
 # Sonic also needs `strands-agents[bidi]` (Bedrock's event stream), installed by hand: it pins an awscrt older than
 # awsiotsdk's, so with [iot] put `awscrt>=0.36` back after it.
 voice = ["strands-agents>=1.62", "websockets>=13"]
+# ROS 2 (strands_robots.ros, driver="ros"): rclpy and the robot's message packages come from a sourced ROS 2
+# distro (apt/RoboStack), never from pip, so this extra is empty on purpose; use a venv with --system-site-packages.
+ros = []
 # Everything that installs from PyPI on any machine (the GPU extras isaac/newton are their own lines, LeRobot is
 # _extras.LEROBOT): `uv pip install -e ".[all]"`.
-all = ["strands-robots[mujoco,feetech,onnx,lerobot,tools,mesh,iot,dashboard,voice]"]
+all = ["strands-robots[mujoco,feetech,onnx,lerobot,tools,mesh,iot,dashboard,voice,ros]"]
 dev = ["pytest>=8", "pytest-timeout", "ruff>=0.6", "mypy>=1.10", "import-linter>=2.1", "onnx>=1.16", "moto[iot]>=5"]
 
 [tool.hatch.version]

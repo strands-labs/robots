@@ -1,0 +1,33 @@
+{
+ "family": "joint_state",
+ "description": "Any ros2_control robot: sensor_msgs/JointState in, a forward_position_controller (Float64MultiArray) out.",
+ "discovery": {},
+ "model": {
+  "topic": "/robot_description",
+  "type": "std_msgs/msg/String",
+  "qos": "latched"
+ },
+ "joints": {},
+ "state": {
+  "topic": "/joint_states",
+  "type": "sensor_msgs/msg/JointState",
+  "qos": "auto",
+  "max_age_ms": 200
+ },
+ "command": {
+  "topic": "/forward_position_controller/commands",
+  "type": "std_msgs/msg/Float64MultiArray",
+  "qos": "reliable",
+  "trigger": "timer",
+  "rate_hz": 50,
+  "deadman_ms": 500,
+  "target_max_age_ms": 500
+ },
+ "stop": [],
+ "surfaces": [],
+ "on_disconnect": "hold",
+ "notes": [
+  "joints {} means: match the model's joint names to JointState.name; set joints to rename.",
+  "command type may be std_msgs/msg/Float64MultiArray, sensor_msgs/msg/JointState or trajectory_msgs/msg/JointTrajectory."
+ ]
+}
