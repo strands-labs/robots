@@ -13,6 +13,8 @@ import sys, pathlib; sys.path.insert(0, str(pathlib.Path(__file__).resolve().par
 #
 # Everything runs in MuJoCo on a laptop. Steps 1, 3 and 5 make real model calls (Amazon Bedrock with AWS
 # credentials, model id in `STRANDS_MODEL_ID`); Step 3 downloads a small ACT checkpoint from the Hub.
+#
+# ![an agent over the robot's tools; the Robot's safety chain in front of a MuJoCo world or a USB arm; a Hub policy, a LeRobot v3 recording pushed to the Hub, and the arm on a mesh](media/11/architecture.svg)
 
 # %%
 import os
