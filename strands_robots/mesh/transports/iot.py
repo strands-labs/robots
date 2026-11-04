@@ -41,6 +41,12 @@ def _filter(key_expr: str) -> str:
     return "/".join(parts)
 
 
+def default_client_id(query: dict[str, str]) -> str:
+    """A certificate link is a device (its policy pins the thing name, pass ``client=``); an IAM link is an operator,
+    and ``operator_policy`` admits only ``strands-op-*`` on ``iot:Connect``."""
+    return f"strands-{uuid.uuid4().hex[:12]}" if query.get("cert") else f"strands-op-{uuid.uuid4().hex[:12]}"
+
+
 def _link(url: str) -> Link:
     u = urlparse(url)
     q = {k: v[0] for k, v in parse_qs(u.query).items()}
@@ -49,7 +55,7 @@ def _link(url: str) -> Link:
     pkcs11.refuse_pin(q.get("key") or "")
     if (q.get("key") or "").startswith("pkcs11:") and {"module-path", "module-name"} & q.keys():
         raise ValueError("percent-encode a pkcs11: key= on an iot:// link (quote(key, safe='')): its '&' split it")
-    client = q.get("client") or f"strands-{uuid.uuid4().hex[:12]}"
+    client = q.get("client") or default_client_id(q)
     if u.netloc == "fake":
         return FakeLink(FakeIotBroker.named(q.get("broker", "default")), client)
     endpoint = q.get("endpoint")

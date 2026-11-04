@@ -101,7 +101,11 @@ def operator_policy(
     recv = [f"{arn}:topic/{t}/*", *sh_recv, f"{arn}:topic/$aws/events/presence/*"]
     doc = {"Version": "2012-10-17", "Statement": [
         {"Effect": "Allow", "Action": "iot:Connect", "Resource": f"{arn}:client/strands-op-*"},
-        {"Effect": "Allow", "Action": "iot:SendDirectMessage", "Resource": f"{arn}:connection/*"},
+        # SendDirectMessage names the TARGET client as its resource (AWS: "the target client ID as the resource");
+        # a connection/* grant matches nothing, so every rpc and every manifest fetch was refused. The topic
+        # condition keeps the grant inside this tenant's keys.
+        {"Effect": "Allow", "Action": "iot:SendDirectMessage", "Resource": f"{arn}:client/*",
+         "Condition": {"StringLike": {"iot:Topic": [f"{t}/*"]}}},
         {"Effect": "Allow", "Action": "iot:Publish", "Resource": pub},
         {"Effect": "Allow", "Action": "iot:RetainPublish", "Resource": f"{arn}:topic/{t}/@estop"},
         {"Effect": "Allow", "Action": "iot:Subscribe", "Resource": sub},
