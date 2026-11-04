@@ -65,9 +65,7 @@ def run(
         approve_run(robot, RunPlan(robot.id, label(policy), instruction, hz, seconds, steps, units))  # before acquire
     bound = bind(robot, policy, units)
     try:
-        if not start_pose(robot, bound):  # a policy that names where its episodes begin is taken there first
-            emit(robot, "run.started", {"policy": repr(bound.policy)})
-        ep = episode(
+        ep = episode(  # before the start-pose ramp: a run that cannot be recorded never moves the robot
             record,
             description=robot.description,
             hz=rate(bound, hz),
@@ -76,6 +74,8 @@ def run(
             push=push,
         )
         try:
+            if not start_pose(robot, bound):  # a policy that names where its episodes begin is taken there first
+                emit(robot, "run.started", {"policy": repr(bound.policy)})
             result = _loop(robot, bound, instruction, hz, seconds, steps, stop_when, realtime, stop_event, ep, on_miss)
         except BaseException:
             ep.abort()
