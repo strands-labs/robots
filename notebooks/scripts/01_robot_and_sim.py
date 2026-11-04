@@ -148,7 +148,7 @@ print(f"G1 pelvis height after 6 s: {g1.pose.position[2]:.3f} m | {len(frames)} 
 print("gif", gif(frames, "two_robots.gif", (360, 240), 100), "KB")
 
 # %% [markdown]
-# ![the arm waves while the G1 stands](media/01/two_robots.gif)
+# ![the arm waves while the G1 stands](https://github.com/strands-labs/robots/releases/download/media/01-two_robots.gif)
 #
 # One clock: both results end at the same sim time.
 

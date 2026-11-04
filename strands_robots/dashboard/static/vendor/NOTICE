@@ -1,5 +1,9 @@
 Vendored browser libraries for the dashboard twin (strands_robots/dashboard/static/vendor/).
-Vendored, not fetched from a CDN, so the page renders on a robot LAN with no internet.
+The JS files are vendored. The two .wasm engines (mujoco.wasm, ort-wasm-simd-threaded.wasm, 20 MB) are NOT in the
+package: strands_robots/dashboard/vendor.py fetches each one on first use from the npm CDN (jsdelivr) at the version
+below, refuses it unless its sha256 matches the hash below, and caches it in ~/.cache/strands_robots/dashboard.
+For a robot LAN with no internet: `python -m strands_robots.dashboard --fetch` where there is internet, then copy
+that directory.
 
 @mujoco/mujoco 3.14.0 (https://github.com/google-deepmind/mujoco/tree/main/wasm)
   Apache License 2.0, Copyright DeepMind Technologies Limited.

@@ -80,7 +80,7 @@ for i in range(90):
 print(len(frames), "frames,", f"{arm.sim.time:.2f} s of sim time")
 
 # %% [markdown]
-# ![the arm waving](media/00/wave.gif)
+# ![the arm waving](https://github.com/strands-labs/robots/releases/download/media/00-wave.gif)
 
 # %%
 from pathlib import Path

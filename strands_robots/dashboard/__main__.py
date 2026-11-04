@@ -7,6 +7,7 @@ Robots are registry names, placed one metre apart along x; with none, the one pr
 block (the robot the docs page shows) is used. The page's chat needs a model: ``--model`` takes a
 Bedrock model id (it also needs the ``[tools]`` extra and AWS credentials); without one the chat says so.
 ``--voice`` turns on speech to speech (``openai`` needs OPENAI_API_KEY, ``nova`` AWS credentials; ``auto`` picks).
+``--fetch`` downloads the page's two browser engines (20 MB, not in the package) into the user cache and exits.
 """
 
 from __future__ import annotations
@@ -22,11 +23,18 @@ def parse(argv: Sequence[str] | None = None) -> argparse.Namespace:
     p.add_argument("--host", default="127.0.0.1", help="127.0.0.1 · localhost · ::1 (loopback only)")
     p.add_argument("--model", default=None, help="a Bedrock model id for the page's chat (optional)")
     p.add_argument("--voice", default=None, choices=("openai", "nova", "auto"), help="speech to speech (optional)")
+    p.add_argument("--fetch", action="store_true", help="download the page's browser engines now, then exit")
     return p.parse_args(argv)
 
 
 def main(argv: Sequence[str] | None = None) -> None:
     args = parse(argv)
+    if args.fetch:  # for a robot LAN with no internet: fetch here, or copy the cache dir from a machine that did
+        from .vendor import fetch_all
+
+        for path in fetch_all():
+            print(f"{path} ({path.stat().st_size / 1e6:.1f} MB)", flush=True)
+        return
     if not args.robots:
         from .standalone import browser_preset
 

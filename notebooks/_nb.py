@@ -12,6 +12,13 @@ from IPython.display import HTML, Markdown, display
 ROOT = Path(__file__).resolve().parents[1]  # the package checkout this folder sits in
 DRAWINGS = ROOT / "docs" / "assets" / "drawings"
 MEDIA = Path(__file__).resolve().parent / "media"
+# GIFs and screenshots are not in git: they are assets of the `media` release, "05/wave.gif" -> "05-wave.gif".
+RELEASE = "https://github.com/strands-labs/robots/releases/download/media/"
+
+
+def release_url(path: str) -> str:
+    """Where notebooks/media/<path> lives once uploaded: ``gh release upload media <file> --clobber``."""
+    return RELEASE + path.replace("/", "-")
 
 
 def video(frames, fps: int = 30, width: int = 640) -> HTML:
@@ -45,8 +52,10 @@ def drawing(name: str, theme: str = "paper", width: str = "100%") -> HTML:
 
 
 def media(path: str, width: int = 640) -> HTML:
-    """A GIF/PNG from notebooks/media/, inline."""
+    """A GIF/PNG from notebooks/media/, inline; from the media release when it is not on disk."""
     p = MEDIA / path
+    if not p.is_file():
+        return HTML(f'<img width="{width}" src="{release_url(path)}">')
     mime = {"gif": "image/gif", "png": "image/png"}[p.suffix[1:]]
     return HTML(f'<img width="{width}" src="data:{mime};base64,{base64.b64encode(p.read_bytes()).decode()}">')
 

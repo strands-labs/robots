@@ -147,7 +147,7 @@ _nb.gif(frames, "04/drive.gif", width=360, fps=11, colors=128)
 replay.close()
 
 # %% [markdown]
-# ![the arm moving through the model's own act calls, then the wave policy](media/04/drive.gif)
+# ![the arm moving through the model's own act calls, then the wave policy](https://github.com/strands-labs/robots/releases/download/media/04-drive.gif)
 #
 # ## E-stop: the agent can press it, not release it
 

@@ -29,7 +29,7 @@ print(sim.backend_name, sim.physics_name, frame.shape, [r.id for r in (arm, g1)]
 sim.close()
 
 # %% [markdown]
-# ![MuJoCo render](media/10/mujoco_so101_g1.png)
+# ![MuJoCo render](https://github.com/strands-labs/robots/releases/download/media/10-mujoco_so101_g1.png)
 
 # %% [markdown]
 # ## On a CUDA box
@@ -64,13 +64,13 @@ for kw in [dict(backend="isaac"), dict(physics="newton"), dict(num_envs=4)]:
 #
 # MJCF to USD through Isaac's importers (cached), MuJoCo servo gains authored onto PhysX drives, one articulation per robot.
 #
-# ![Isaac Sim: SO-101 and G1](media/isaac/isaac_so101_g1.png)
+# ![Isaac Sim: SO-101 and G1](https://github.com/strands-labs/robots/releases/download/media/isaac-isaac_so101_g1.png)
 #
 # ## MuJoCo-Warp: env 0 of 1,024
 #
 # MuJoCo builds, reads and renders; MuJoCo-Warp steps every copy in one CUDA graph.
 #
-# ![newton, 1024 envs](media/isaac/newton_so101_g1_1024envs.gif)
+# ![newton, 1024 envs](https://github.com/strands-labs/robots/releases/download/media/isaac-newton_so101_g1_1024envs.gif)
 #
 # ## Measured on the L40S (isaacsim 6.1.0, mujoco-warp 3.11)
 #

@@ -7,6 +7,9 @@
     policy/<skill>.onnx   every skill of the preset, with its ``<skill>.json`` sidecar (onnxruntime-web cannot read
                           ``custom_metadata_map``, so the page reads the layout from the sidecar)
 
+and copies the two browser engines (``vendor.py``: fetched once, not in the package) into ``static/vendor/``,
+because a plain file server has no ``/vendor/*.wasm`` route.
+
 The preset that declares a ``browser`` block in ``policy/onnx/presets.json`` is the one bundled. The MJCF is the
 same ``scene_to_mjcf`` the server sends, plus the physics options the MuJoCo backend sets (gravity, implicitfast), so
 the browser steps the world the backend would have stepped.
@@ -23,6 +26,7 @@ from typing import Any
 
 from ..policy.onnx.graph import _session, resolve_weights, write_sidecar
 from ..policy.onnx.presets import _table
+from . import vendor
 from .twin_scene import robot_cards, scene_to_mjcf
 
 STATIC = Path(__file__).parent / "static"
@@ -72,6 +76,9 @@ def build(out: Path | None = None, *, force: bool = False) -> Path:
     preset, facts = browser_preset()
     spec = facts["browser"]
     out = Path(out) if out is not None else STATIC / "scenes" / spec["robot"]
+    for name in vendor.FILES:  # gitignored there; the server's route serves them from the cache instead
+        if not (STATIC / "vendor" / name).is_file():
+            shutil.copyfile(vendor.path(name), STATIC / "vendor" / name)
     if (out / "scene.json").is_file() and not force:
         return out
     tmp = out.with_name(out.name + ".tmp")

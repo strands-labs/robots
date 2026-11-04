@@ -162,7 +162,7 @@ for i in range(36):
 _nb.gif(frames, "03/orbit.gif", width=400, fps=12)
 
 # %% [markdown]
-# ![orbit of the world the agent built](media/03/orbit.gif)
+# ![orbit of the world the agent built](https://github.com/strands-labs/robots/releases/download/media/03-orbit.gif)
 #
 # ## Your turn
 #
