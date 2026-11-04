@@ -1,6 +1,6 @@
 # strands-robots notebooks
 
-Eleven notebooks, saved without outputs so the repository stays small: run one to see its results. Each one is also
+Twelve notebooks, saved without outputs so the repository stays small: run one to see its results. Each one is also
 a plain script in [`scripts/`](scripts/) that runs top to bottom in a terminal or pastes into a REPL.
 
 ![the notebook path, 00 to 10](media/hero.svg)
@@ -18,6 +18,7 @@ a plain script in [`scripts/`](scripts/) that runs top to bottom in a terminal o
 | 08 | [device and safety](08_device_and_safety.ipynb) | the manifest, the safety chain, refusals, estop mid-run, resume, the watchdog |
 | 09 | [mesh](09_mesh.ipynb) | discover, invoke, state streams, broadcast estop, signed resume, a robot in a second process, `use_mesh` |
 | 10 | [GPU backends](10_gpu_backends.ipynb) | Isaac Sim and MuJoCo-Warp, measured on an L40S (shown, not re-run) |
+| 11 | [hub to hardware](11_hub_to_hardware.ipynb) | the companion to the Hugging Face article: an agent over the arm, a LeRobot v3 recording (pushed with `HF_USER`), a Hub ACT by name, the hardware constructor, the arm on a mesh |
 
 ## Run them
 
@@ -26,7 +27,7 @@ From the repository root, Python 3.12:
 ```bash
 uv venv -p 3.12 && source .venv/bin/activate
 uv pip install -e ".[all]" ipykernel nbconvert av playwright
-uv pip install "lerobot[remote,feetech,dataset] @ git+https://github.com/huggingface/lerobot@main"  # 02, 05, 06
+uv pip install "lerobot[remote,feetech,dataset] @ git+https://github.com/huggingface/lerobot@main"  # 02, 05, 06, 11
 playwright install chromium                                                                    # 07
 python notebooks/scripts/00_quickstart.py        # or: jupyter lab notebooks/
 ```
