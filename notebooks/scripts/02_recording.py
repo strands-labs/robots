@@ -128,7 +128,7 @@ Image.fromarray(strip).resize((640, 240)).save(MEDIA / "frame_strip.png")
 print("frames", picks, "| strip", strip.shape, "| pixel std", round(float(strip.std()), 1))
 
 # %% [markdown]
-# ![frames read back from the dataset](media/02/frame_strip.png)
+# ![frames read back from the dataset](https://github.com/strands-labs/robots/releases/download/media/02-frame_strip.png)
 #
 # ## `meta/units.json`: what the numbers mean
 #

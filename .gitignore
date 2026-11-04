@@ -25,3 +25,12 @@ site/
 
 # The standalone bundle (python -m strands_robots.dashboard.standalone): generated, never committed.
 strands_robots/dashboard/static/scenes/
+
+# The dashboard's browser engines are fetched on first use (strands_robots/dashboard/vendor.py), never committed.
+strands_robots/dashboard/static/vendor/*.wasm
+
+# Notebook GIFs and screenshots live in the `media` GitHub release (notebooks/README.md), not in git. Running a
+# notebook still writes them here.
+notebooks/media/**/*.gif
+notebooks/media/**/*.png
+notebooks/media/**/*.webp

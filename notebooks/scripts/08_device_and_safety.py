@@ -271,10 +271,10 @@ print(f"max joint drift while latched: {np.rad2deg(drift):.3f} deg")
 frames[0].shape and Image.fromarray(frames[0]).save(
     MEDIA / "estop_run.gif", save_all=True, append_images=[Image.fromarray(f) for f in frames[1:]],
     duration=66, loop=0, optimize=True)
-print(f"media/08/estop_run.gif: {len(frames)} frames, {(MEDIA / 'estop_run.gif').stat().st_size / 1e6:.2f} MB")
+print(f"https://github.com/strands-labs/robots/releases/download/media/08-estop_run.gif: {len(frames)} frames, {(MEDIA / 'estop_run.gif').stat().st_size / 1e6:.2f} MB")
 
 # %% [markdown]
-# ![The SO-101 waving, then holding still after estop()](media/08/estop_run.gif)
+# ![The SO-101 waving, then holding still after estop()](https://github.com/strands-labs/robots/releases/download/media/08-estop_run.gif)
 
 # %% [markdown]
 # ## The latch and `resume()`

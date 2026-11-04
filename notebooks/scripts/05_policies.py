@@ -77,7 +77,7 @@ save_gif(frames[::2], "wave", fps=15)
 arm.sim.close()
 
 # %% [markdown]
-# ![the SO-101 driven by a function](media/05/wave.gif)
+# ![the SO-101 driven by a function](https://github.com/strands-labs/robots/releases/download/media/05-wave.gif)
 #
 # A form it does not know is refused before anything downloads, naming the forms it does know.
 
@@ -121,7 +121,7 @@ save_gif(frames, "g1_stands", fps=10)
 sim.close()
 
 # %% [markdown]
-# ![the G1 standing under holosoma](media/05/g1_stands.gif)
+# ![the G1 standing under holosoma](https://github.com/strands-labs/robots/releases/download/media/05-g1_stands.gif)
 #
 # ## Parameters ride in the spec: the duck walks
 #
@@ -138,7 +138,7 @@ save_gif(frames, "duck_walks", fps=10)
 sim.close()
 
 # %% [markdown]
-# ![the microduck walking forward](media/05/duck_walks.gif)
+# ![the microduck walking forward](https://github.com/strands-labs/robots/releases/download/media/05-duck_walks.gif)
 #
 # ## A LeRobot checkpoint from the Hub, in-process
 #
@@ -213,7 +213,7 @@ Image.fromarray(wrist).resize((320, 240)).save(media / "act_wrist.png")
 print(media / "act_wrist.png")
 
 # %% [markdown]
-# ![the Hub ACT driving the sim SO-101](media/05/act_in_process.gif) ![what the policy sees](media/05/act_wrist.png)
+# ![the Hub ACT driving the sim SO-101](https://github.com/strands-labs/robots/releases/download/media/05-act_in_process.gif) ![what the policy sees](https://github.com/strands-labs/robots/releases/download/media/05-act_wrist.png)
 #
 # ## Units, at the edge only
 #

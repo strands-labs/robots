@@ -17,6 +17,11 @@ python -m strands_robots.dashboard so101 g1 --port 8091  # an arm and a humanoid
 Open `http://127.0.0.1:8090`. You need the `dashboard` and `mujoco` extras. For the chat, add the `tools` extra
 and pass a Bedrock model id with `--model`.
 
+The page's two browser engines (MuJoCo and ONNX Runtime for the web, 20 MB) are not in the package. The first page
+load downloads them once, checks their hashes and keeps them in `~/.cache/strands_robots/dashboard`. On a robot
+network with no internet, run `python -m strands_robots.dashboard --fetch` on a machine that has it and copy that
+folder over.
+
 ## From Python
 
 <!-- test: skip, serves until Ctrl-C -->

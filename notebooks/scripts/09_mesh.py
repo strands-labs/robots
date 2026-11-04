@@ -149,10 +149,10 @@ print(f"steps={res.steps} stopped_by={res.stopped_by!r}")
 print("remote reads == device reads:", np.allclose(remote.observe().joints.positions, arm.observe().joints.positions))
 Image.fromarray(frames[0]).save(MEDIA / "connect_run.gif", save_all=True, duration=100, loop=0, optimize=True,
                                 append_images=[Image.fromarray(f) for f in frames[1:]])
-print(f"media/09/connect_run.gif: {len(frames)} frames, {(MEDIA / 'connect_run.gif').stat().st_size / 1e6:.2f} MB")
+print(f"https://github.com/strands-labs/robots/releases/download/media/09-connect_run.gif: {len(frames)} frames, {(MEDIA / 'connect_run.gif').stat().st_size / 1e6:.2f} MB")
 
 # %% [markdown]
-# ![The SO-101 driven from the controller mesh through connect()](media/09/connect_run.gif)
+# ![The SO-101 driven from the controller mesh through connect()](https://github.com/strands-labs/robots/releases/download/media/09-connect_run.gif)
 
 # %% [markdown]
 # ## `broadcast("estop")`

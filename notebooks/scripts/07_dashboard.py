@@ -152,7 +152,7 @@ first = shot("desktop", "desktop_dark.png")
 print(first)
 
 # %% [markdown]
-# ![desktop, dark](media/07/desktop_dark.png)
+# ![desktop, dark](https://github.com/strands-labs/robots/releases/download/media/07-desktop_dark.png)
 #
 # The pill reads `server`: this tab draws the Python process's world. Each robot gets a card with one slider per
 # joint, the camera `front` gets a card with what a policy would see, and the chat sits under the cards.
@@ -182,7 +182,7 @@ _nb.show(_nb.table(rows))
 # %% [markdown]
 # | desktop, paper | phone, dark | phone, drawer open | phone, paper |
 # |---|---|---|---|
-# | ![](media/07/desktop_paper.png) | ![](media/07/phone_dark.png) | ![](media/07/phone_dark_drawer.png) | ![](media/07/phone_paper_drawer.png) |
+# | ![](https://github.com/strands-labs/robots/releases/download/media/07-desktop_paper.png) | ![](https://github.com/strands-labs/robots/releases/download/media/07-phone_dark.png) | ![](https://github.com/strands-labs/robots/releases/download/media/07-phone_dark_drawer.png) | ![](https://github.com/strands-labs/robots/releases/download/media/07-phone_paper_drawer.png) |
 
 # %% [markdown]
 # ## What the page is built from
@@ -223,7 +223,7 @@ status, png = api("GET", "/api/cameras/front.png")  # sim.render("front"): what 
 print(status, "camera_front.png", len(png) // 1024, "KB")
 
 # %% [markdown]
-# ![GET /api/cameras/front.png](media/07/camera_front.png)
+# ![GET /api/cameras/front.png](https://github.com/strands-labs/robots/releases/download/media/07-camera_front.png)
 
 # %% [markdown]
 # ## A server-side act moves the browser twin
@@ -250,7 +250,7 @@ _nb.show(_nb.table([{"joint": j, "page before": round(before[j], 3), "server aft
 # %% [markdown]
 # | before | after `arm.act(..., seconds=1.0)` |
 # |---|---|
-# | ![](media/07/act_before.png) | ![](media/07/act_after.png) |
+# | ![](https://github.com/strands-labs/robots/releases/download/media/07-act_before.png) | ![](https://github.com/strands-labs/robots/releases/download/media/07-act_after.png) |
 
 # %% [markdown]
 # ## The twin during a run
@@ -308,7 +308,7 @@ print({k: getattr(result, k) for k in ("steps", "stopped_by", "deadline_misses",
 print(f"{len(frames)} screencast frames over {raw[-1][0] - raw[0][0]:.1f} s -> {gif.name} ({gif.stat().st_size // 1024} KB)")
 
 # %% [markdown]
-# ![the browser twin following arm.start(wave)](media/07/twin_run.webp)
+# ![the browser twin following arm.start(wave)](https://github.com/strands-labs/robots/releases/download/media/07-twin_run.webp)
 #
 
 # %% [markdown]
@@ -329,7 +329,7 @@ print("revision", sim.revision, "| page reloads", on("desktop", "() => window.__
 print(shot("desktop", "world_changed.png"))
 
 # %% [markdown]
-# ![a second arm from HTTP, a green crate from Python](media/07/world_changed.png)
+# ![a second arm from HTTP, a green crate from Python](https://github.com/strands-labs/robots/releases/download/media/07-world_changed.png)
 
 # %% [markdown]
 # ## Run endpoints
@@ -398,7 +398,7 @@ print(api("POST", "/api/robots/so101/resume", {"approved_by": "cagatay"}))
 print(api("POST", ACT, move)[0])
 
 # %% [markdown]
-# ![so101 latched in the e-stop panel](media/07/estop_latched.png)
+# ![so101 latched in the e-stop panel](https://github.com/strands-labs/robots/releases/download/media/07-estop_latched.png)
 
 # %% [markdown]
 # ## The chat panel
@@ -433,7 +433,7 @@ else:
     print(shot("desktop", "chat.png"))
 
 # %% [markdown]
-# ![one chat turn: the agent added the lemon through sim.tool](media/07/chat.png)
+# ![one chat turn: the agent added the lemon through sim.tool](https://github.com/strands-labs/robots/releases/download/media/07-chat.png)
 
 # %% [markdown]
 # ## Standalone: no server at all
@@ -492,7 +492,7 @@ print({k: (round(v, 3) if isinstance(v, float) else v) for k, v in s.items() if 
       "| worker errors:", on("standalone", "() => window.__standalone.errors"))
 
 # %% [markdown]
-# ![standalone: the microduck walks in the browser, no server](media/07/standalone.png)
+# ![standalone: the microduck walks in the browser, no server](https://github.com/strands-labs/robots/releases/download/media/07-standalone.png)
 #
 # The few errors this page logs are its probes for a server that is not there (`GET /api/scene`, `ws://.../ws/state`).
 # The re-probe backs off from 5 s to 60 s, and with no server the e-stop panel is hidden and never polls `/api/mesh`.

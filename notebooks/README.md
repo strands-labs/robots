@@ -1,7 +1,7 @@
 # strands-robots notebooks
 
-Eleven notebooks, saved with their outputs. Each one is also a plain script in [`scripts/`](scripts/) that runs top to
-bottom in a terminal or pastes into a REPL.
+Eleven notebooks, saved without outputs so the repository stays small: run one to see its results. Each one is also
+a plain script in [`scripts/`](scripts/) that runs top to bottom in a terminal or pastes into a REPL.
 
 ![the notebook path, 00 to 10](media/hero.svg)
 
@@ -40,7 +40,17 @@ The script is the source; the notebook is generated from it, then executed:
 
 ```bash
 python notebooks/_nb.py build notebooks/scripts/NN_x.py
-jupyter nbconvert --to notebook --execute --inplace notebooks/NN_x.ipynb
+jupyter nbconvert --to notebook --execute --inplace notebooks/NN_x.ipynb   # to look at the results
+jupyter nbconvert --clear-output --inplace notebooks/NN_x.ipynb            # before committing
+```
+
+Commit notebooks without outputs (`tests/test_notebooks_are_light.py` checks). The GIFs and screenshots the
+notebooks show are not in git either. They are assets of the
+[`media` release](https://github.com/strands-labs/robots/releases/tag/media), where `media/05/wave.gif` is
+`05-wave.gif`. Running a notebook writes them under `notebooks/media/` (gitignored). To publish a new one:
+
+```bash
+cp notebooks/media/05/wave.gif /tmp/05-wave.gif && gh release upload media /tmp/05-wave.gif --clobber
 ```
 
 `_nb.py` holds the builder and a few display helpers (GIFs, inline MP4, tables, quiet imports); `scripts/check_nb.py NN_x.ipynb`

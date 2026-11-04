@@ -194,8 +194,12 @@ All paths are under `strands_robots/`.
 - Notebooks are generated: edit `notebooks/scripts/NN_name.py`, build with
   `python notebooks/_nb.py build notebooks/scripts/NN_name.py`, execute with
   `jupyter nbconvert --to notebook --execute --inplace notebooks/NN_name.ipynb`, and check outputs with
-  `python notebooks/scripts/check_nb.py NN_name.ipynb`. Keep cells short and use the public API; helpers go in
+  `python notebooks/scripts/check_nb.py NN_name.ipynb`. Commit them without outputs
+  (`jupyter nbconvert --clear-output --inplace`; `tests/test_notebooks_are_light.py`). Their GIFs and screenshots are
+  assets of the `media` GitHub release, not files in git. Keep cells short and use the public API; helpers go in
   `notebooks/_nb.py`.
+- Nothing large goes in the package: the dashboard's `.wasm` engines are fetched on first use
+  (`dashboard/vendor.py`, pinned by sha256), so the installed package stays around 2 MB.
 - Drawings: `docs/drawings/_tools/scene.py` (see `README.txt` next to it).
 
 ## Known gotchas

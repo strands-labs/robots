@@ -1,8 +1,7 @@
-"""The routes: GET / · /api/scene · /api/assets/{path} · /api/policies · /api/mesh · /api/voice ·
-WS /ws/state · /ws/chat · /ws/voice · POST /api/robots · POST|GET /api/robots/{id}/run ·
-POST /api/robots/{id}/{act,stop,estop,resume} · POST /api/mesh/{id}/estop · GET /api/cameras ·
-/api/cameras/{name}.png · POST /api/world · GET /api/panels · POST /api/record/{start,stop} ·
-POST /api/record/episode/{save,discard} · GET /api/record/{status,options}."""
+"""Routes: GET / · /api/scene · /api/assets/{path} · /api/policies · /api/mesh · /api/voice · WS /ws/state · /ws/chat ·
+/ws/voice · POST /api/robots · POST|GET /api/robots/{id}/run · POST /api/robots/{id}/{act,stop,estop,resume} · POST
+/api/mesh/{id}/estop · GET /api/cameras[/{name}.png] · POST /api/world · GET /api/panels · POST
+/api/record/{start,stop,episode/save,episode/discard} · GET /api/record/{status,options} · GET /vendor/*.wasm."""
 
 from __future__ import annotations
 
@@ -16,6 +15,7 @@ from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 
 from . import cameras, connect_routes, record_routes, runs, voice_routes
+from . import vendor as _vendor
 from .guard import SameOrigin
 
 if TYPE_CHECKING:
@@ -234,5 +234,17 @@ def build_app(dash: Dashboard) -> FastAPI:
     connect_routes.register(app, dash)
     voice_routes.mount(app, dash)
 
+    for name in _vendor.FILES:  # the 20 MB engines live in the user cache, not the package (vendor.py)
+        app.add_api_route(f"/vendor/{name}", _engine(name), methods=["GET"], include_in_schema=False)
     app.mount("/", StaticFiles(directory=STATIC), name="static")
     return app
+
+
+def _engine(name: str) -> Any:
+    async def serve() -> Response:
+        try:
+            return FileResponse(await asyncio.to_thread(_vendor.path, name), media_type="application/wasm")
+        except OSError:  # vendor.path logged why; the page gets the fix, never the exception
+            return Response(_vendor.HINT, status_code=503, media_type="text/plain")
+
+    return serve

@@ -135,7 +135,7 @@ print(remote, "->", remote.execution)
 print(f"{seq.steps} steps, stopped by {seq.stopped_by}, fault {seq.fault} | holds {seq.holds} ({seq.held_seconds:.2f} s) | deadline misses {seq.deadline_misses}")
 
 # %% [markdown]
-# ![the sim SO-101 driven by a policy in another process](media/06/remote_arm.gif)
+# ![the sim SO-101 driven by a policy in another process](https://github.com/strands-labs/robots/releases/download/media/06-remote_arm.gif)
 
 # %%
 gif = [Image.fromarray(f) for f in frames[::4]]
