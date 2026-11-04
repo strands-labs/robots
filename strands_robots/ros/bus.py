@@ -36,7 +36,7 @@ class Sub:
 
 
 class RosBus:
-    """One node + a MultiThreadedExecutor thread. ``RosBus.shared()`` is the process-wide one."""
+    """One node + one executor thread. ``RosBus.shared()`` is the process-wide one."""
 
     _shared: RosBus | None = None
     _shared_lock = threading.Lock()
@@ -70,7 +70,7 @@ class RosBus:
                 return self
             try:
                 import rclpy
-                from rclpy.executors import MultiThreadedExecutor
+                from rclpy.executors import SingleThreadedExecutor
             except ImportError:
                 raise RosUnavailable(INSTALL_HINT) from None
             self._rclpy = rclpy
@@ -79,7 +79,8 @@ class RosBus:
                 rclpy.init()
                 self._owns_context = True
             self.node = rclpy.create_node(self.node_name)
-            self._executor = MultiThreadedExecutor(num_threads=4)
+            # one thread: rclpy's MultiThreadedExecutor pays a thread-pool hop per callback (100 Hz read as ~25 Hz)
+            self._executor = SingleThreadedExecutor()
             self._executor.add_node(self.node)
             self._thread = threading.Thread(target=self._spin, name="ros-bus", daemon=True)
             self._thread.start()

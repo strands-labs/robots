@@ -224,7 +224,8 @@ class RosDriver:
         """Stop our stream. If the robot is still armed it is told so: a low-level robot faults without us."""
         if self.stream is not None:
             frame = self._latest("state")
-            if frame is not None and self._armed(frame)[0] and not self.shadow:
+            arms = self.profile.stream("status") or self.profile.need("command").get("requires_release")
+            if arms and frame is not None and self._armed(frame)[0] and not self.shadow:
                 import logging
 
                 logging.getLogger(__name__).warning(
