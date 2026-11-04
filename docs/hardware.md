@@ -18,8 +18,10 @@ real.calibrate(interactive=False)  # loads the LeRobot calibration file
 obs = real.observe()               # measured joints, in radians
 real.confirm_act({"gripper": 1.0}, seconds=1.5)
 real.twin.sim.render()             # the twin shows the measured pose
-real.close()                       # torque off, port closed
+real.close()                       # holds the arm (torque stays on); port and cameras close
 ```
+
+`close()` holds a gravity-loaded arm in place rather than dropping it. Pass `disable_torque_on_disconnect=True` to release torque on close instead.
 
 ## Drivers
 
