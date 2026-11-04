@@ -17,7 +17,7 @@ from dataclasses import dataclass
 
 from .names import domain_id as _check_domain
 
-_APPLIED: dict[str, str] | None = None
+_APPLIED: dict[str, dict[str, str]] = {}  # "env": what the first apply() wrote into this process
 
 
 @dataclass(frozen=True)
@@ -59,10 +59,9 @@ class Discovery:
 
 def apply(d: Discovery, *, initialised: bool) -> dict[str, str]:
     """Write ``d.env()`` into the process before the first ``rclpy.init``; refuse a different second one."""
-    global _APPLIED
     want = d.env()
-    if initialised or _APPLIED is not None:
-        have = _APPLIED if _APPLIED is not None else {}
+    if initialised or "env" in _APPLIED:
+        have = _APPLIED.get("env", {})
         clash = {k: (os.environ.get(k), v) for k, v in want.items() if os.environ.get(k) != v}
         if clash:
             raise RuntimeError(
@@ -72,10 +71,9 @@ def apply(d: Discovery, *, initialised: bool) -> dict[str, str]:
             )
         return have
     os.environ.update(want)
-    _APPLIED = dict(want)
+    _APPLIED["env"] = dict(want)
     return want
 
 
 def reset_for_tests() -> None:
-    global _APPLIED
-    _APPLIED = None
+    _APPLIED.clear()

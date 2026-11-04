@@ -209,21 +209,21 @@ ENTRY_POINTS = "strands_robots.ros_codecs"
 
 def codec_class(profile: Profile) -> type[Codec]:
     """The profile's ``codec`` dotted path, else its family: a ``strands_robots.ros_codecs`` entry point or built in."""
-    spec = profile.data.get("codec")
-    if not spec:
-        eps = {ep.name: ep for ep in entry_points(group=ENTRY_POINTS)}
-        if profile.family in eps:
-            cls = eps[profile.family].load()
-        elif profile.family in BUILTIN:
-            spec = BUILTIN[profile.family]
-        else:
-            raise ValueError(
-                f"ROS profile {profile.name!r}: no codec for family {profile.family!r} (built in: {sorted(BUILTIN)}; "
-                f'add "codec": "pkg.module:Class" to the profile or a {ENTRY_POINTS} entry point)'
-            )
+    spec = str(profile.data.get("codec") or "")
+    eps = {} if spec else {ep.name: ep for ep in entry_points(group=ENTRY_POINTS)}
     if spec:
-        mod, _, attr = str(spec).partition(":")
+        mod, _, attr = spec.partition(":")
         cls = getattr(importlib.import_module(mod), attr)
+    elif profile.family in eps:
+        cls = eps[profile.family].load()
+    elif profile.family in BUILTIN:
+        mod, _, attr = BUILTIN[profile.family].partition(":")
+        cls = getattr(importlib.import_module(mod), attr)
+    else:
+        raise ValueError(
+            f"ROS profile {profile.name!r}: no codec for family {profile.family!r} (built in: {sorted(BUILTIN)}; "
+            f'add "codec": "pkg.module:Class" to the profile or a {ENTRY_POINTS} entry point)'
+        )
     if not (isinstance(cls, type) and issubclass(cls, Codec)):
         raise TypeError(f"ROS profile {profile.name!r}: codec {cls!r} is not a strands_robots Codec subclass")
     return cls

@@ -17,6 +17,7 @@ import math
 import os
 import threading
 import time
+from pathlib import Path
 from typing import Any
 
 from .bus import RosBus
@@ -53,7 +54,7 @@ class RosPresence:
     def start(self) -> RosPresence:
         model = getattr(self.robot.description, "model_path", None)
         if model is not None and os.path.isfile(model):
-            msg = from_dict(message_class("std_msgs/msg/String"), {"data": open(model).read()})
+            msg = from_dict(message_class("std_msgs/msg/String"), {"data": Path(model).read_text()})
             self.bus.publish(f"{self.ns}/robot_description", "std_msgs/msg/String", msg, qos="latched")
         if self.commands:
             self.bus.subscribe(f"{self.ns}/joint_command", JS, qos="reliable", listener=self._on_command)
