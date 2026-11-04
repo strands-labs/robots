@@ -74,3 +74,19 @@ def test_the_browser_scene_carries_no_attribute_newer_than_the_pinned_build() ->
         Robot("so101", sim=sim)
         xml = Dashboard(sim).scene_json()["xml"]
     assert ' input="' not in xml  # python mujoco 3.16 writes it; 3.14 WASM rejects it
+
+
+def test_a_missing_engine_answers_503_with_the_fix_and_no_exception_text(tmp_path, monkeypatch) -> None:
+    """CodeQL py/stack-trace-exposure: the page gets the fixed hint; the reason goes to the server log only."""
+    pytest.importorskip("fastapi")
+    from fastapi.testclient import TestClient
+
+    from strands_robots import Simulation
+    from strands_robots.dashboard import Dashboard
+
+    monkeypatch.setenv("STRANDS_ROBOTS_CACHE", str(tmp_path))
+    monkeypatch.setitem(vendor.FILES, "mujoco.wasm", ("https://invalid.example/secret-path/mujoco.wasm", "0" * 64))
+    with Simulation() as sim:
+        r = TestClient(Dashboard(sim).app, base_url="http://127.0.0.1:8090").get("/vendor/mujoco.wasm")
+    assert r.status_code == 503 and r.text == vendor.HINT
+    assert "invalid.example" not in r.text and str(tmp_path) not in r.text

@@ -11,6 +11,7 @@ the version ``static/vendor/NOTICE`` names, refuses it unless its sha256 matches
 from __future__ import annotations
 
 import hashlib
+import logging
 import os
 import threading
 import urllib.request
@@ -30,6 +31,11 @@ FILES: dict[str, tuple[str, str]] = {
     ),
 }
 _LOCK = threading.Lock()
+_LOG = logging.getLogger(__name__)
+HINT = (
+    "the dashboard's browser engine is not available: run `python -m strands_robots.dashboard --fetch` where there "
+    "is internet (or copy ~/.cache/strands_robots/dashboard from a machine that did); the server log says why"
+)
 
 
 def directory() -> Path:
@@ -59,6 +65,7 @@ def path(name: str, *, timeout: float = 120.0) -> Path:
                 raise OSError(f"{name} from {url} has sha256 {got}, expected {sha}: refusing it")
             tmp.replace(dst)
         except OSError as e:
+            _LOG.warning("could not fetch %s from %s: %s", name, url, e)
             raise OSError(
                 f"the dashboard could not fetch {name} ({e}). On a machine with internet run "
                 f"`python -m strands_robots.dashboard --fetch`, then copy {directory()} to this one"
