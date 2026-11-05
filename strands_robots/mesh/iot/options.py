@@ -6,7 +6,7 @@ safety chain are untouched (a shadow target still goes through ``confirm_act``).
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
 
@@ -15,13 +15,17 @@ from ..transports.base import Unsubscribe
 
 @dataclass(frozen=True)
 class IotOptions:
-    """``shadows``: keep the ``manifest``/``state``/``control`` named shadows (``shadow_hz`` ≤ 1 for ``state``).
+    """``shadows``: keep the ``manifest`` and ``state`` named shadows (``shadow_hz`` ≤ 1 for ``state``).
+    ``control``: also act on ``control`` shadow targets (off by default: it is a write path). A target goes through
+    ``confirm_act``, arms the mesh watchdog like an ``act`` rpc (a writer that stops writing for ``watchdog_ms``
+    gets ``on_disconnect``), and is refused by name on a hardware device mounted with ``watchdog_ms=None``.
     ``stale_s``: a ``control`` target whose shadow stamp is older than this at delivery is dropped as stale
-    (≥ 1 s, the stamp's resolution; ``None`` applies every delta). It is the shadow's own bound and leaves the
-    mesh's ``watchdog_ms`` alone. ``telemetry_hz``: > 0 publishes the state envelope on the Basic Ingest topic of
-    the tenant's telemetry rule (≤ 1 Hz; the rule must exist: ``rules.apply_rules``)."""
+    (≥ 1 s, the stamp's resolution; ``None`` applies every delta). ``telemetry_hz``: > 0 publishes the state
+    envelope on the Basic Ingest topic of the tenant's telemetry rule (≤ 1 Hz; the rule must exist:
+    ``rules.apply_rules``)."""
 
     shadows: bool = True
+    control: bool = False
     shadow_hz: float = 0.5
     stale_s: float | None = 2.0
     telemetry_hz: float = 0.0
@@ -54,10 +58,12 @@ def attach(
     robot: Any,
     record: Mapping[str, Any],
     lockout: Any,
+    *,
+    on_rpc: Callable[[str, str | None], Callable[[], None] | None] | None = None,
 ) -> Unsubscribe:
     """Start the IoT-native pieces for one mounted device on every IoT transport. ``lockout`` is the device's
     ``Lockout``; the ``state`` shadow reports it synced with the robot's latch, as the ``lockout`` rpc does.
-    Returns the undo."""
+    ``on_rpc`` is the mount's watchdog hook (``None``: no watchdog). Returns the undo."""
     opts = options if isinstance(options, IotOptions) else IotOptions(**dict(options))
     iot_transports = [t for t in transports if is_iot(t)]
     if not iot_transports:
@@ -81,6 +87,8 @@ def attach(
                     record,
                     shadow_hz=opts.shadow_hz,
                     stale_s=opts.stale_s,
+                    control=opts.control,
+                    on_rpc=on_rpc,
                     lockout=lambda: lockout.synced(robot).to_dict(),  # what the lockout rpc answers, not a stale copy
                 )
                 undos.append(mirror.stop)  # registered before start(): a failure inside start() is undone too
