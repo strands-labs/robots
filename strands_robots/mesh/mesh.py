@@ -55,7 +55,8 @@ class Mesh:
         self.peer_id = uuid.uuid4().hex
         self.presence_ttl = float(presence_ttl)
         self.transports: list[Transport] = [
-            open_transport(t, presence_ttl=self.presence_ttl) if isinstance(t, str) else t for t in items
+            open_transport(t, presence_ttl=self.presence_ttl, tenant=self.tenant) if isinstance(t, str) else t
+            for t in items
         ]
         self._own = own_transports
         self._lock = threading.Lock()

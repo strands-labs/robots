@@ -29,7 +29,8 @@ def test_register_rotate_retire_revoke_teardown(aws, tmp_path):
     assert out["query"] == f"client=arm-1&cert={tmp_path}/arm-1/cert.pem&key={tmp_path}/arm-1/key.pem"
     assert oct((tmp_path / "arm-1" / "key.pem").stat().st_mode)[-3:] == "600"
     thing = aws.describe_thing(thingName="arm-1")
-    assert thing["attributes"] == {"tenant": "lab", "device_type": "robot_arm", "role": "arm"}
+    want = {"tenant": "lab", "device_type": "robot_arm", "role": "arm", "telemetry_rule": "strands_telemetry_lab"}
+    assert thing["attributes"] == want
     assert aws.list_things_in_thing_group(thingGroupName="strands-lab")["things"] == ["arm-1"]  # names
     first = out["certificate_id"]
     assert aws.describe_certificate(certificateId=first)["certificateDescription"]["status"] == "ACTIVE"
@@ -145,3 +146,13 @@ def test_rotate_an_hsm_identity_with_a_csr_signed_by_its_token_key(aws, tmp_path
     assert rot["key"] == key_uri and rot["retire"] == [out["certificate_id"]]
     with pytest.raises(ValueError, match="both"):
         provision.rotate(aws, "arm-9", tmp_path, csr_pem="a-csr")
+
+
+def test_a_label_cannot_set_the_attributes_the_fleet_policy_reads(aws, tmp_path):
+    # The policy takes the tenant and the telemetry rule from thing attributes; a label named like one of them
+    # would move the device into another tenant's topics.
+    provision.setup_tenant(aws, "lab", region=REGION, account=ACCOUNT)
+    labels = {"tenant": "other", "telemetry_rule": "strands_telemetry_other", "role": "arm"}
+    provision.register(aws, {**RECORD, "labels": labels}, tmp_path)
+    attrs = aws.describe_thing(thingName="arm-1")["attributes"]
+    assert attrs["tenant"] == "lab" and attrs["telemetry_rule"] == "strands_telemetry_lab" and attrs["role"] == "arm"

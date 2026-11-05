@@ -24,7 +24,7 @@ def test_fleet_policy_fits_the_cap_and_names_no_tenant_or_thing():
     doc = json.loads(text)
     actions = {a for s in doc["Statement"] for a in ([s["Action"]] if isinstance(s["Action"], str) else s["Action"])}
     assert actions == {"iot:Connect", "iot:Publish", "iot:RetainPublish", "iot:Subscribe", "iot:Receive"}
-    pub = [s for s in doc["Statement"] if "iot:Publish" in s["Action"]][0]["Resource"]
+    pub = [r for s in doc["Statement"] if "iot:Publish" in s["Action"] for r in s["Resource"]]
     assert not any("@estop" in r for r in pub), "a device never publishes the tenant e-stop"
     assert any(r.endswith("@presence/${iot:Connection.Thing.ThingName}") for r in pub)
 
@@ -90,8 +90,59 @@ def test_operator_policy_names_the_control_shadow_as_iam_does():
 
 
 def test_operator_policy_refuses_a_document_over_iams_cap_by_name():
-    # IAM refuses a managed policy over 6,144 characters; each device adds six ARNs, so about nine fit. The
+    # IAM refuses a managed policy over 6,144 characters; each device adds ten ARNs, so about six fit. The
     # refusal names the cap and the fix (several documents), instead of IAM's MalformedPolicyDocument later.
     with pytest.raises(ValueError, match="6144"):
         policy.operator_policy(REGION, ACCOUNT, "lab", things=[f"arm-{i}" for i in range(40)])
-    policy.operator_policy(REGION, ACCOUNT, "lab", things=[f"arm-{i}" for i in range(8)])  # fits
+    policy.operator_policy(REGION, ACCOUNT, "lab", things=[f"arm-{i}" for i in range(6)])  # fits
+
+
+def _resources(doc, action):
+    out = []
+    for s in _by_action(doc, action):
+        out += [s["Resource"]] if isinstance(s["Resource"], str) else s["Resource"]
+    return out
+
+
+def test_a_device_cannot_publish_a_liveliness_token_or_retain_a_reply():
+    # A device's certificate is not a commander: a forged @peer beat would keep a dead operator "alive" for the
+    # watchdog of every robot in the tenant, and a forged goodbye would fire their on_disconnect.
+    doc = policy.device_policy(REGION, ACCOUNT)
+    assert not any("@peer" in r for r in _resources(doc, "iot:Publish"))
+    retained = _resources(doc, "iot:RetainPublish")
+    assert not any(w in r for r in retained for w in ("@reply", "@presence", "@peer", "$aws/rules")), retained
+    assert any(r.endswith("topicfilter/strands/${iot:Connection.Thing.Attributes[tenant]}/@peer/*")
+               for r in _resources(doc, "iot:Subscribe")), "the watchdog still hears its commanders"  # fmt: skip
+    ctl = policy.controller_policy(REGION, ACCOUNT)
+    assert any(r.endswith("/@peer/*") for r in _resources(ctl, "iot:Publish")), "a commander keeps its beat"
+
+
+def test_a_device_reaches_only_its_own_telemetry_rule():
+    doc = policy.device_policy(REGION, ACCOUNT)
+    rules = [r for r in _resources(doc, "iot:Publish") if "$aws/rules/" in r]
+    assert rules == [
+        f"arn:aws:iot:{REGION}:{ACCOUNT}:topic/$aws/rules/${{iot:Connection.Thing.Attributes[telemetry_rule]}}/"
+        "strands/${iot:Connection.Thing.Attributes[tenant]}/${iot:Connection.Thing.ThingName}/state"
+    ]
+    assert not any("$aws/rules/*" in r for r in _resources(doc, "iot:Publish"))
+
+
+def test_the_operator_hears_and_messages_only_its_tenants_devices():
+    doc = policy.operator_policy(REGION, ACCOUNT, "lab", things=["arm-1", "arm-2"])
+    life = [r for a in ("iot:Subscribe", "iot:Receive") for r in _resources(doc, a) if "$aws/events/presence" in r]
+    assert sorted(r.rsplit("/", 1)[-1] for r in life) == ["arm-1", "arm-1", "arm-2", "arm-2"], life
+    (dm,) = _by_action(doc, "iot:SendDirectMessage")
+    assert dm["Resource"] == [
+        f"arn:aws:iot:{REGION}:{ACCOUNT}:client/arm-1",
+        f"arn:aws:iot:{REGION}:{ACCOUNT}:client/arm-2",
+    ]
+    assert dm["Condition"] == {"StringLike": {"iot:Topic": ["strands/lab/*/rpc/*", "strands/lab/*/manifest"]}}
+    wide = policy.operator_policy(REGION, ACCOUNT, "lab", all_things=True)
+    (dm,) = _by_action(wide, "iot:SendDirectMessage")
+    assert dm["Condition"] == {"StringLike": {"iot:Topic": ["strands/lab/*/rpc/*", "strands/lab/*/manifest"]}}, "the tenant bound stays"
+
+
+def test_the_operator_connects_only_with_its_tenants_client_ids():
+    (connect,) = _by_action(policy.operator_policy(REGION, ACCOUNT, "lab", things=["arm-1"]), "iot:Connect")
+    assert connect["Resource"] == f"arn:aws:iot:{REGION}:{ACCOUNT}:client/strands-op-lab-*"
+    assert policy.operator_client_prefix("lab") == "strands-op-lab-"

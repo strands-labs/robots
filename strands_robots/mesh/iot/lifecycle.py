@@ -4,8 +4,8 @@
 socket close (a crash, a ``stop()``, a SIGKILL), free of charge. But the broker gives a silent client
 1.5 × its *server* keep-alive before calling it gone, and IoT Core answers ``server_keep_alive_sec = 1200`` whatever
 the client asks — so a frozen or partitioned robot stays "connected" for up to 30 minutes. The mesh keeps its 3 s
-heartbeat for presence; this module records who connected and disconnected, when and why, and gives the rule that
-clears a dead client's retained presence.
+heartbeat for presence; this module records who connected and disconnected, when and why, and gives the tenant's
+audit rule for disconnects.
 """
 
 from __future__ import annotations
@@ -15,6 +15,8 @@ import time
 from collections.abc import Callable, Mapping
 from typing import Any
 
+from .. import wire
+from .policy import operator_client_prefix
 from .rules import rule_name
 
 TOPICS = ("$aws/events/presence/connected/+", "$aws/events/presence/disconnected/+")
@@ -42,8 +44,9 @@ def parse(topic: str, raw: bytes) -> Event | None:
 def watch(
     link: Any, on_event: Callable[[Event], None], *, tenant_clients: Callable[[str], bool] | None = None
 ) -> Callable[[], None]:
-    """Subscribe to the account's lifecycle events on ``link`` and call ``on_event`` per event (optionally only for
-    clients ``tenant_clients(client)`` accepts, since the events are account-wide). Returns the undo."""
+    """Subscribe to lifecycle events on ``link`` and call ``on_event`` per event (optionally only for clients
+    ``tenant_clients(client)`` accepts). ``tenant_clients`` is a convenience filter, not isolation: what a link may
+    hear is decided by its policy (``operator_policy`` grants only the tenant's own devices). Returns the undo."""
 
     def on(topic: str, raw: bytes) -> None:
         ev = parse(topic, raw)
@@ -74,15 +77,23 @@ class Audit:
         return next((e for e in reversed(self.events) if e["client"] == client), None)
 
 
-def clear_presence_rule(tenant: str, role_arn: str) -> dict[str, Mapping[str, Any]]:
-    """The one rule lifecycle events are good for: when a client drops, clear its retained presence/lockout so a
-    late reader never acts on a dead device's last word (an empty retained publish clears, verified)."""
+def clear_presence_rule(tenant: str, role_arn: str, *, things: list[str]) -> dict[str, Mapping[str, Any]]:
+    """The audit rule: republish disconnects of THIS tenant's clients (its device ids ``things`` and its operators,
+    ``strands-op-<tenant>-*``) to ``strands/<tenant>/@audit/disconnected``. Lifecycle events are account-wide, so
+    without the ``WHERE`` every tenant's audit topic would carry every other tenant's disconnects. An empty
+    ``things`` is refused rather than widened."""
+    t = wire.check_id(tenant, "tenant")
+    ids = [wire.check_id(i, "device_id") for i in things]
+    if not ids:
+        raise ValueError("clear_presence_rule needs the tenant's device ids (things=[...] from registry.list_things)")
+    who = " OR ".join([*(f"clientId = '{i}'" for i in ids), f"startswith(clientId, '{operator_client_prefix(t)}')"])
     return {
-        rule_name("lifecycle", tenant): {
-            "sql": "SELECT clientId, disconnectReason, timestamp FROM '$aws/events/presence/disconnected/+'",
-            "description": f"strands-robots tenant {tenant}: audit disconnects; clear retained state of the client",
+        rule_name("lifecycle", t): {
+            "sql": "SELECT clientId, disconnectReason, timestamp FROM '$aws/events/presence/disconnected/+'"
+            f" WHERE {who}",
+            "description": f"strands-robots tenant {t}: audit disconnects of this tenant's devices and operators",
             "actions": [
-                {"republish": {"topic": f"strands/{tenant}/@audit/disconnected", "roleArn": role_arn, "qos": 1}},
+                {"republish": {"topic": f"strands/{t}/@audit/disconnected", "roleArn": role_arn, "qos": 1}},
             ],
             "ruleDisabled": False,
             "awsIotSqlVersion": "2016-03-23",

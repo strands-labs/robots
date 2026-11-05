@@ -26,6 +26,7 @@ import uuid
 from concurrent.futures import Future, ThreadPoolExecutor
 from urllib.parse import parse_qs, urlparse
 
+from ..iot.client_id import link_client_id
 from ..iot.direct import reply_ok, rpc_mode
 from . import pkcs11
 from .base import OnAlive, OnQuery, OnSample, RemoteError, Unsubscribe
@@ -41,13 +42,7 @@ def _filter(key_expr: str) -> str:
     return "/".join(parts)
 
 
-def default_client_id(query: dict[str, str]) -> str:
-    """A certificate link is a device (its policy pins the thing name, pass ``client=``); an IAM link is an operator,
-    and ``operator_policy`` admits only ``strands-op-*`` on ``iot:Connect``."""
-    return f"strands-{uuid.uuid4().hex[:12]}" if query.get("cert") else f"strands-op-{uuid.uuid4().hex[:12]}"
-
-
-def _link(url: str) -> Link:
+def _link(url: str, tenant: str | None = None) -> Link:
     u = urlparse(url)
     q = {k: v[0] for k, v in parse_qs(u.query).items()}
     if "pin-value" in q:  # a split or a bare pkcs11: key with its PIN: refused before the URL is kept anywhere
@@ -55,9 +50,11 @@ def _link(url: str) -> Link:
     pkcs11.refuse_pin(q.get("key") or "")
     if (q.get("key") or "").startswith("pkcs11:") and {"module-path", "module-name"} & q.keys():
         raise ValueError("percent-encode a pkcs11: key= on an iot:// link (quote(key, safe='')): its '&' split it")
-    client = q.get("client") or default_client_id(q)
     if u.netloc == "fake":
-        return FakeLink(FakeIotBroker.named(q.get("broker", "default")), client)
+        return FakeLink(
+            FakeIotBroker.named(q.get("broker", "default")), q.get("client") or f"strands-{uuid.uuid4().hex[:12]}"
+        )
+    client = link_client_id(q, tenant)
     endpoint = q.get("endpoint")
     if not endpoint:
         import boto3
@@ -68,10 +65,13 @@ def _link(url: str) -> Link:
 
 
 class IotTransport:
-    def __init__(self, url: str, presence_ttl: float = 3.0, link: Link | None = None) -> None:
+    def __init__(
+        self, url: str, presence_ttl: float = 3.0, link: Link | None = None, tenant: str | None = None
+    ) -> None:
         self.url = url
         self.ttl = presence_ttl
-        self.link = link or _link(url)
+        self.tenant = tenant  # the Mesh's: an rpc on another tenant's topic is never answered
+        self.link = link or _link(url, tenant)
         self.rpc = rpc_mode({k: v[0] for k, v in parse_qs(urlparse(url).query).items()})
         self._pending: dict[str, Future[bytes]] = {}
         self._clients: dict[str, str] = {}  # presence key's device id -> the client holding it
@@ -95,6 +95,8 @@ class IotTransport:
     def queryable(self, key_expr: str, handler: OnQuery, *, inline: bool = False) -> Unsubscribe:
         def answer(key: str, raw: bytes) -> None:
             req = json.loads(raw)
+            if self.tenant is not None and key.split("/")[1] != self.tenant:
+                return  # delivered on another tenant's topic: not this device's caller
             if not reply_ok(str(req.get("reply", "")), key.split("/")[1]):
                 return  # a reply address outside this tenant's @reply keys: never answered
             try:
@@ -230,5 +232,5 @@ class IotTransport:
         self._pool.shutdown(wait=False, cancel_futures=True)
 
 
-def open(url: str, *, presence_ttl: float = 3.0) -> IotTransport:
-    return IotTransport(url, presence_ttl)
+def open(url: str, *, presence_ttl: float = 3.0, tenant: str | None = None) -> IotTransport:
+    return IotTransport(url, presence_ttl, tenant=tenant)

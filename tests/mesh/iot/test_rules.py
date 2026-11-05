@@ -22,7 +22,7 @@ def _every_rule(tenant: str) -> dict:
     """All five rules a tenant can have: estop, events, fault and telemetry (``rules_for``) and lifecycle."""
     return {
         **rules.rules_for(tenant, ROLE, sns_topic_arn=SNS, s3_bucket="b", telemetry=True),
-        **lifecycle.clear_presence_rule(tenant, ROLE),
+        **lifecycle.clear_presence_rule(tenant, ROLE, things=["arm-1"]),
     }
 
 

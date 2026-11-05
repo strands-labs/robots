@@ -27,7 +27,9 @@ With `iot=`, the robot also becomes an IoT thing with shadows.
 1. Install the extra: `uv pip install "strands-robots[iot] @ git+https://github.com/strands-labs/robots@main"`.
 2. Run `provision.setup_tenant` once per tenant.
 3. Run `provision.register` once per robot. Files go in `~/.strands/iot/<id>/`.
-4. Attach `policy.operator_policy(tenant, things=[...])` to each operator's IAM identity.
+4. Attach `policy.operator_policy(region, account, tenant, things=[...])` to each operator's IAM identity. An
+   operator connects with the MQTT client id `strands-op-<tenant>-<name>`; `Mesh("iot://<region>", tenant=...)`
+   makes one, and refuses a `client=` outside that prefix.
 
 ```python
 from strands_robots.mesh.iot import provision
@@ -38,7 +40,15 @@ Mesh(f"iot://us-west-2?{out['query']}", tenant="lab-a")
 ```
 
 Each robot gets its own certificate. The key is made on the robot and never leaves it. One fleet policy lets a
-robot connect only as itself and read only inside its tenant.
+robot connect only as itself and read only inside its tenant. A robot cannot publish another peer's liveliness (only
+a certificate with the controller policy, which commands, can), and it sends telemetry only to the rule its thing's
+`telemetry_rule` attribute names. `register` writes that attribute and `tenant` itself; a label never overrides
+them. Fleet provisioning by claim writes it for tenant ids of letters and digits only.
+
+An operator policy names the tenant's devices: an operator direct-messages only those devices, on their rpc topics,
+and hears only their connect and disconnect events. The disconnect audit rule,
+`lifecycle.clear_presence_rule(tenant, role_arn, things=[...])`, republishes only those devices' and the tenant's
+operators' disconnects.
 
 | Function | Does |
 |---|---|

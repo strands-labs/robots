@@ -55,14 +55,16 @@ class Transport(Protocol):
     def close(self) -> None: ...
 
 
-def open_transport(url: str, *, presence_ttl: float = 3.0) -> Transport:
+def open_transport(url: str, *, presence_ttl: float = 3.0, tenant: str | None = None) -> Transport:
     """``zenoh://…``, ``iot://<region>``, ``mem://<name>`` → an open transport. A peer that dies is noticed
-    within ``presence_ttl`` seconds."""
+    within ``presence_ttl`` seconds. ``tenant`` (the Mesh's) lets an IoT link name its operator client id and refuse
+    another tenant's rpcs."""
     scheme = urlparse(url).scheme
     if scheme not in _SCHEMES:
         raise ValueError(f"unknown mesh transport {scheme!r} in {url!r}; known: {sorted(_SCHEMES)}")
     module = importlib.import_module(_SCHEMES[scheme])
-    transport: Transport = module.open(url, presence_ttl=presence_ttl)
+    extra = {"tenant": tenant} if scheme == "iot" else {}
+    transport: Transport = module.open(url, presence_ttl=presence_ttl, **extra)
     return transport
 
 

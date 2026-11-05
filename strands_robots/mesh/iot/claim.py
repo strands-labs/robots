@@ -40,7 +40,14 @@ TEMPLATE: dict[str, Any] = {
             "Properties": {
                 "ThingName": {"Ref": "device_id"},
                 "ThingTypeName": {"Ref": "device_type"},
-                "AttributePayload": {"tenant": {"Ref": "tenant"}, "device_type": {"Ref": "device_type"}},
+                "AttributePayload": {
+                    "tenant": {"Ref": "tenant"},
+                    "device_type": {"Ref": "device_type"},
+                    # rules.rule_name("telemetry", tenant) for a plain (letters and digits) tenant; any other tenant
+                    # gets a hashed rule name the template cannot compute, so its telemetry is refused until
+                    # provision.register (or update-thing) writes the attribute
+                    "telemetry_rule": {"Fn::Join": ["", ["strands_telemetry_", {"Ref": "tenant"}]]},
+                },
                 "ThingGroups": [{"Fn::Join": ["", ["strands-", {"Ref": "tenant"}]]}],
             },
         },
