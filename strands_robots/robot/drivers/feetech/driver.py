@@ -58,9 +58,8 @@ class FeetechDriver:
         self.description = description
         self.names = description.action_keys
         # motor ids: the registry labels model joints "1".."6" -> the label; fall back to 1..n in action order
-        self.ids = [
-            int(description.unlabel(n)) if description.unlabel(n).isdigit() else i + 1 for i, n in enumerate(self.names)
-        ]
+        unlabelled = [description.unlabel(n) for n in self.names]
+        self.ids = [int(u) if u.isdigit() else i + 1 for i, u in enumerate(unlabelled)]
         self.bus = bus or FeetechBus(port or "", baud=baud)
         self.cameras = Cameras(cameras)
         self._torque_on = False
@@ -75,10 +74,9 @@ class FeetechDriver:
             raise ConnectionError(f"{description.name} on {self.bus.port}: no reply from servo id(s) {missing}")
 
     def _load_calibration(self, cal: Any, robot_id: str | None) -> None:
-        if isinstance(cal, Calibration):
-            self.calibration, self.calibration_source = cal, "caller"
-        elif isinstance(cal, Mapping):
-            self.calibration, self.calibration_source = Calibration.from_json(cal), "caller"
+        if isinstance(cal, (Calibration, Mapping)):
+            self.calibration = cal if isinstance(cal, Calibration) else Calibration.from_json(cal)
+            self.calibration_source = "caller"
         else:
             rtype = str(self.description.hardware.lerobot_type or self.description.name)
             path, self._save_to, looked = calib._find_lerobot_calibration(rtype, robot_id, cal)
@@ -86,6 +84,8 @@ class FeetechDriver:
             if path is not None:
                 self.calibration = Calibration.from_json(json.loads(path.read_text()))
                 self.calibration_source = str(path)
+        if self.calibration is not None:
+            self.calibration.check_bus(resolution=RESOLUTION, max_homing=2047, source=str(self.calibration_source))
 
     def default_calibration_path(self, robot_id: str | None = None) -> Path:
         """Where ``calibrate()`` saves when no file was loaded: LeRobot's ``<type>/<id>.json`` for this arm."""
