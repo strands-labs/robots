@@ -19,8 +19,8 @@ from __future__ import annotations
 
 import base64
 import hashlib
-import re
 from collections.abc import Awaitable, Callable, MutableMapping
+from html.parser import HTMLParser
 from pathlib import Path
 from typing import Any
 
@@ -31,10 +31,34 @@ FRAME_ANCESTORS = "frame-ancestors 'self' http://127.0.0.1:* http://localhost:* 
 Scope = MutableMapping[str, Any]
 
 
+class _InlineScripts(HTMLParser):
+    """The bodies of a page's inline ``<script>`` elements (those without ``src``), as the browser hashes them."""
+
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=False)
+        self.bodies: list[str] = []
+        self._open: list[str] | None = None
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        if tag == "script" and not any(k == "src" for k, _ in attrs):
+            self._open = []
+
+    def handle_data(self, data: str) -> None:
+        if self._open is not None:
+            self._open.append(data)
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag == "script" and self._open is not None:
+            self.bodies.append("".join(self._open))
+            self._open = None
+
+
 def _inline_hashes() -> str:
     """CSP hashes of index.html's inline scripts (the colour-scheme picker that must run before first paint)."""
-    html = (Path(__file__).parent / "static" / "index.html").read_text()
-    bodies = re.findall(r"<script>(.*?)</script>", html, flags=re.S)
+    parser = _InlineScripts()
+    parser.feed((Path(__file__).parent / "static" / "index.html").read_text())
+    parser.close()
+    bodies = parser.bodies
     return " ".join(f"'sha256-{base64.b64encode(hashlib.sha256(b.encode()).digest()).decode()}'" for b in bodies)
 
 
