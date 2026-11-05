@@ -66,6 +66,6 @@ def confirm_act(
         raise ValueError("act takes steps= or seconds=, not both")
     from .reach import reach
 
-    q = robot.coerce(robot.observe(images=False).joints)
+    q = np.asarray(robot.observe(images=False).joints.positions, dtype=float)  # raw: a joint past its limit may hold
     reach(robot, targets, seconds, gate=lambda t: gate(robot, t, confirmed=True, measured=q))
     return robot.observe(images=False)
