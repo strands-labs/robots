@@ -46,6 +46,16 @@ MOTION_SURFACES: tuple[str, ...] = (
     "/api/loco/request",
     "/api/arm/request",
     "/api/motion_switcher/request",
+    # parameters: a node's live limits and gains (velocity caps, safety toggles), set through its services
+    "/set_parameters",
+    "/set_parameters_atomically",
+    "/rosapi/set_param",
+    # ros2_control's controller manager: activating a controller or a hardware component starts motion
+    "/switch_controller",
+    "/load_controller",
+    "/configure_controller",
+    "/unload_controller",
+    "/set_hardware_component_state",
 )
 
 Approver = Callable[[str, str, Mapping[str, Any]], bool]

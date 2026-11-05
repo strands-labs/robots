@@ -47,8 +47,11 @@ agent = Agent(tools=[use_ros()])
 agent("What topics are up? Echo /joint_states once.")
 ```
 
-Reads are free. A write to a motion topic needs an exact `STRANDS_ROS_ALLOW` entry or an operator's yes. A topic
-a `Robot` streams is always refused: use that robot's own tool.
+Reads are free. A write to a motion surface needs an exact `STRANDS_ROS_ALLOW` entry or an operator's yes. Motion
+surfaces include velocity and joint command topics, ros2_control's `/<controller>/commands`, parameter writes
+(`set_param`, which is gated as `<node>/set_parameters`, and the `set_parameters[_atomically]` services) and the
+controller manager's `switch_controller`, `load_controller`, `configure_controller`, `unload_controller` and
+`set_hardware_component_state`. A topic a `Robot` streams is always refused: use that robot's own tool.
 
 ## Your own robot
 

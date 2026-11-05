@@ -54,6 +54,8 @@ def dispatch(bus: RosBus, gate: CommandGate, verb: str, a: dict[str, Any]) -> An
         target = a.get("topic") or a.get("service") or a.get("action") or a.get("node")
         if not target:
             raise ValueError(f"{verb} needs topic=/service=/action=/node=")
+        if verb == "set_param":  # the write lands on the node's set_parameters service: gate that name
+            target = f"{canonical(str(target)).rstrip('/')}/set_parameters"
         _required(verb, a)  # an incomplete call is refused before an operator is asked about it
         gate.owners = {**bus.owners, **dict(gate.owners)}  # a Robot's command topic is never a free write
         gate.check(

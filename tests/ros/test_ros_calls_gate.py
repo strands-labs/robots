@@ -158,3 +158,43 @@ def test_dispatch_checks_args_before_asking_and_never_gates_reads_or_stop(ros):
     )
     assert asked == ["/cmd_vel"] and r["count"] == 1
     bus.close()
+
+
+@pytest.mark.parametrize(
+    ("verb", "target"),
+    [
+        ("publish", "/forward_position_controller/commands"),
+        ("call", "/velocity_smoother/set_parameters"),
+        ("call", "/velocity_smoother/set_parameters_atomically"),
+        ("call", "/controller_manager/set_parameters"),
+        ("call", "/rosapi/set_param"),
+        ("call", "/controller_manager/switch_controller"),
+        ("call", "/arm/controller_manager/load_controller"),
+        ("call", "/controller_manager/configure_controller"),
+        ("call", "/controller_manager/unload_controller"),
+        ("call", "/controller_manager/set_hardware_component_state"),
+    ],
+)
+def test_ros2_control_commands_parameters_and_the_controller_manager_are_gated(verb, target):
+    from strands_robots.ros.gate import CommandGate, CommandRefused
+
+    with pytest.raises(CommandRefused, match="no operator"):
+        CommandGate(allow=frozenset()).check(verb, target)
+    assert CommandGate(allow=frozenset({target})).check(verb, target) == "allowlist"
+
+
+def test_set_param_is_gated_as_the_nodes_set_parameters_service(ros):
+    from strands_robots.ros.bus import RosBus
+    from strands_robots.ros.gate import CommandGate, CommandRefused
+    from strands_robots.ros.verbs import dispatch
+
+    bus = RosBus().start()
+    args = {"node": "/velocity_smoother", "name": "max_velocity", "value": 10.0}
+    with pytest.raises(CommandRefused, match="/velocity_smoother/set_parameters"):
+        dispatch(bus, CommandGate(allow=frozenset()), "set_param", dict(args))
+    asked = []
+    no = CommandGate(allow=frozenset(), approve=lambda v, t, p: asked.append((v, t, p.get("value"))) or False)
+    with pytest.raises(CommandRefused, match="declined"):
+        dispatch(bus, no, "set_param", dict(args))
+    assert asked == [("set_param", "/velocity_smoother/set_parameters", 10.0)]
+    bus.close()
