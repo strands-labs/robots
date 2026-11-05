@@ -40,7 +40,7 @@ def page_on(
         page.on("request", lambda r: requests.append((time.monotonic(), r.url)))
         page.requests = requests
         page.goto(url)
-        page.wait_for_function("window.__sceneLoaded >= 1 || window.__error", timeout=timeout_ms)
+        page.wait_for_function("() => window.__sceneLoaded >= 1 || window.__error", timeout=timeout_ms)
         page.errors = errors
         try:
             yield page

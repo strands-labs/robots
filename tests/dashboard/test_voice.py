@@ -240,8 +240,8 @@ def test_page_mic_button_streams_and_logs_the_turn() -> None:
             page.on("pageerror", lambda e: errors.append(str(e)))
             page.goto(server.url)
             # app.js imports the feature modules (GET /api/panels) once the scene is up, so the scene comes first.
-            page.wait_for_function("window.__sceneLoaded >= 1", timeout=90_000)
-            page.wait_for_function("window.__voiceInfo && window.__voiceInfo.enabled", timeout=30_000)
+            page.wait_for_function("() => window.__sceneLoaded >= 1", timeout=90_000)
+            page.wait_for_function("() => window.__voiceInfo && window.__voiceInfo.enabled", timeout=30_000)
             assert page.query_selector("#chat-slot [data-panel=voice] #voice-mic"), "voice not in the chat-input slot"
 
             def press(selector: str) -> None:  # mouse.click: .click()'s stability wait stalls at swiftshader's ~1 fps
@@ -251,7 +251,7 @@ def test_page_mic_button_streams_and_logs_the_turn() -> None:
 
             press("#voice-mic")
             page.wait_for_function(
-                "(window.__voiceEvents || []).some(e => e.type === 'transcript' && e.role === 'assistant')",
+                "() => (window.__voiceEvents || []).some(e => e.type === 'transcript' && e.role === 'assistant')",
                 timeout=30_000,
             )
             assert page.get_attribute("#voice", "data-state") == "live"
@@ -262,7 +262,7 @@ def test_page_mic_button_streams_and_logs_the_turn() -> None:
             assert page.get_attribute("#voice", "data-muted") == "true"
             page.screenshot(path=str(MEDIA / "voice-panel.png"))
             press("#voice-mic")
-            page.wait_for_function("document.querySelector('#voice').dataset.state === 'off'", timeout=10_000)
+            page.wait_for_function("() => document.querySelector('#voice').dataset.state === 'off'", timeout=10_000)
             assert not errors, errors
             browser.close()
     finally:
