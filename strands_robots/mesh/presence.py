@@ -7,6 +7,7 @@ per appearance, never polled.
 
 from __future__ import annotations
 
+import logging
 import threading
 import time
 from typing import Any
@@ -14,7 +15,9 @@ from typing import Any
 from ..robot.safety import RequestRefused
 from . import wire
 from .device import Device
-from .transports.base import Transport, Unsubscribe
+from .transports.base import RemoteError, Transport, Unsubscribe
+
+logger = logging.getLogger(__name__)
 
 
 def announce(transport: Transport, tenant: str, record: dict[str, Any], peer: str) -> Unsubscribe:
@@ -81,6 +84,13 @@ class Directory:
                     return
             try:
                 replies = self.transport.query(wire.key("manifest", self.tenant, did), b"", 0.5)
+            except RemoteError as exc:  # refused, not absent: say so, or a missing grant reads as "no robots online"
+                logger.warning(
+                    "mesh: %s is present but its manifest request was refused (%s); it stays out of discover()",
+                    did,
+                    exc,
+                )
+                return
             except Exception:  # the transport closed under us
                 return
             for raw in replies:
