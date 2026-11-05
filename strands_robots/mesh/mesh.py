@@ -94,12 +94,12 @@ class Mesh:
             lockout = _authority.Lockout()
             undo: list[Unsubscribe] = []
             stack.callback(lambda: [u() for u in reversed(undo)])
-            undo += [] if iot is None else [_iot_attach(self.transports, iot, robot, rec, lockout)]
             dog = _watchdog.start(robot, watchdog_ms, self.transports, self.tenant)
             stack.callback(_watchdog.stopper(dog))  # a failed mount stops it first; close is idempotent
             on_rpc = getattr(dog, "on_rpc", None)
             undo += [serve(t, self.tenant, robot, did, lockout, self._authority, on_rpc) for t in self.transports]
-            undo.append(_watchdog.stopper(dog))
+            undo.append(_watchdog.stopper(dog))  # the IoT pieces stop first: no shadow target outlives the watchdog
+            undo += [] if iot is None else [_iot_attach(self.transports, iot, robot, rec, lockout, on_rpc=on_rpc)]
             if hasattr(robot, "subscribe"):
                 undo.append(publish(self.transports, self.tenant, robot, did, state_hz or state_rate(rec["manifest"])))
             undo += [announce(t, self.tenant, rec, self.peer_id) for t in self.transports]

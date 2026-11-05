@@ -55,7 +55,7 @@ To keep the key in a hardware token, pass a percent-encoded `pkcs11:` URI as `ke
 |---|---|
 | `manifest` | The robot's controls and ranges, written at mount |
 | `state` | The live state at `shadow_hz` (at most 1 Hz) and who stopped it |
-| `control` | Targets you write. They pass the safety chain. |
+| `control` | Targets you write, with `IotOptions(control=True)`. They pass the safety chain. |
 
 ```python
 data = boto3.client("iot-data", region_name="us-west-2")
@@ -65,6 +65,11 @@ data.update_thing_shadow(thingName="arm-1", shadowName="control", payload=json.d
 
 A refused target appears under `reported.refused`. A target older than `stale_s` (default 2 s) is dropped. Use the
 `estop` rpc or `broadcast("estop")` to stop a robot, not a shadow.
+
+The `control` shadow is off unless the mount passes `IotOptions(control=True)`. A target moves the robot the way an
+`act` rpc does: it arms the mount's watchdog, so a writer that stops writing for `watchdog_ms` gets the robot's
+`on_disconnect`, and it is logged to `strands_robots.audit`. A real robot mounted with `watchdog_ms=None` is
+observe-only and refuses every `control` target by name.
 
 ## Rules
 
