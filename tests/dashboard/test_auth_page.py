@@ -41,12 +41,12 @@ def test_setup_link_then_sign_in_then_the_passkeys_panel() -> None:
             assert page.locator("#signin h1").inner_text() == "Create the first passkey"
             assert page.evaluate("() => window.__sceneLoaded") is None
             page.click("#signin button")
-            page.wait_for_function("document.querySelector('#signin .err').textContent.length > 0")
+            page.wait_for_function("() => document.querySelector('#signin .err').textContent.length > 0")
             assert "setup code" in page.locator("#signin .err").inner_text()
 
             page.goto(dash.auth.setup_url(server.url))
             page.click("#signin button")
-            page.wait_for_function("window.__sceneLoaded >= 1", timeout=60_000)
+            page.wait_for_function("() => window.__sceneLoaded >= 1", timeout=60_000)
             assert "setup=" not in page.url and not dash.auth.setup_required
 
             page.context.clear_cookies()
@@ -54,9 +54,9 @@ def test_setup_link_then_sign_in_then_the_passkeys_panel() -> None:
             page.wait_for_selector("#signin")
             assert page.locator("#signin h1").inner_text() == "Sign in"
             page.click("#signin button")
-            page.wait_for_function("window.__sceneLoaded >= 1", timeout=60_000)
+            page.wait_for_function("() => window.__sceneLoaded >= 1", timeout=60_000)
             page.click('#tabs button[data-tab="passkeys"]')
-            page.wait_for_function("document.querySelectorAll('[data-pane=passkeys] li').length === 1")
+            page.wait_for_function("() => document.querySelectorAll('[data-pane=passkeys] li').length === 1")
             assert "this computer" in page.locator("[data-pane=passkeys] li").inner_text()
             browser.close()
     finally:
