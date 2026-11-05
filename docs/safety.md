@@ -29,6 +29,11 @@ builds it from the robot. Agent tools, the mesh and the dashboard all read it.
 Commands from agents, the dashboard or the mesh pass one chain: range, safe range, interlocks, validators, then
 the operator. Your own `act()` calls skip the operator step. A refusal says why.
 
+A move over time (`act(..., seconds=)` from an agent, the dashboard or the mesh) asks the operator once, for the
+target. Every point of the move then passes the rest of the chain again. If an interlock or validator refuses a
+point, the move stops there and the robot holds the last pose it reached. Interlocks are checked on each write, so
+also wire a light curtain or a door switch to `robot.estop()` if it must stop the robot between writes.
+
 ## E-stop
 
 `estop()` works from any thread and nothing can block it. The robot stays stopped until a named operator resumes it.

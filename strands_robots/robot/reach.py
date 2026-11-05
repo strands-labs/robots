@@ -2,7 +2,8 @@
 
 One write of a far target leaves a servo arm mid-swing when ``act`` reads back, and a simulated arm one control step
 along. With ``seconds``, the targets ramp from the measured pose to ``action`` at ``HZ`` (smoothstep, so it starts and
-ends at rest) and the last one is held until ``seconds`` are up: the read-back is the pose reached, gated once.
+ends at rest) and the last one is held until ``seconds`` are up: the read-back is the pose reached. ``gate``, when
+given (``confirm_act``, an agent run's start pose), checks every ramp point before it is written.
 """
 
 from __future__ import annotations
