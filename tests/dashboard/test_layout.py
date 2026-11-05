@@ -10,6 +10,8 @@ import pytest
 pytest.importorskip("mujoco")
 pytest.importorskip("fastapi")
 
+from conftest import dashboard_token  # noqa: E402
+
 from strands_robots import Robot, Simulation  # noqa: E402
 from strands_robots.dashboard import Dashboard  # noqa: E402
 
@@ -67,7 +69,8 @@ def test_a_panel_registers_a_tab_and_gets_the_context() -> None:
     Robot("so101", sim=sim)
     server = Dashboard(sim).start()
     try:
-        with urllib.request.urlopen(f"{server.url}/api/panels", timeout=5) as r:
+        signed = {"Authorization": f"Bearer {dashboard_token()}"}
+        with urllib.request.urlopen(urllib.request.Request(f"{server.url}/api/panels", headers=signed), timeout=5) as r:
             assert isinstance(json.loads(r.read())["panels"], list)
         with page_on(server.url) as page:
             got = page.evaluate(

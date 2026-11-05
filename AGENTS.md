@@ -80,7 +80,8 @@ Imports:
   `Simulation() needs MuJoCo: pip install 'strands-robots[mujoco]'`.
 - Every module imports alone in a fresh interpreter with no cycle (`tests/test_modules_import_alone.py`).
 - GPU backends import lazily (`tests/test_gpu_backends_import_lazily.py`); `strands` loads only when `.tool` is used;
-  fastapi/uvicorn only in `dashboard/{app,connect_routes,guard,record_routes,server,voice_routes}.py`.
+  fastapi/uvicorn only in `dashboard/{app,connect_routes,guard,record_routes,server,voice_routes}.py` and
+  `dashboard/auth/{guard,routes}.py`.
 - `lint-imports` contracts in `pyproject.toml`: `types` imports nothing in the package; `description` only `types`,
   `_gl`, `_extras`; `units` only `types` and `description`; `simulation` never imports `robot` or `policy` (except the
   listed lazy edges); `policy` never imports `simulation` or `robot.drivers`; `mesh` never imports `policy`;
@@ -134,8 +135,10 @@ A real robot moves only through its operator gate. Keep these invariants when yo
 - A model never resumes, calibrates, picks a network address for a policy (`://` specs are refused unless the
   developer registered the handle), or sets `record`, `push` or `units`.
 - A real robot without `hardware.on_disconnect` refuses a watchdog; a real robot on the mesh without a watchdog is
-  observe-only. The dashboard binds loopback only, checks Host and Origin, and moves a real robot only with
-  `X-Confirm: yes`, which chat and voice never send.
+  observe-only. The dashboard binds loopback only, checks Host and Origin, answers `/api` and `/ws` only to a
+  passkey session or a `dash.auth.token()` bearer (`dashboard/auth/`; a new route is guarded by being under those
+  prefixes), and moves a real robot only with `X-Confirm: yes`, which chat and voice never send. Tests sign in through
+  `tests/conftest.py` (per-test passkey store; `@pytest.mark.signed_out` sends no token).
 - Feetech writes are speed-capped (`robot/drivers/slew.py`, 2 rad/s), and torque comes on only after every goal is
   computed. Unitree and microduck drivers are observe-only.
 

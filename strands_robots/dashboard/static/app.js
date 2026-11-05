@@ -6,6 +6,7 @@
  *                  (?standalone=<scene.json> picks another bundle). The browser never steps physics while a server
  *                  is connected; a server that answers later wins (re-probe backing off 5 s → 60 s, then a reload).
  */
+import { signIn, signedOut } from "./auth.js";
 import { Standalone } from "./standalone.js";
 import { Twin } from "./twin.js";
 
@@ -200,6 +201,7 @@ function ctx(panel) {
       const res = await fetch(`${state.base}${path}`, { method, headers, body: body === undefined ? undefined : JSON.stringify(body) });
       const text = await res.text();
       let doc = null; try { doc = text ? JSON.parse(text) : null; } catch { doc = { detail: text }; }
+      if (res.status === 401) signedOut(); // the session ended: back to the passkey screen
       if (!res.ok) { const err = new Error(doc?.detail || `HTTP ${res.status}`); err.status = res.status; err.doc = doc; throw err; }
       return doc;
     },
@@ -485,7 +487,7 @@ function connectState() {
     }
     if (frame.revision === twin.revision) applyFrame(frame);
   };
-  ws.onclose = () => { clearInterval(tick); setMode("error", "server gone"); chip("net", "state socket closed — reconnecting…", "bad"); setTimeout(connectState, 1000); };
+  ws.onclose = () => { clearInterval(tick); signedOut(); setMode("error", "server gone"); chip("net", "state socket closed — reconnecting…", "bad"); setTimeout(connectState, 1000); };
   ws.onopen = () => setMode("server", state.base ? `server · ${LOCAL_CLI}` : "server");
 }
 
@@ -635,6 +637,7 @@ async function probe() {
       notice(`static scene · <b>${twin.model.ngeom}</b> geoms · ${twin.model.njnt} joints · ${(twin.assetBytes / 1048576).toFixed(1)} MB assets · compiled in ${Math.round(twin.compileMs)} ms`);
       return;
     }
+    if (!(await signIn())) { setMode("server", "sign in"); return; } // sign-in on and no session: the passkey screen
     const server = await probe();
     if (server && !server.blocked && !server.unreachable) {
       state.base = server.base;
