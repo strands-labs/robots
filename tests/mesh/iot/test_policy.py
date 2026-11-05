@@ -139,7 +139,8 @@ def test_the_operator_hears_and_messages_only_its_tenants_devices():
     assert dm["Condition"] == {"StringLike": {"iot:Topic": ["strands/lab/*/rpc/*", "strands/lab/*/manifest"]}}
     wide = policy.operator_policy(REGION, ACCOUNT, "lab", all_things=True)
     (dm,) = _by_action(wide, "iot:SendDirectMessage")
-    assert dm["Condition"] == {"StringLike": {"iot:Topic": ["strands/lab/*/rpc/*", "strands/lab/*/manifest"]}}, "the tenant bound stays"
+    tenant_bound = {"StringLike": {"iot:Topic": ["strands/lab/*/rpc/*", "strands/lab/*/manifest"]}}
+    assert dm["Condition"] == tenant_bound, "the tenant bound stays"
 
 
 def test_the_operator_connects_only_with_its_tenants_client_ids():
