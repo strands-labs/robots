@@ -13,6 +13,7 @@ import json
 import logging
 import time
 
+from strands_robots.mesh import wire
 from strands_robots.mesh.iot import policy
 from strands_robots.mesh.presence import Directory
 from strands_robots.mesh.transports.base import RemoteError
@@ -29,7 +30,24 @@ def test_direct_messages_are_granted_on_the_target_client_inside_the_tenant():
     stmt = [s for s in _doc()["Statement"] if s["Action"] == "iot:SendDirectMessage"]
     assert len(stmt) == 1
     assert stmt[0]["Resource"] == f"arn:aws:iot:{REGION}:{ACCOUNT}:client/*"
-    assert stmt[0]["Condition"] == {"StringLike": {"iot:Topic": ["strands/lab/*"]}}
+    assert stmt[0]["Condition"] == {"StringLike": {"iot:Topic": ["strands/lab/*/rpc/*", "strands/lab/*/manifest"]}}
+
+
+def test_a_direct_message_reaches_only_the_keys_an_operator_queries():
+    """A direct message needs no subscription, so the topic condition is the only thing keeping an operator off
+    the keys that are a device's word (presence, holder, state, events)."""
+    (stmt,) = [s for s in _doc()["Statement"] if s["Action"] == "iot:SendDirectMessage"]
+    allowed = stmt["Condition"]["StringLike"]["iot:Topic"]
+
+    def admits(topic):  # IAM StringLike: * spans "/"
+        return any(fnmatch.fnmatchcase(topic, p) for p in allowed)
+
+    assert admits(wire.key("rpc", "lab", "arm-1", "act"))
+    assert admits(wire.key("manifest", "lab", "arm-1"))
+    for slot in sorted(set(wire.KEYS) - {"rpc", "manifest"}):
+        pattern = wire.KEYS[slot]
+        topic = pattern.format(tenant="lab", device_id="arm-1", name="x")
+        assert not admits(topic), f"{slot}: {topic} must not be reachable by direct message"
 
 
 def test_an_iam_link_connects_with_a_client_id_the_operator_policy_admits():

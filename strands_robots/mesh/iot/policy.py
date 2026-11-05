@@ -103,9 +103,10 @@ def operator_policy(
         {"Effect": "Allow", "Action": "iot:Connect", "Resource": f"{arn}:client/strands-op-*"},
         # SendDirectMessage names the TARGET client as its resource (AWS: "the target client ID as the resource");
         # a connection/* grant matches nothing, so every rpc and every manifest fetch was refused. The topic
-        # condition keeps the grant inside this tenant's keys.
+        # condition limits it to the two keys Transport.query sends on (rpc, manifest), as controller_policy does:
+        # a direct message needs no subscription, so a wider topic would let an operator forge a device's word.
         {"Effect": "Allow", "Action": "iot:SendDirectMessage", "Resource": f"{arn}:client/*",
-         "Condition": {"StringLike": {"iot:Topic": [f"{t}/*"]}}},
+         "Condition": {"StringLike": {"iot:Topic": [f"{t}/*/rpc/*", f"{t}/*/manifest"]}}},
         {"Effect": "Allow", "Action": "iot:Publish", "Resource": pub},
         {"Effect": "Allow", "Action": "iot:RetainPublish", "Resource": f"{arn}:topic/{t}/@estop"},
         {"Effect": "Allow", "Action": "iot:Subscribe", "Resource": sub},
