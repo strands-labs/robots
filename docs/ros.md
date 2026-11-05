@@ -28,6 +28,10 @@ g1 = Robot("unitree_g1", driver="ros", released=True)  # on the G1's Jetson, low
 
 `host=` is the robot's address: a zenoh router or a DDS peer.
 
+A forward position controller's `Float64MultiArray` carries no joint names: each slot is the joint at that index of
+the controller's `joints` parameter. `connect` reads it from `/<controller>/get_parameters` (or takes
+`command.joints` from the profile) and refuses to stream when it is missing or is not exactly the model's joints.
+
 ## Stream rules
 
 One command stream owns the command topic. It sends on a timer (`trigger: timer`) or answers every sensor
@@ -47,8 +51,9 @@ agent = Agent(tools=[use_ros()])
 agent("What topics are up? Echo /joint_states once.")
 ```
 
-Reads are free. A write to a motion surface needs an exact `STRANDS_ROS_ALLOW` entry or an operator's yes. Motion
-surfaces include velocity and joint command topics, ros2_control's `/<controller>/commands`, parameter writes
+Reads are free. Every write needs an exact `STRANDS_ROS_ALLOW` entry or an operator's yes; the only free writes are
+publishes to `/rosout`, `/diagnostics` and `/visualization_marker[_array]`. Targets known to move a robot (named in
+the refusal) include velocity and joint command topics, ros2_control's `/<controller>/commands`, parameter writes
 (`set_param`, which is gated as `<node>/set_parameters`, and the `set_parameters[_atomically]` services) and the
 controller manager's `switch_controller`, `load_controller`, `configure_controller`, `unload_controller` and
 `set_hardware_component_state`. A topic a `Robot` streams is always refused: use that robot's own tool.

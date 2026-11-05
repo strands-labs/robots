@@ -124,6 +124,7 @@ SPECS: dict[str, dict[str, str]] = {
         "integer_value": "int64",
         "double_value": "double",
         "string_value": "string",
+        "string_array_value": "string[]",
     },
     "rcl_interfaces/Parameter": {"name": "string", "value": "rcl_interfaces/ParameterValue"},
     "rcl_interfaces/SetParametersResult": {"successful": "boolean", "reason": "string"},

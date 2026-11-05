@@ -194,9 +194,31 @@ def test_any_ros2_control_arm_with_model_from_robot_description(ros):
         robot = sros.connect("ros2_control", timeout=1.0)
         assert robot.action_keys == ("shoulder", "elbow", "wrist")
         np.testing.assert_allclose(robot.observe(images=False).joints.positions, [0.1, -0.2, 0.3])  # keyed by name
+        # the hold frame on connect is the measured pose in the controller's slot order (wrist, elbow, shoulder)
+        assert wait_until(lambda: arm.commands)
+        assert list(arm.commands[0].data) == pytest.approx([0.3, -0.2, 0.1])
         robot.act({"elbow": 0.5})
         assert wait_until(lambda: arm.commands and arm.commands[-1].data[1] == pytest.approx(0.5))
-        assert arm.commands[-1].data[0] == pytest.approx(0.1)  # joints the action omits keep their position
+        assert list(arm.commands[-1].data) == pytest.approx([0.3, 0.5, 0.1])  # omitted joints keep their position
+    finally:
+        arm.close()
+
+
+def test_ros2_control_arm_without_a_controller_joint_order_streams_nothing(ros):
+    from strands_robots import ros as sros
+
+    arm = FakeArm(controller_joints=None)
+    try:
+        with pytest.raises(ConnectionError, match="command.joints"):
+            sros.connect("ros2_control", timeout=1.0)
+        assert not arm.commands
+    finally:
+        arm.close()
+    arm = FakeArm(controller_joints=["shoulder", "elbow"])  # a controller over other joints than the model's
+    try:
+        with pytest.raises(ValueError, match="not exactly"):
+            sros.connect("ros2_control", timeout=1.0)
+        assert not arm.commands
     finally:
         arm.close()
 

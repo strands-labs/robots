@@ -28,6 +28,7 @@
  "on_disconnect": "hold",
  "notes": [
   "joints {} means: match the model's joint names to JointState.name; set joints to rename.",
-  "command type may be std_msgs/msg/Float64MultiArray, sensor_msgs/msg/JointState or trajectory_msgs/msg/JointTrajectory."
+  "command type may be std_msgs/msg/Float64MultiArray, sensor_msgs/msg/JointState or trajectory_msgs/msg/JointTrajectory.",
+  "A Float64MultiArray command has no names: its slots follow the controller's joints parameter, read at connect; set command.joints to give that order yourself. Connect refuses when neither is there or they are not exactly the model's joints."
  ]
 }

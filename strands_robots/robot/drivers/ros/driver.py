@@ -15,6 +15,7 @@ from typing import Any
 import numpy as np
 
 from ....description import Description
+from ....ros import calls
 from ....ros import profile as _profile
 from ....ros.bus import RosBus
 from ....ros.discovery import Discovery
@@ -99,6 +100,8 @@ class RosDriver:
         cfg = dict(self.profile.need("command"))
         st = self.profile.need("state")
         cfg.update(state_topic=st["topic"], state_type=st["type"])
+        if cfg["type"].endswith("/Float64MultiArray"):
+            self.codec.set_array_order(cfg.get("joints") or calls.controller_joints(self.bus, cfg["topic"]))
         self.stream = CommandStream(
             self.bus,
             self.codec,

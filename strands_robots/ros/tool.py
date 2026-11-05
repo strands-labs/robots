@@ -1,12 +1,13 @@
-"""``use_ros``: one Strands tool for any ROS 2 graph. Reads are free; motion writes need an operator.
+"""``use_ros``: one Strands tool for any ROS 2 graph. Reads are free; writes need an operator.
 
     from strands import Agent
     from strands_robots.ros import use_ros
     agent = Agent(tools=[use_ros()])                       # a Strands interrupt asks the human for writes
     agent = Agent(tools=[use_ros(approve=lambda v, t, p: input(f"{v} {t}? ") == "y")])
 
-Approval order for a write on a motion surface: exact ``STRANDS_ROS_ALLOW`` names, then ``approve=``, then a
-Strands interrupt to the human; with none of them the write is refused. ``BYPASS_TOOL_CONSENT`` is ignored.
+Approval order for any write but a publish to an inert log or marker topic: exact ``STRANDS_ROS_ALLOW`` names,
+then ``approve=``, then a Strands interrupt to the human; with none of them the write is refused.
+``BYPASS_TOOL_CONSENT`` is ignored.
 Topics a strands Robot streams are refused outright: command that robot through its own tool.
 """
 
@@ -22,7 +23,7 @@ from .gate import MOTION_SURFACES, Approver, CommandGate
 from .verbs import VERBS, dispatch
 
 DOC = f"""Inspect and use a ROS 2 graph: list/echo/sample topics, call services, send action goals,
-read/set parameters, look up TF, record a bag. Writes that can move a robot need an operator's yes.
+read/set parameters, look up TF, record a bag. Writes need an operator's yes.
 
 Args:
     verb: one of {", ".join(VERBS)}.

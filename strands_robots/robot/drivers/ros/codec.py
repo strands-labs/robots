@@ -25,6 +25,7 @@ class Codec:
     """Base: joints keyed by wire id/name, never by wire order."""
 
     needs_gains = False  # True when the command message carries kp/kd per joint
+    order: list[int] | None = None  # an unnamed array command: slot i carries joint ids[order[i]]
 
     def __init__(self, profile: Profile, names: tuple[str, ...]) -> None:
         self.profile, self.names = profile, names
@@ -39,6 +40,13 @@ class Codec:
                 self.ids.append(n)  # an empty joints map means: the wire uses the model's names
         if missing:
             raise ValueError(f"ROS profile {profile.name!r} has no wire id for {missing}; refusing a partial body")
+
+    def set_array_order(self, joints: Any) -> None:
+        """Slot order of an unnamed array command: the controller's own ``joints``, which must be exactly ours."""
+        want, ids = [str(j) for j in joints or ()], [str(w) for w in self.ids]
+        if len(set(want)) != len(want) or sorted(want) != sorted(ids):
+            raise ValueError(f"the controller's joints {want} are not exactly this robot's {ids}; refusing to stream")
+        self.order = [ids.index(j) for j in want]
 
     def read(self, state: Any) -> JointState:
         raise NotImplementedError
@@ -73,7 +81,12 @@ class Codec:
     def positions(self, command: Any) -> np.ndarray | None:
         """Joint positions in a command message, in ``names`` order (shadow mode's comparison)."""
         if hasattr(command, "data"):
-            return np.array([float(x) for x in command.data])
+            data = [float(x) for x in command.data]
+            if self.order is None or len(data) != len(self.order):
+                return np.array(data)
+            out = np.full(len(self.order), np.nan)
+            out[self.order] = data
+            return out
         if hasattr(command, "points") and command.points:
             return np.array([float(x) for x in command.points[0].positions])
         if hasattr(command, "name") and hasattr(command, "position"):
@@ -137,8 +150,10 @@ class JointStateCodec(Codec):
 
     def build(self, q: np.ndarray, kp: np.ndarray | None, kd: np.ndarray | None, state: Any, sender: str) -> Any:
         t = self.profile.need("command")["type"]
-        if t.endswith("/Float64MultiArray"):
-            return from_dict(message_class(t), {"data": [float(x) for x in q]})
+        if t.endswith("/Float64MultiArray"):  # no names on the wire: slots follow the controller's joints
+            if self.order is None:
+                raise ValueError("no controller joint order for a Float64MultiArray command (set_array_order)")
+            return from_dict(message_class(t), {"data": [float(q[i]) for i in self.order]})
         if t.endswith("/JointState"):
             return from_dict(message_class(t), {"name": [str(w) for w in self.ids], "position": [float(x) for x in q]})
         if t.endswith("/JointTrajectory"):

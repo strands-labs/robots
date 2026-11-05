@@ -25,7 +25,11 @@ def urdf(joints: dict[str, tuple[float, float]], name: str = "robot", floating: 
             f'<joint name="{j}" type="revolute"><parent link="base"/><child link="l{i}"/>'
             f'<axis xyz="0 0 1"/><limit lower="{lo}" upper="{hi}" effort="10" velocity="10"/></joint>'
         )
-    return f'<robot name="{name}">{"".join(links)}{"".join(js)}</robot>'
+    # a real /robot_description carries these blocks, whose <joint> children are not model joints
+    rc = "".join(f'<joint name="{j}"><command_interface name="position"/></joint>' for j in joints)
+    tr = "".join(f'<transmission name="t_{j}"><joint name="{j}"/></transmission>' for j in joints)
+    extra = f'<ros2_control name="arm" type="system">{rc}</ros2_control>{tr}'
+    return f'<robot name="{name}">{"".join(links)}{"".join(js)}{extra}</robot>'
 
 
 class FakeArm:
@@ -33,7 +37,9 @@ class FakeArm:
 
     JOINTS = {"shoulder": (-2.0, 2.0), "elbow": (-1.5, 1.5), "wrist": (-3.0, 3.0)}
 
-    def __init__(self, ns: str = "") -> None:
+    CONTROLLER = ["wrist", "elbow", "shoulder"]  # the controller's own joint order: neither the model's nor the wire's
+
+    def __init__(self, ns: str = "", controller_joints: list[str] | None = CONTROLLER) -> None:
         self.node = Node("fake_arm")
         self.ns = ns
         self.js = self.node.create_publisher(msg_class("sensor_msgs/JointState"), f"{ns}/joint_states", REL)
@@ -45,6 +51,15 @@ class FakeArm:
             self.commands.append,
             REL,
         )
+        if controller_joints is not None:
+
+            def get(req: Any, res: Any) -> Any:
+                pv = msg_class("rcl_interfaces/ParameterValue")
+                res.values = [pv(type=9, string_array_value=list(controller_joints)) for _ in req.names]
+                return res
+
+            srv = type("S", (), {"_type": "rcl_interfaces/srv/GetParameters"})
+            self.node.create_service(srv, f"{ns}/forward_position_controller/get_parameters", get)
         self.desc.publish(msg_class("std_msgs/String")(data=urdf(self.JOINTS, "arm")))
         self.q = {"wrist": 0.3, "shoulder": 0.1, "elbow": -0.2}  # wire order differs from the model's
         self._stop = False

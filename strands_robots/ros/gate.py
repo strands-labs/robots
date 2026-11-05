@@ -1,9 +1,10 @@
 """The command gate for raw ROS writes: what an agent may publish, call or send as a goal.
 
-Reads are never gated. A write aimed at a motion surface needs an exact-name allowlist entry or an
-operator's yes; with neither it is refused (fail closed). A topic a strands Robot streams is refused
-outright: that robot's own gate (``robot.act``) is the only way to command it. STOP is never gated; it
-goes through the profile's stop sequence, not through an agent-chosen payload.
+Reads are never gated. Every write needs an exact-name allowlist entry or an operator's yes; with neither
+it is refused (fail closed). The only free writes are publishes to the few inert topics in ``INERT_TOPICS``
+(logs, diagnostics, markers). ``MOTION_SURFACES`` names targets known to move a robot, for the refusal text.
+A topic a strands Robot streams is refused outright: that robot's own gate (``robot.act``) is the only way
+to command it. STOP is never gated; it goes through the profile's stop sequence, not an agent-chosen payload.
 """
 
 from __future__ import annotations
@@ -58,6 +59,11 @@ MOTION_SURFACES: tuple[str, ...] = (
     "/set_hardware_component_state",
 )
 
+# Exact topic names a publish may reach without a yes: nothing listens to them to move a robot.
+INERT_TOPICS: frozenset[str] = frozenset(
+    {"/rosout", "/diagnostics", "/visualization_marker", "/visualization_marker_array"}
+)
+
 Approver = Callable[[str, str, Mapping[str, Any]], bool]
 
 
@@ -90,6 +96,7 @@ class CommandGate:
     surfaces: tuple[str, ...] = MOTION_SURFACES
     allow: frozenset[str] = field(default_factory=env_allowlist)
     approve: Approver | None = None
+    inert: frozenset[str] = INERT_TOPICS
     owners: Mapping[str, str] = field(default_factory=dict)
     source: str = "use_ros"
 
@@ -104,15 +111,16 @@ class CommandGate:
                 f"(robot.act / its tool), which runs its safety chain"
             )
         hit = matches(target, self.surfaces)
-        if hit is None:
+        if hit is None and verb == "publish" and target in self.inert:
             return "free"
+        why = f"can move a robot (matches {hit})" if hit else "is not a known-inert topic, so it may move a robot"
         if target in self.allow:
             self._audit(verb, target, "allowed", "allowlist")
             return "allowlist"
         if self.approve is None:
             self._audit(verb, target, "refused", "no operator")
             raise CommandRefused(
-                f"{verb} on {target} can move a robot (matches {hit}) and no operator can be asked here. "
+                f"{verb} on {target} {why} and no operator can be asked here. "
                 f"Allow it by exact name with STRANDS_ROS_ALLOW={target}, or run with an operator who can approve."
             )
         if not self.approve(verb, target, dict(preview or {})):

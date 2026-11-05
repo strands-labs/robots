@@ -121,7 +121,18 @@ def test_gate_fails_closed_matches_segments_and_allows_exact_names(monkeypatch):
     assert matches("/my_cmd_vel", ["/cmd_vel"]) is None
     assert matches("/arm/joint_trajectory_controller/joint_trajectory", ["/joint_trajectory"])
     g = CommandGate(allow=frozenset())
-    assert g.check("publish", "/chatter") == "free"
+    assert g.check("publish", "/rosout") == "free"  # only the known-inert topics are free
+    for verb, target in [
+        ("publish", "/chatter"),
+        ("goal", "/move_action"),
+        ("goal", "/execute_trajectory"),
+        ("publish", "/servo_node/delta_twist_cmds"),
+        ("goal", "/navigate_through_poses"),
+        ("publish", "/joy"),
+        ("call", "/rosout"),
+    ]:
+        with pytest.raises(CommandRefused, match="STRANDS_ROS_ALLOW="):
+            g.check(verb, target)  # an unlisted write is refused, not let through
     with pytest.raises(CommandRefused, match="STRANDS_ROS_ALLOW=/r1/cmd_vel"):
         g.check("publish", "/r1/cmd_vel")
     monkeypatch.setenv("STRANDS_ROS_ALLOW", "/r1/cmd_vel")

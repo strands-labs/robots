@@ -99,6 +99,22 @@ def get_params(bus: RosBus, node_name: str, names: list[str], *, timeout: float 
     return {n: _param_value(v) for n, v in zip(names, values, strict=False)}
 
 
+def controller_joints(bus: RosBus, topic: str, *, timeout: float = 3.0) -> list[str]:
+    """The ``joints`` parameter of the controller that owns ``topic`` (``/<ns>/<controller>/commands``)."""
+    node = topic.rstrip("/").rsplit("/", 1)[0] or "/"
+    why = ""
+    try:
+        joints = get_params(bus, node, ["joints"], timeout=timeout).get("joints")
+    except Exception as e:  # noqa: BLE001 - the message below says how to fix it
+        joints, why = None, f" ({e})"
+    if not joints:
+        raise ConnectionError(
+            f"ros: no joints parameter on {node}{why}; an unnamed array command needs the controller's joint "
+            "order. Set command.joints in the profile to that ordered list."
+        )
+    return [str(j) for j in joints]
+
+
 def set_param(bus: RosBus, node_name: str, name: str, value: Any, *, timeout: float = 3.0) -> dict[str, Any]:
     """Set one parameter and read it back; ``ok`` only when the read-back equals the value sent."""
     node_name = canonical(node_name, what="node")
