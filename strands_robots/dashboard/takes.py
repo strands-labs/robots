@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import time
 from dataclasses import dataclass, field, replace
 from pathlib import Path
@@ -17,6 +18,26 @@ if TYPE_CHECKING:
     from .dashboard import Dashboard
 
 MAX_FPS = 60
+
+
+def recordings_dir() -> Path:
+    """Where the page may write datasets: ``$STRANDS_ROBOTS_RECORDINGS``, default ``~/strands-robots/recordings``."""
+    return Path(
+        os.environ.get("STRANDS_ROBOTS_RECORDINGS") or Path.home() / "strands-robots" / "recordings"
+    ).expanduser()
+
+
+def inside(target: str) -> str:
+    """A page target as the recorder takes it: ``hf://owner/name`` as it is, a relative name under
+    :func:`recordings_dir`, an absolute path only inside it. A dataset is created or resumed (and an aborted take
+    deleted) at that path, so the page never names one elsewhere (``..`` and symlinks resolved first)."""
+    if is_repo_id(target):
+        return target
+    base = recordings_dir().resolve()
+    path = (base / Path(target).expanduser()).resolve()  # an absolute target replaces base in the join
+    if path == base or not path.is_relative_to(base):
+        raise PermissionError(f"the page records only inside {base} (STRANDS_ROBOTS_RECORDINGS), not {target!r}")
+    return str(path)
 
 
 @dataclass
@@ -99,7 +120,8 @@ def options(dash: Dashboard) -> dict[str, Any]:
             }
         )
     stamp = time.strftime("%Y%m%d-%H%M%S")
-    return {"robots": robots, "cameras": cams, "target": f"/tmp/strands-recording-{stamp}", "max_fps": MAX_FPS}
+    target = str(recordings_dir() / f"recording-{stamp}")
+    return {"robots": robots, "cameras": cams, "target": target, "max_fps": MAX_FPS}
 
 
 def observe(dash: Dashboard, t: Track) -> Any:
@@ -137,7 +159,7 @@ def plan(dash: Dashboard, robots: Any, cameras: Any, target: Any, fps: Any, task
     if extra:
         raise ValueError(f"cameras name robots {extra} that are not recorded ({robots})")
     known = {c.name for c in dash.sim.scene.cameras}
-    where = targets_for(target.strip(), robots)
+    where = {rid: inside(t) for rid, t in targets_for(target.strip(), robots).items()}
     tracks = []
     for rid in robots:
         robot = dash._robot(rid)
