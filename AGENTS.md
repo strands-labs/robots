@@ -209,7 +209,8 @@ All paths are under `strands_robots/`.
 - Registry entries with `driver: "strands"` or `"lerobot"` have no driver in `_DRIVERS`: `Robot(x, port=...)` fails
   with "no driver known".
 - Without MuJoCo, the XML fallback ignores `angle="degree"` and `<default>` ranges, so limits can differ.
-- GitHub-hosted models track the default branch head (no pinned commit); each `Robot(...)` reloads the model.
+- GitHub-hosted models are pinned: `asset.source.commit` plus `asset.source.sha256` (`assets.tree_digest` of the
+  subdir). Bumping a model means updating both; a cache from another pin is fetched again.
 - Two robots with the same id clash as tool names. Pass `id=`.
 - Over Zenoh, resume by name is refused unless the device has operator keys (`Authority(public_keys=...)`) or
   `trust_names=True`.

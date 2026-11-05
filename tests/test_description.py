@@ -88,9 +88,11 @@ def test_github_asset_is_fetched_once_into_the_cache(tmp_path, monkeypatch):
 
     calls: list[tuple[str, str]] = []
 
-    def fake_fetch(repo: str, subdir: str, dest, *, timeout: float = 120.0):
+    def fake_fetch(repo: str, subdir: str, dest, *, commit: str, sha256: str, timeout: float = 120.0):
         calls.append((repo, subdir))
         dest.mkdir(parents=True)
+        pin = {"repo": repo, "subdir": subdir, "commit": commit, "sha256": sha256}
+        (dest / assets._MARKER).write_text(json.dumps(pin))
         (dest / "robot_allcollisions.xml").write_text(
             '<mujoco><worldbody><body name="b"><joint name="j" range="-1 1"/><geom size="0.1"/></body>'
             '</worldbody><actuator><position name="a" joint="j"/></actuator></mujoco>'
@@ -103,7 +105,13 @@ def test_github_asset_is_fetched_once_into_the_cache(tmp_path, monkeypatch):
         "asset": {
             "dir": "microduck",
             "model_xml": "robot_allcollisions.xml",
-            "source": {"type": "github", "repo": "pollen-robotics/microduck_rl", "subdir": "src/x"},
+            "source": {
+                "type": "github",
+                "repo": "pollen-robotics/microduck_rl",
+                "subdir": "src/x",
+                "commit": "a" * 40,
+                "sha256": "b" * 64,
+            },
         }
     }
     p1 = assets.resolve(entry)
