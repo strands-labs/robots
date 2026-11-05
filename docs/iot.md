@@ -49,6 +49,14 @@ robot connect only as itself and read only inside its tenant.
 
 To keep the key in a hardware token, pass a percent-encoded `pkcs11:` URI as `key=`. Set the PIN in `PKCS11_PIN`.
 
+**Fleet provisioning by claim.** One claim certificate serves the whole fleet, so it decides nothing by itself.
+Deploy `claim_hook.HOOK_SOURCE` as a Lambda (its role needs `iot:DescribeThing` and `ssm:GetParameter` /
+`ssm:DeleteParameter` on `/strands-robots/claim/*`), then `claim.create_template(iot, role_arn, hook_arn=...)`;
+the template is never created or left without the hook. Approve each robot before its first boot with
+`claim_hook.allow(ssm, device_id, tenant=..., device_type=...)`, which returns a one-time secret for that robot,
+and claim with `claim.claim(..., secret=...)`. The hook accepts only a new, approved name whose certificate CN is
+that name, with the approval's secret, tenant and device type, and then deletes the approval.
+
 ## Shadows
 
 | Shadow | Holds |
