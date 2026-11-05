@@ -101,7 +101,9 @@ def spec(mesh: Mesh) -> dict[str, Any]:
     }
 
 
-def dispatch(mesh: Mesh, inp: Mapping[str, Any]) -> Any:
+def dispatch(mesh: Mesh, inp: Mapping[str, Any], *, approve: Any = None) -> Any:
+    """One ``use_mesh`` call. ``approve`` (``callable(RunPlan) -> bool``) is the operator's answer for an agent's run
+    on a device: without it such a run is refused, as for any real robot."""
     action, did = inp.get("action"), inp.get("device_id")
     if action not in ACTIONS:
         raise ValueError(f"action must be one of {list(ACTIONS)}, got {action!r}")
@@ -122,10 +124,21 @@ def dispatch(mesh: Mesh, inp: Mapping[str, Any]) -> Any:
         extra = sorted(set(args) - set(RUN_ARGS))  # record=/push= are the developer's: nothing leaves on a model's say
         if extra:
             raise TypeError(f"use_mesh run takes {list(RUN_ARGS)}, not {extra}")
+        if isinstance(args.get("policy"), str) and "://" in args["policy"]:  # its frames would stream there
+            raise PermissionError(
+                f"a policy at a network address is the developer's to pass, not an agent's: {args['policy']}"
+            )
         prev = mesh.tasks.get(did)
         if prev is not None and prev.running:
             raise RuntimeError(f"robot {did!r} already has a running task; call stop() first")
-        task = mesh.connect(did).start(args.pop("policy"), **args)
+        robot = mesh.connect(did)
+        if robot.is_real and approve is None:  # said now, not from the run's thread after "started"
+            raise PermissionError(
+                f"{did}: an agent's run on a device needs the operator's yes: build the tool with "
+                "use_mesh(mesh, approve=<callable(RunPlan) -> bool>)"
+            )
+        robot.approve = approve
+        task = robot.start(args.pop("policy"), **args)
         mesh.tasks[did] = task
         return {"started": did, "status": getattr(task, "status", None)}
     if action == "stop":
@@ -141,13 +154,17 @@ def dispatch(mesh: Mesh, inp: Mapping[str, Any]) -> Any:
     return mesh.invoke(did, action)
 
 
-def use_mesh(mesh: Mesh) -> Any:
+def use_mesh(mesh: Mesh, *, approve: Any = None) -> Any:
+    """The tool. Every call runs as an agent's (``from_agent``); ``approve`` answers its runs (see ``dispatch``)."""
     from strands.tools.tools import PythonAgentTool
 
     def run(tool_use: Any, **_state: Any) -> Any:
         tid = tool_use["toolUseId"]
+        from ..robot.run.source import from_agent
+
         try:
-            result = dispatch(mesh, dict(tool_use.get("input") or {}))
+            with from_agent():  # an agent's call: a real robot's run asks the operator, as through every other tool
+                result = dispatch(mesh, dict(tool_use.get("input") or {}), approve=approve)
         except Exception as exc:  # noqa: BLE001 - the model reads the refusal and corrects its next call
             return {"toolUseId": tid, "status": "error", "content": [{"text": f"{type(exc).__name__}: {exc}"}]}
         return {"toolUseId": tid, "status": "success", "content": [{"text": json.dumps(_json(result))}]}
