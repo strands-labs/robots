@@ -15,9 +15,9 @@ import time
 
 from strands_robots.mesh import wire
 from strands_robots.mesh.iot import policy
+from strands_robots.mesh.iot.client_id import default_client_id
 from strands_robots.mesh.presence import Directory
 from strands_robots.mesh.transports.base import RemoteError
-from strands_robots.mesh.transports.iot import default_client_id
 
 ACCOUNT, REGION = "123456789012", "us-west-2"
 
@@ -29,7 +29,7 @@ def _doc():
 def test_direct_messages_are_granted_on_the_target_client_inside_the_tenant():
     stmt = [s for s in _doc()["Statement"] if s["Action"] == "iot:SendDirectMessage"]
     assert len(stmt) == 1
-    assert stmt[0]["Resource"] == f"arn:aws:iot:{REGION}:{ACCOUNT}:client/*"
+    assert stmt[0]["Resource"] == [f"arn:aws:iot:{REGION}:{ACCOUNT}:client/arm-1"]  # only the tenant's own things
     assert stmt[0]["Condition"] == {"StringLike": {"iot:Topic": ["strands/lab/*/rpc/*", "strands/lab/*/manifest"]}}
 
 
@@ -53,7 +53,7 @@ def test_a_direct_message_reaches_only_the_keys_an_operator_queries():
 def test_an_iam_link_connects_with_a_client_id_the_operator_policy_admits():
     connect = [s for s in _doc()["Statement"] if s["Action"] == "iot:Connect"][0]["Resource"]
     pattern = connect.split(":client/", 1)[1]
-    assert fnmatch.fnmatchcase(default_client_id({}), pattern)
+    assert fnmatch.fnmatchcase(default_client_id({}, "lab"), pattern)
     device = default_client_id({"cert": "cert.pem", "key": "key.pem"})
     assert device.startswith("strands-") and not fnmatch.fnmatchcase(device, pattern)
 

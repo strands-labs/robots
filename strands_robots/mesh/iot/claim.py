@@ -21,6 +21,7 @@ from .. import wire
 from .claim_hook import HOOK_SOURCE, allow, hook_decision
 from .policy import POLICY_NAME, group_name
 from .provision import _write, csr
+from .rules import rule_name
 
 __all__ = ["HOOK_SOURCE", "TEMPLATE", "TEMPLATE_NAME", "allow", "claim", "create_template", "hook_decision"]
 
@@ -30,6 +31,7 @@ TEMPLATE: dict[str, Any] = {
         "device_id": {"Type": "String"},
         "device_type": {"Type": "String"},
         "tenant": {"Type": "String"},
+        "telemetry_rule": {"Type": "String"},  # the hook overrides it with the approval's
         "claim_secret": {"Type": "String"},  # read by the hook only; the hook overrides tenant and device_type
         "AWS::IoT::Certificate::Id": {"Type": "String"},
     },
@@ -40,7 +42,13 @@ TEMPLATE: dict[str, Any] = {
             "Properties": {
                 "ThingName": {"Ref": "device_id"},
                 "ThingTypeName": {"Ref": "device_type"},
-                "AttributePayload": {"tenant": {"Ref": "tenant"}, "device_type": {"Ref": "device_type"}},
+                "AttributePayload": {
+                    "tenant": {"Ref": "tenant"},
+                    "device_type": {"Ref": "device_type"},
+                    # rules.rule_name("telemetry", tenant), from the operator's approval (the hook overrides it):
+                    # a template cannot compute the hashed name of a tenant like "lab-a"
+                    "telemetry_rule": {"Ref": "telemetry_rule"},
+                },
                 "ThingGroups": [{"Fn::Join": ["", ["strands-", {"Ref": "tenant"}]]}],
             },
         },
@@ -139,6 +147,7 @@ def claim(
                 "device_id": did,
                 "device_type": str(record["device_type"]),
                 "tenant": str(record["tenant"]),
+                "telemetry_rule": rule_name("telemetry", str(record["tenant"])),
                 "claim_secret": secret,
             },  # fmt: skip
         )

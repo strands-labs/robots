@@ -7,7 +7,7 @@ import json
 
 import pytest
 
-from strands_robots.mesh.iot import claim, policy, provision, registry
+from strands_robots.mesh.iot import claim, policy, provision, registry, rules
 
 ACCOUNT, REGION = "123456789012", "us-west-2"
 
@@ -23,6 +23,7 @@ def test_template_binds_thing_to_device_id_and_group_to_tenant_within_10_kb():
         "device_id",
         "device_type",
         "tenant",
+        "telemetry_rule",
         "claim_secret",
         "AWS::IoT::Certificate::Id",
     }
@@ -53,7 +54,9 @@ SECRET = "s3cret"
 
 def _approved(*ids: str, tenant: str = "lab", device_type: str = "robot_arm") -> dict:
     digest = hashlib.sha256(SECRET.encode()).hexdigest()
-    return {i: {"device_id": i, "tenant": tenant, "device_type": device_type, "secret_sha256": digest} for i in ids}
+    rule = rules.rule_name("telemetry", tenant)
+    return {i: {"device_id": i, "tenant": tenant, "device_type": device_type, "telemetry_rule": rule,
+                "secret_sha256": digest} for i in ids}  # fmt: skip
 
 
 def _ask(device_id: str, **over) -> dict:

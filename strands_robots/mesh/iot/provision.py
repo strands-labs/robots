@@ -16,6 +16,7 @@ from urllib.parse import quote
 from .. import wire
 from ..transports.pkcs11 import refuse_pin
 from .policy import POLICY_NAME, controller_policy, device_policy, group_name, policy_text
+from .rules import rule_name
 
 
 def csr(device_id: str) -> tuple[str, str]:
@@ -97,7 +98,9 @@ def register(
     _pair(csr_pem, key)
     did, dtype, tenant = str(record["id"]), str(record["device_type"]), str(record["tenant"])
     labels = {str(k): str(v)[:800] for k, v in (record.get("labels") or {}).items()}
-    attrs, ttype = {"tenant": tenant, "device_type": dtype, **labels}, _segment(dtype)
+    # the policy reads tenant and telemetry_rule from these attributes: a label never overrides them
+    attrs = {**labels, "tenant": tenant, "device_type": dtype, "telemetry_rule": rule_name("telemetry", tenant)}
+    ttype = _segment(dtype)
     _exists(iot.create_thing_type, thingTypeName=ttype)
     _exists(iot.create_thing, thingName=did, thingTypeName=ttype, attributePayload={"attributes": attrs})
     iot.update_thing(thingName=did, thingTypeName=ttype, attributePayload={"attributes": attrs, "merge": True})
