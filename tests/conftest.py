@@ -66,3 +66,9 @@ def _dashboard_signed_in(request, tmp_path, monkeypatch):
         return connect(uri, *a, additional_headers=headers, **kw)
 
     monkeypatch.setattr(wsc, "connect", ws_signed)
+
+
+@pytest.fixture(autouse=True)
+def _recordings_in_tmp(tmp_path, monkeypatch):
+    """The dashboard records only inside STRANDS_ROBOTS_RECORDINGS: each test's own tmp_path."""
+    monkeypatch.setenv("STRANDS_ROBOTS_RECORDINGS", str(tmp_path))
