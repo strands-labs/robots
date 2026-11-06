@@ -180,5 +180,15 @@ class FeetechBus:
     def torque(self, ids: list[int], on: bool) -> None:
         self.sync_write(REG_TORQUE_ENABLE, 1, {i: bytes([1 if on else 0]) for i in ids})
 
+    def engage(self, ids: list[int], retries: int = 0) -> None:
+        """Torque on with every servo held where it is: read Present_Position, write it as Goal_Position, then enable.
+
+        Torque on drives a servo to the goal it already holds, and after power-up or another session that goal is
+        stale. The present counts are copied as the servos report them, so no calibration is involved, and if the goal
+        write engages torque by itself (as reported for the STS3215) the arm is still held where it is."""
+        present = self.sync_read(REG_PRESENT_POSITION, 2, ids, retries=retries)
+        self.sync_write(REG_GOAL_POSITION, 2, present)
+        self.torque(ids, True)
+
     def close(self) -> None:
         self.serial.close()

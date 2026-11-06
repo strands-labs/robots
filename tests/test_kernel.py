@@ -156,7 +156,7 @@ def test_k1_command_refuses_a_target_that_is_not_one_value_per_action_key_before
     assert writes(s) == []  # it used to fail in the driver's zip(), after Torque_Enable
 
 
-def test_k1_command_clips_every_joint_into_its_limits_and_still_never_reads():
+def test_k1_command_clips_every_joint_into_its_limits_and_reads_only_to_engage_torque():
     d, s = make_driver(cal=None)  # uncalibrated: full-turn counts, so only the limits keep 3 rad off the servo
     real = Robot("so101", driver=d, twin=False)
     hi = real.description.limits["shoulder_lift"][1]
@@ -164,7 +164,11 @@ def test_k1_command_clips_every_joint_into_its_limits_and_still_never_reads():
     real.command(np.array([0.0, 3.0, 0.0, 0.0, 0.0, 0.0]))
     goal = int.from_bytes(s.regs[2][ft.REG_GOAL_POSITION : ft.REG_GOAL_POSITION + 2], "little")
     assert goal == d.rad_to_counts("shoulder_lift", hi)  # 3186; 3.0 rad used to go out as 4004
-    assert [f for f in s.frames if f[4] in (ft.READ, ft.SYNC_READ)] == []
+    reads = [f for f in s.frames if f[4] in (ft.READ, ft.SYNC_READ)]
+    assert [f[5] for f in reads] == [ft.REG_PRESENT_POSITION]  # once, to hold every servo where it is before torque
+    s.frames.clear()
+    real.command(np.array([0.0, 3.0, 0.0, 0.0, 0.0, 0.0]))
+    assert [f for f in s.frames if f[4] in (ft.READ, ft.SYNC_READ)] == []  # torque is on: a command never reads
 
 
 def test_k1_command_never_puts_a_nan_or_an_out_of_limit_target_into_a_world():
@@ -290,9 +294,11 @@ def test_k3_a_paced_run_keeps_its_rate_and_fresh_observations_when_every_sleep_w
     period), and no two are closer than a period less that lateness."""
     clock, stamps, seen = LateWaking(late), [], []
 
-    class Stamped(FakeSerial):  # each Goal_Position write stamped on the body's clock as it reaches the bus
+    class Stamped(FakeSerial):  # each target write stamped on the body's clock as it reaches the bus
         def write(self, data):
-            if data[4] == ft.SYNC_WRITE and data[5] == ft.REG_GOAL_POSITION:
+            # the engage hold (Goal := Present) goes out before torque; only a goal under torque is a tick's target
+            torqued = self.regs[1][ft.REG_TORQUE_ENABLE] == 1
+            if data[4] == ft.SYNC_WRITE and data[5] == ft.REG_GOAL_POSITION and torqued:
                 stamps.append(clock.now())
             super().write(data)
 
