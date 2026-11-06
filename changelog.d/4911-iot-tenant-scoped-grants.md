@@ -8,16 +8,18 @@
   - telemetry goes only to the Basic Ingest rule named by the thing's new `telemetry_rule` attribute, instead of any
     rule in the account.
 - **Provisioning:** `provision.register` writes `telemetry_rule`, and a label can no longer override `tenant` (or
-  `telemetry_rule`). The claim template writes it for letter-and-digit tenant ids.
+  `telemetry_rule`). A claimed robot gets it from its approval (`claim_hook.allow`), for any tenant id.
 - **Operator policy:**
   - operators connect only as `strands-op-<tenant>-*`, so they no longer collide with another tenant's operators;
   - Direct Messages go only to the tenant's own devices, on `strands/<tenant>/*/rpc/*`;
-  - lifecycle events are heard only for those devices.
-  - One document now fits about six devices (ten ARNs each).
+  - lifecycle events are delivered only for those devices: `iot:Subscribe` stays wide (`lifecycle.watch` subscribes
+    with `+`, which is literal in a policy) and `iot:Receive` names each device.
+  - One document now fits about seven devices (nine ARNs each).
 - **Client ids:** an IAM `iot://` link of a `Mesh` connects as `strands-op-<tenant>-<random>` and refuses a
   `client=` outside that prefix.
 - **Rpcs:** a device answers rpcs only on its own tenant's topics.
 - **Disconnect audit rule:** `lifecycle.clear_presence_rule` now needs `things=` and republishes only the tenant's
   own devices' and operators' disconnects.
 
-Re-provision the fleet and operator policies to apply this.
+Re-provision the fleet and operator policies to apply this. A claim approval made with an earlier `allow` has no
+`telemetry_rule` and is refused: approve that robot again.

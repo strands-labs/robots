@@ -1,13 +1,13 @@
 """The pre-provisioning hook a claim template runs, and the allowlist it reads.
 
-A claim certificate is shared by a whole fleet, so whoever holds it must not choose a robot's name, tenant or type.
-The operator approves each robot ahead of its first boot with :func:`allow`, which writes one SSM SecureString
-``/strands-robots/claim/<sha256 of the device id>`` = ``{"device_id", "tenant", "device_type", "secret_sha256"}`` and
-returns a one-time secret to install on that robot. The hook (``HOOK_SOURCE``, a Lambda the user deploys) accepts a
-RegisterThing only when the thing does not exist yet, the certificate's one subject CN is its name, an allowlist entry
-exists for it, the request carries that entry's secret, tenant and device type, and then deletes the entry. So a
-leaked claim certificate names no robot, joins no other tenant, and cannot take a name before its robot does. The
-hook's role needs ``iot:DescribeThing`` and ``ssm:GetParameter`` / ``ssm:DeleteParameter`` on
+A claim certificate is shared by a whole fleet, so whoever holds it must not choose a robot's name, tenant or type. The
+operator approves each robot ahead of its first boot with :func:`allow`, which writes one SSM SecureString
+``/strands-robots/claim/<sha256 of the device id>`` = ``{"device_id", "tenant", "device_type", "telemetry_rule",
+"secret_sha256"}`` and returns a one-time secret to install on that robot. The hook (``HOOK_SOURCE``, a Lambda the user
+deploys) accepts a RegisterThing only when the thing does not exist yet, the certificate's one subject CN is its name,
+an allowlist entry exists for it, the request carries that entry's secret, tenant and device type, and then deletes the
+entry. So a leaked claim certificate names no robot, joins no other tenant, and cannot take a name before its robot
+does. The hook's role needs ``iot:DescribeThing`` and ``ssm:GetParameter`` / ``ssm:DeleteParameter`` on
 ``/strands-robots/claim/*`` (and ``kms:Decrypt`` for the key that encrypts them); the library creates no IAM.
 """
 
@@ -20,6 +20,7 @@ from collections.abc import Collection, Mapping
 from typing import Any
 
 from .. import wire
+from .rules import rule_name
 
 ALLOW_PREFIX = "/strands-robots/claim/"
 
@@ -35,6 +36,7 @@ def allow(ssm: Any, device_id: str, *, tenant: str, device_type: str) -> str:
     secret = secrets.token_urlsafe(24)
     entry = {"device_id": wire.check_id(device_id, "device_id"), "tenant": wire.check_id(tenant, "tenant"),
              "device_type": wire.check_id(device_type, "device_type"),
+             "telemetry_rule": rule_name("telemetry", tenant),  # the template cannot compute a hashed name
              "secret_sha256": hashlib.sha256(secret.encode()).hexdigest()}  # fmt: skip
     ssm.put_parameter(Name=allow_name(device_id), Value=json.dumps(entry), Type="SecureString", Overwrite=False)
     return secret
@@ -44,8 +46,8 @@ HOOK_SOURCE = '''\
 """Pre-provisioning hook (python3.12 Lambda, boto3 from the runtime). Allow a RegisterThing only for a thing that does
 not exist yet, whose certificate subject has exactly one CN equal to the thing name, that the operator approved
 (an SSM entry under /strands-robots/claim/), with that entry's secret, tenant and device type; the entry is then
-deleted. The CN is read by walking the DER to the TBS subject Name (never the issuer, never bytes inside another
-attribute's value). Any error denies."""
+deleted, and its telemetry rule name overrides the request's. The CN is read by walking the DER to the TBS subject
+Name (never the issuer, never bytes inside another attribute's value). Any error denies."""
 import base64
 import hashlib
 import hmac
@@ -127,8 +129,11 @@ def decide(params, pem):
         return None
     if params.get("tenant") != entry.get("tenant") or params.get("device_type") != entry.get("device_type"):
         return None
+    if not entry.get("telemetry_rule"):
+        return None
     consume(thing)  # one robot per approval: a second claim for this name finds no entry
-    return {"device_id": thing, "tenant": entry["tenant"], "device_type": entry["device_type"]}
+    return {"device_id": thing, "tenant": entry["tenant"], "device_type": entry["device_type"],
+            "telemetry_rule": entry["telemetry_rule"]}
 
 
 def handler(event, _context):

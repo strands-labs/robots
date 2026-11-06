@@ -15,8 +15,8 @@ POLICY_NAME = "strands-robots-device"
 POLICY_CAP = 2048
 """IoT refuses a policy document over 2,048 bytes."""
 IAM_POLICY_CAP = 6144
-"""IAM refuses a managed policy over 6,144 characters; each device adds ten ARNs to the operator policy, so one
-document names about six short device ids and a larger tenant attaches several."""
+"""IAM refuses a managed policy over 6,144 characters; each device adds nine ARNs to the operator policy, so one
+document names about seven short device ids and a larger tenant attaches several."""
 _THING, _TENANT = "${iot:Connection.Thing.ThingName}", "${iot:Connection.Thing.Attributes[tenant]}"
 _RULE = "${iot:Connection.Thing.Attributes[telemetry_rule]}"
 """The thing's own Basic Ingest rule (``rules.rule_name("telemetry", tenant)``), written by ``provision``/``claim``."""
@@ -105,8 +105,10 @@ def operator_policy(
     sh_pub += [f"{arn}:topic/$aws/things/{m}/shadow/name/*/get" for m in marks]
     sh_sub = [f"{arn}:topicfilter/$aws/things/{m}/shadow/name/*/*" for m in marks]
     sh_recv = [f"{arn}:topic/$aws/things/{m}/shadow/*" for m in marks]
-    # lifecycle events of this tenant's devices only: the event topic ends in the client id (= the thing name)
-    life_sub = [f"{arn}:topicfilter/$aws/events/presence/*/{m}" for m in marks]
+    # lifecycle events of this tenant's devices only: the event topic ends in the client id (= the thing name).
+    # Subscribe stays wide (lifecycle.watch subscribes to .../presence/connected/+, and a policy's "+" is literal);
+    # Receive is checked per delivered message, so the broker delivers only these devices' events
+    life_sub = [f"{arn}:topicfilter/$aws/events/presence/*"]
     life_recv = [f"{arn}:topic/$aws/events/presence/*/{m}" for m in marks]
     direct = [f"{arn}:client/{m}" for m in marks]  # a device's MQTT client id is its thing name
     thing_arns: Any = "*" if all_things else [f"{arn}:thing/{m}" for m in marks]
@@ -137,6 +139,6 @@ def operator_policy(
     if len(policy_text(doc)) > IAM_POLICY_CAP:
         raise ValueError(
             f"operator policy for {len(ids)} things is {len(policy_text(doc))} characters; IAM accepts at most "
-            f"{IAM_POLICY_CAP}, about six devices: attach several documents to the operator"
+            f"{IAM_POLICY_CAP}, about seven devices: attach several documents to the operator"
         )
     return doc

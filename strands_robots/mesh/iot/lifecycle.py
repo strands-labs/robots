@@ -46,7 +46,8 @@ def watch(
 ) -> Callable[[], None]:
     """Subscribe to lifecycle events on ``link`` and call ``on_event`` per event (optionally only for clients
     ``tenant_clients(client)`` accepts). ``tenant_clients`` is a convenience filter, not isolation: what a link may
-    hear is decided by its policy (``operator_policy`` grants only the tenant's own devices). Returns the undo."""
+    hear is decided by its policy's ``iot:Receive`` (``operator_policy`` subscribes wide and receives only the
+    tenant's own devices' events). Returns the undo."""
 
     def on(topic: str, raw: bytes) -> None:
         ev = parse(topic, raw)

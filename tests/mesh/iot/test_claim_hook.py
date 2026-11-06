@@ -33,7 +33,12 @@ def test_an_approval_is_used_once_and_the_bound_values_override_the_request():
     ns["allowed"] = approved.get
     ns["consume"] = approved.pop
     out = ns["handler"]({"parameters": _ask("arm-7"), "certificatePem": _cert_pem("arm-7")}, None)
-    bound = {"device_id": "arm-7", "tenant": "lab", "device_type": "robot_arm"}
+    bound = {
+        "device_id": "arm-7",
+        "tenant": "lab",
+        "device_type": "robot_arm",
+        "telemetry_rule": "strands_telemetry_lab",
+    }
     assert out == {"allowProvisioning": True, "parameterOverrides": bound}
     assert approved == {}
     again = ns["handler"]({"parameters": _ask("arm-7"), "certificatePem": _cert_pem("arm-7")}, None)

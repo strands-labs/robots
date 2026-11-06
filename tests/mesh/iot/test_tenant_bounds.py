@@ -3,12 +3,14 @@ client id its tenant's policy allows, and a device answers rpcs only on its own 
 
 from __future__ import annotations
 
+import fnmatch
+import hashlib
 import json
 import time
 
 import pytest
 
-from strands_robots.mesh.iot import claim, client_id, rules
+from strands_robots.mesh.iot import claim, claim_hook, client_id, lifecycle, policy, rules
 from strands_robots.mesh.transports import iot
 
 
@@ -20,10 +22,35 @@ def test_an_iam_link_makes_its_tenants_operator_client_id_and_refuses_another():
     assert client_id.link_client_id({"client": "arm-1", "cert": "c.pem"}, "lab") == "arm-1"  # a device names its thing
 
 
-def test_the_claim_template_writes_the_telemetry_rule_the_policy_names():
+def test_the_claim_template_writes_the_telemetry_rule_the_approval_names():
     attrs = claim.TEMPLATE["Resources"]["thing"]["Properties"]["AttributePayload"]
-    joined = "".join(p if isinstance(p, str) else "lab" for p in attrs["telemetry_rule"]["Fn::Join"][1])
-    assert joined == rules.rule_name("telemetry", "lab")
+    assert attrs["telemetry_rule"] == {"Ref": "telemetry_rule"} and "telemetry_rule" in claim.TEMPLATE["Parameters"]
+    ns: dict = {}
+    exec(claim_hook.HOOK_SOURCE, ns)  # noqa: S102 - the shipped hook
+    secret = "s3cret"
+    entry = {"device_id": "arm-1", "tenant": "lab-a", "device_type": "robot_arm",
+             "telemetry_rule": rules.rule_name("telemetry", "lab-a"),
+             "secret_sha256": hashlib.sha256(secret.encode()).hexdigest()}  # fmt: skip
+    ns.update(subject_cns=lambda pem: ["arm-1"], thing_exists=lambda n: False, allowed=lambda n: dict(entry),
+              consume=lambda n: None)  # fmt: skip
+    ask = {"device_id": "arm-1", "tenant": "lab-a", "device_type": "robot_arm", "claim_secret": secret,
+           "telemetry_rule": "strands_telemetry_other"}  # fmt: skip
+    out = ns["handler"]({"parameters": ask, "certificatePem": ""}, None)
+    assert out["allowProvisioning"]  # a hyphenated tenant gets its real (hashed) rule, whatever the request said
+    assert out["parameterOverrides"]["telemetry_rule"] == "strands_telemetry_lab_a_1c327e55b394"
+    ns["allowed"] = lambda n: {k: v for k, v in entry.items() if k != "telemetry_rule"}
+    assert not ns["handler"]({"parameters": ask, "certificatePem": ""}, None)["allowProvisioning"]
+
+
+def test_the_operator_policy_admits_the_lifecycle_subscription_and_receives_only_its_devices():
+    doc = policy.operator_policy("us-west-2", "123456789012", "lab", things=["arm-1"])
+    acts = {a: [r for s in doc["Statement"] if s["Action"] == a for r in s["Resource"]]
+            for a in ("iot:Subscribe", "iot:Receive")}  # fmt: skip
+    subs = [r.split(":topicfilter/", 1)[1] for r in acts["iot:Subscribe"]]
+    assert all(any(fnmatch.fnmatchcase(t, p) for p in subs) for t in lifecycle.TOPICS)  # "+" is literal in a policy
+    recv = [r.split(":topic/", 1)[1] for r in acts["iot:Receive"]]
+    assert any(fnmatch.fnmatchcase("$aws/events/presence/connected/arm-1", p) for p in recv)
+    assert not any(fnmatch.fnmatchcase("$aws/events/presence/connected/arm-9", p) for p in recv)
 
 
 def test_a_device_never_answers_an_rpc_on_another_tenants_topic():

@@ -90,11 +90,11 @@ def test_operator_policy_names_the_control_shadow_as_iam_does():
 
 
 def test_operator_policy_refuses_a_document_over_iams_cap_by_name():
-    # IAM refuses a managed policy over 6,144 characters; each device adds ten ARNs, so about six fit. The
+    # IAM refuses a managed policy over 6,144 characters; each device adds nine ARNs, so about seven fit. The
     # refusal names the cap and the fix (several documents), instead of IAM's MalformedPolicyDocument later.
     with pytest.raises(ValueError, match="6144"):
         policy.operator_policy(REGION, ACCOUNT, "lab", things=[f"arm-{i}" for i in range(40)])
-    policy.operator_policy(REGION, ACCOUNT, "lab", things=[f"arm-{i}" for i in range(6)])  # fits
+    policy.operator_policy(REGION, ACCOUNT, "lab", things=[f"arm-{i}" for i in range(7)])  # fits
 
 
 def _resources(doc, action):
@@ -129,8 +129,8 @@ def test_a_device_reaches_only_its_own_telemetry_rule():
 
 def test_the_operator_hears_and_messages_only_its_tenants_devices():
     doc = policy.operator_policy(REGION, ACCOUNT, "lab", things=["arm-1", "arm-2"])
-    life = [r for a in ("iot:Subscribe", "iot:Receive") for r in _resources(doc, a) if "$aws/events/presence" in r]
-    assert sorted(r.rsplit("/", 1)[-1] for r in life) == ["arm-1", "arm-1", "arm-2", "arm-2"], life
+    life = [r for r in _resources(doc, "iot:Receive") if "$aws/events/presence" in r]
+    assert sorted(r.rsplit("/", 1)[-1] for r in life) == ["arm-1", "arm-2"], life  # Receive is the isolation
     (dm,) = _by_action(doc, "iot:SendDirectMessage")
     assert dm["Resource"] == [
         f"arn:aws:iot:{REGION}:{ACCOUNT}:client/arm-1",
