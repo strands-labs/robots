@@ -4,8 +4,12 @@ Rules are data (``rules_for``), applied idempotently (``apply_rules``: create, o
 changed). The library never creates IAM: the caller passes the ``role_arn`` the actions assume, and that role must
 be older than the rule (measured: a rule whose role was created seconds before drops messages silently until IAM
 propagates). Presence and the live ``state`` stream never go through rules by default (3,600–108,000 triggers per
-robot per hour); state storage is opt-in through Basic Ingest at ``telemetry_hz`` ≤ 1, and because a Basic Ingest
-message has no MQTT topic, the tenant and device id travel in the envelope itself (they already do: ``wire``).
+robot per hour); state storage is opt-in through Basic Ingest at ``telemetry_hz`` ≤ 1.
+
+What a rule stores is filed under the identity the broker checked, never one the message body names: the tenant is
+the rule's own (each tenant has its rules), the device is the key segment the device policy pins to the publishing
+thing (``topic(3)``), or for Basic Ingest the MQTT client id, which that policy pins to the thing name. A body that
+says ``"tenant": "other"`` still lands under its own tenant.
 """
 
 from __future__ import annotations
@@ -79,18 +83,10 @@ def rules_for(
         "ruleDisabled": False,
         "awsIotSqlVersion": "2016-03-23",
     }
-    sinks: list[dict[str, Any]] = []
-    if timestream:
-        db, table = timestream
-        sinks.append({"timestream": {"roleArn": role_arn, "databaseName": db, "tableName": table,
-                                     "dimensions": [{"name": "tenant", "value": "${tenant}"},
-                                                    {"name": "device_id", "value": "${device_id}"}]}})  # fmt: skip
-    if s3_bucket:
-        sinks.append({"s3": {"roleArn": role_arn, "bucketName": s3_bucket,
-                             "key": "recordings/${tenant}/${device_id}/${event}/${timestamp()}.json"}})  # fmt: skip
+    sinks = _sinks(role_arn, t, s3_bucket, timestream, device="${topic(3)}", event="${topic(5)}")
     if sinks:
         out[rule_name("events", t)] = {
-            "sql": f"SELECT *, topic(3) AS device_id, topic(5) AS event, timestamp() AS at "
+            "sql": f"SELECT *, topic(2) AS tenant, topic(3) AS device_id, topic(5) AS event, timestamp() AS at "
             f"FROM '{wire.key('event', t, '*', '*').replace('*', '+')}'",
             "description": f"strands-robots tenant {t}: device events to storage",
             "actions": sinks,
@@ -99,7 +95,8 @@ def rules_for(
         }
     if sns_topic_arn:
         out[rule_name("fault", t)] = {
-            "sql": f"SELECT *, topic(3) AS device_id FROM '{wire.key('event', t, '*', 'fault').replace('*', '+')}' "
+            "sql": f"SELECT *, topic(2) AS tenant, topic(3) AS device_id "
+            f"FROM '{wire.key('event', t, '*', 'fault').replace('*', '+')}' "
             f"WHERE result.severity = 'high'",
             "description": f"strands-robots tenant {t}: high-severity faults",
             "actions": [{"sns": {"targetArn": sns_topic_arn, "roleArn": role_arn, "messageFormat": "JSON"}}],
@@ -109,14 +106,32 @@ def rules_for(
     if telemetry:
         if not sinks:
             raise ValueError("telemetry=True needs a sink: s3_bucket= and/or timestream=(database, table)")
+        # Basic Ingest ignores FROM; only seq, t and result come from the body, the identity never does
         out[rule_name("telemetry", t)] = {
-            "sql": "SELECT tenant, device_id, seq, t, result FROM 'strands/basic-ingest'",  # ignored: Basic Ingest
+            "sql": f"SELECT seq, t, result, '{t}' AS tenant, clientid() AS device_id FROM 'strands/basic-ingest'",
             "description": f"strands-robots tenant {t}: <= 1 Hz state telemetry (Basic Ingest, no messaging charge)",
-            "actions": [dict(s) for s in sinks],
+            "actions": _sinks(role_arn, t, s3_bucket, timestream, device="${clientid()}", event="state"),
             "ruleDisabled": False,
             "awsIotSqlVersion": "2016-03-23",
         }
     return out
+
+
+def _sinks(
+    role_arn: str, tenant: str, s3_bucket: str | None, timestream: tuple[str, str] | None, *, device: str, event: str
+) -> list[dict[str, Any]]:
+    """The storage actions, keyed by ``tenant`` itself and the ``device``/``event`` substitutions the broker fills from
+    the topic or connection, so no body field can choose where a record is filed."""
+    sinks: list[dict[str, Any]] = []
+    if timestream:
+        db, table = timestream
+        sinks.append({"timestream": {"roleArn": role_arn, "databaseName": db, "tableName": table,
+                                     "dimensions": [{"name": "tenant", "value": tenant},
+                                                    {"name": "device_id", "value": device}]}})  # fmt: skip
+    if s3_bucket:
+        sinks.append({"s3": {"roleArn": role_arn, "bucketName": s3_bucket,
+                             "key": f"recordings/{tenant}/{device}/{event}/${{timestamp()}}.json"}})  # fmt: skip
+    return sinks
 
 
 def apply_rules(iot: Any, rules: Mapping[str, Mapping[str, Any]]) -> dict[str, str]:

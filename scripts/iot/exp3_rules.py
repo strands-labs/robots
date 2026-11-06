@@ -2,7 +2,7 @@
 
     python scripts/iot/exp3_rules.py [--n 50]
 
-(a) rule `SELECT *, timestamp() AS at FROM 'strands/+/@estop'` → republish to `strands/${tenant}/@events/estop` (tenant from the payload): device publish → operator receives, p50/p95
+(a) rule `SELECT *, '<tenant>' AS tenant, topic() AS via, timestamp() AS at FROM 'strands/<tenant>/@estop'` → republish to `strands/<tenant>/@events/estop` (the rule's own tenant, never the payload's): device publish → operator receives, p50/p95
 (b) the same rule → SNS topic → SQS queue: device publish → SQS receive, p50/p95 (the hook path)
 (c) Basic Ingest: publish straight to `$aws/rules/<rule>` → republish latency; the cost difference is stated in EXPERIMENTS.md
 (d) retained estop state: the publisher sets RETAIN on `strands/<tenant>/@estop`; a NEW operator connecting later receives it on
@@ -68,13 +68,14 @@ def main() -> int:
             {"Effect": "Allow", "Action": "iot:Publish", "Resource": f"arn:aws:iot:{REGION}:{account}:topic/strands/*/@events/*"},
             {"Effect": "Allow", "Action": "sns:Publish", "Resource": topic_arn}]}))
         out["hooks_setup_ms"] = round((time.perf_counter() - t) * 1e3)
-        # the tenant rides IN the payload: with Basic Ingest there is no MQTT topic, so topic(2) would be "rules"
-        sql = "SELECT *, timestamp() AS at FROM 'strands/+/@estop'"
+        # one rule per tenant, the tenant written into it: under Basic Ingest topic(2) is "rules", and a payload
+        # tenant is whatever the publisher says. `via` records what topic() returns on each path.
+        sql = f"SELECT *, '{tenant}' AS tenant, topic() AS via, timestamp() AS at FROM 'strands/{tenant}/@estop'"
         for attempt in range(20):  # IAM propagation
             try:
                 iot.create_topic_rule(ruleName=rule_name, tags=f"Project={TAG_MAP['Project']}", topicRulePayload={
                     "sql": sql, "awsIotSqlVersion": "2016-03-23", "ruleDisabled": False, "actions": [
-                        {"republish": {"roleArn": role, "topic": "strands/${tenant}/@events/estop", "qos": 1}},
+                        {"republish": {"roleArn": role, "topic": f"strands/{tenant}/@events/estop", "qos": 1}},
                         {"sns": {"targetArn": topic_arn, "roleArn": role, "messageFormat": "RAW"}}]})
                 created["rule"] = rule_name
                 break
@@ -116,6 +117,7 @@ def main() -> int:
         r = link.publish(f"$aws/rules/{rule_name}", json.dumps({"estop": True, "seq": -2, "tenant": tenant}).encode(), qos=1)
         out["basic_ingest_from_device_without_policy_puback"] = int(r.puback.reason_code) if r and r.puback else None
         bi = [fire(f"$aws/rules/{rule_name}", i, via=op) for i in range(a.n)]
+        out["basic_ingest_topic_seen"] = got[0][1].get("via") if got else None  # what topic() gives there
         rep_op = [fire(f"strands/{tenant}/@estop", i, via=op) for i in range(a.n)]
         out["rule_republish_from_operator_ms"] = {**pct([x for x in rep_op if not math.isnan(x)]), "lost": sum(1 for x in rep_op if math.isnan(x))}
         out["basic_ingest_republish_ms"] = {**pct([x for x in bi if not math.isnan(x)]), "lost": sum(1 for x in bi if math.isnan(x))}

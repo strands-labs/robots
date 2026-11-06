@@ -90,6 +90,11 @@ rules.apply_rules(iot, rules.rules_for("lab-a", role_arn, sns_topic_arn=alerts, 
 Rules forward e-stops, faults and run events to SNS, S3 or Timestream. Pass a role that already exists. A new
 role can drop messages until IAM catches up.
 
+A stored record is filed under the rule's own tenant and the publishing thing, never under a `tenant` or
+`device_id` the message body names: S3 keys are `recordings/<tenant>/<device>/<event>/<ms>.json`. When several
+tenants share one bucket, give each tenant's rule role `s3:PutObject` on `recordings/<tenant>/*` only; give each
+tenant its own Timestream table.
+
 ## Greengrass and video
 
 {{drawing:d19_edge}}
