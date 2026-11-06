@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 
 import pytest
@@ -18,7 +19,13 @@ def test_template_binds_thing_to_device_id_and_group_to_tenant_within_10_kb():
     assert thing["ThingName"] == {"Ref": "device_id"}
     assert thing["ThingGroups"] == [{"Fn::Join": ["", ["strands-", {"Ref": "tenant"}]]}]
     assert body["Resources"]["policy"]["Properties"]["PolicyName"] == policy.POLICY_NAME
-    assert set(body["Parameters"]) == {"device_id", "device_type", "tenant", "AWS::IoT::Certificate::Id"}
+    assert set(body["Parameters"]) == {
+        "device_id",
+        "device_type",
+        "tenant",
+        "claim_secret",
+        "AWS::IoT::Certificate::Id",
+    }
 
 
 def _cert_pem(cn: str, *, issuer_cn: str | None = None, before: str | None = None) -> str:
@@ -41,14 +48,26 @@ def _cert_pem(cn: str, *, issuer_cn: str | None = None, before: str | None = Non
     return cert.public_bytes(serialization.Encoding.PEM).decode()
 
 
+SECRET = "s3cret"
+
+
+def _approved(*ids: str, tenant: str = "lab", device_type: str = "robot_arm") -> dict:
+    digest = hashlib.sha256(SECRET.encode()).hexdigest()
+    return {i: {"device_id": i, "tenant": tenant, "device_type": device_type, "secret_sha256": digest} for i in ids}
+
+
+def _ask(device_id: str, **over) -> dict:
+    return {"device_id": device_id, "tenant": "lab", "device_type": "robot_arm", "claim_secret": SECRET, **over}
+
+
 def test_hook_accepts_only_a_certificate_whose_cn_is_the_thing_being_created():
     compile(claim.HOOK_SOURCE, "hook.py", "exec")
     honest, stolen = _cert_pem("arm-7"), _cert_pem("arm-1")
-    assert claim.hook_decision({"device_id": "arm-7"}, honest) is True
-    assert claim.hook_decision({"device_id": "arm-7"}, stolen) is False, "CN must be the thing being created"
-    assert claim.hook_decision({"device_id": "arm-1"}, honest) is False
-    assert claim.hook_decision({}, honest) is False
-    assert claim.hook_decision({"device_id": "arm-7"}, "") is False
+    assert claim.hook_decision(_ask("arm-7"), honest, approved=_approved("arm-7")) is True
+    assert claim.hook_decision(_ask("arm-7"), stolen, approved=_approved("arm-7")) is False, "CN must be the thing"
+    assert claim.hook_decision(_ask("arm-1"), honest, approved=_approved("arm-1")) is False
+    assert claim.hook_decision({}, honest, approved=_approved("arm-7")) is False
+    assert claim.hook_decision(_ask("arm-7"), "", approved=_approved("arm-7")) is False
     # the same CN parser accepts the CN a CSR from provision.csr carries (what IoT signs)
     from cryptography import x509
 
@@ -68,11 +87,12 @@ FAKE_CN = "\x06\x03\x55\x04\x03\x0c\x05arm-1"  # the bytes of an attribute "CN=a
     ],
 )
 def test_hook_refuses_to_bind_a_certificate_to_arm_1(case, pem, existing):
-    assert claim.hook_decision({"device_id": "arm-1"}, pem(), existing=existing) is False, case
+    assert claim.hook_decision(_ask("arm-1"), pem(), existing=existing, approved=_approved("arm-1")) is False, case
 
 
 def test_hook_reads_the_subject_cn_past_an_issuer_and_an_o_and_asks_aws_whether_the_thing_exists():
-    assert claim.hook_decision({"device_id": "arm-1"}, _cert_pem("arm-1", issuer_cn="a-private-ca", before=FAKE_CN))
+    pem = _cert_pem("arm-1", issuer_cn="a-private-ca", before=FAKE_CN)
+    assert claim.hook_decision(_ask("arm-1"), pem, approved=_approved("arm-1"))
     assert "describe_thing" in claim.HOOK_SOURCE and "ResourceNotFoundException" in claim.HOOK_SOURCE
 
 
