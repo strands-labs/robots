@@ -211,7 +211,8 @@ All paths are under `strands_robots/`.
   extra. The dashboard draws a real robot through its twin.
 - Registry entries with `driver: "strands"` or `"lerobot"` have no driver in `_DRIVERS`: `Robot(x, port=...)` fails
   with "no driver known".
-- Without MuJoCo, the XML fallback ignores `angle="degree"` and `<default>` ranges, so limits can differ.
+- Without MuJoCo, the XML walk (`description/introspect/xml.py`) reads limits as MuJoCo does (degrees by default,
+  `<default>` classes, `limited`, includes); `tests/test_xml_limits.py` holds it to MuJoCo on registry models.
 - GitHub-hosted models are pinned: `asset.source.commit` plus `asset.source.sha256` (`assets.tree_digest` of the
   subdir). Bumping a model means updating both; a cache from another pin is fetched again.
 - Two robots with the same id clash as tool names. Pass `id=`.
