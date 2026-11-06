@@ -109,7 +109,8 @@ class SameOrigin:
             return
 
         async def framed(message: MutableMapping[str, Any]) -> None:
-            if message["type"] == "http.response.start":
+            # A 304 carries no policy: the browser would freshen the cached page's header from it and lose script-src.
+            if message["type"] == "http.response.start" and message.get("status") != 304:
                 headers = message.get("headers", [])
                 html = any(k.lower() == b"content-type" and v.startswith(b"text/html") for k, v in headers)
                 policy = f"{FRAME_ANCESTORS}; {PAGE_POLICY}" if html else FRAME_ANCESTORS

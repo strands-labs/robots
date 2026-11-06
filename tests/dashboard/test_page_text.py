@@ -77,6 +77,7 @@ def test_a_cli_address_that_is_not_loopback_host_port_is_ignored(server) -> None
 
 def test_markup_injected_into_the_page_cannot_run_script(server) -> None:
     with page_on(server.url) as page:
+        page.reload()  # a conditional GET answered 304 must leave the cached page's policy in place
         page.evaluate(f"() => document.body.insertAdjacentHTML('beforeend', {json.dumps(PAYLOAD)})")
         page.wait_for_timeout(500)
         assert page.evaluate("() => window.__ran") is None  # the page's policy refuses inline handlers
@@ -91,3 +92,11 @@ def test_only_html_pages_carry_the_script_policy(server) -> None:
     assert "script-src 'self' 'sha256-" in page and "object-src 'none'" in page and page.startswith("frame-ancestors")
     worker = httpx.get(f"{server.url}/mujoco-worker.js").headers["content-security-policy"]
     assert "script-src" not in worker  # MuJoCo's bindings compile functions in the worker
+
+
+def test_a_not_modified_reply_carries_no_policy(server) -> None:
+    first = httpx.get(f"{server.url}/index.html")
+    assert "script-src" in first.headers["content-security-policy"]
+    again = httpx.get(f"{server.url}/index.html", headers={"if-none-match": first.headers["etag"]})
+    assert again.status_code == 304
+    assert "content-security-policy" not in again.headers
