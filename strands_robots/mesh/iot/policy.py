@@ -9,6 +9,7 @@ from collections.abc import Mapping
 from typing import Any
 
 from .. import wire
+from .rules import tenant_key
 
 POLICY_NAME = "strands-robots-device"
 """The one policy every device certificate carries; the tenant and thing come from the connection, not the text."""
@@ -27,8 +28,10 @@ def group_name(tenant: str) -> str:
 
 
 def operator_client_prefix(tenant: str) -> str:
-    """``strands-op-<tenant>-``: every operator MQTT client id of ``tenant`` starts with it (the IAM link makes one)."""
-    return f"strands-op-{wire.check_id(tenant, 'tenant')}-"
+    """``strands-op-<tenant key>-``: every operator MQTT client id of ``tenant`` starts with it (the IAM link makes
+    one). The key is ``rules.tenant_key``: a plain tenant as it is, any other hashed, never holding a ``-``, so
+    ``lab`` and ``lab-a`` (``strands-op-lab_a_<hex>-``) never share a prefix."""
+    return f"strands-op-{tenant_key(tenant, 64)}-"
 
 
 def policy_text(doc: Mapping[str, Any]) -> str:

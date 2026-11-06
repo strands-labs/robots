@@ -29,7 +29,8 @@ With `iot=`, the robot also becomes an IoT thing with shadows.
 3. Run `provision.register` once per robot. Files go in `~/.strands/iot/<id>/`.
 4. Attach `policy.operator_policy(region, account, tenant, things=[...])` to each operator's IAM identity. An
    operator connects with the MQTT client id `strands-op-<tenant>-<name>`; `Mesh("iot://<region>", tenant=...)`
-   makes one, and refuses a `client=` outside that prefix.
+   makes one, and refuses a `client=` outside that prefix. A tenant other than letters and digits is hashed there
+   as in rule names, so `lab-a` connects as `strands-op-lab_a_1c327e55b394-<name>` and never under `lab`'s prefix.
 
 ```python
 from strands_robots.mesh.iot import provision

@@ -22,6 +22,18 @@ def test_an_iam_link_makes_its_tenants_operator_client_id_and_refuses_another():
     assert client_id.link_client_id({"client": "arm-1", "cert": "c.pem"}, "lab") == "arm-1"  # a device names its thing
 
 
+def test_no_tenants_operator_ids_fall_under_another_tenants_prefix():
+    tenants = ["lab", "lab-a", "lab-a-b", "laba", "lab_a", "a", "a-b", "lab.a", "lab:a"]
+    prefix = {t: policy.operator_client_prefix(t) for t in tenants}
+    for mine in tenants:
+        own = client_id.default_client_id({}, mine)
+        assert own.startswith(prefix[mine])
+        for other in tenants:
+            if other != mine:  # neither its policy's Connect nor its audit rule's startswith() admits my operators
+                assert not own.startswith(prefix[other]) and not prefix[mine].startswith(prefix[other])
+    assert prefix["lab-a"] == "strands-op-lab_a_1c327e55b394-" and prefix["lab"] == "strands-op-lab-"
+
+
 def test_the_claim_template_writes_the_telemetry_rule_the_approval_names():
     attrs = claim.TEMPLATE["Resources"]["thing"]["Properties"]["AttributePayload"]
     assert attrs["telemetry_rule"] == {"Ref": "telemetry_rule"} and "telemetry_rule" in claim.TEMPLATE["Parameters"]

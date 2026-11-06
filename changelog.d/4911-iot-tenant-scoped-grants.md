@@ -10,7 +10,9 @@
 - **Provisioning:** `provision.register` writes `telemetry_rule`, and a label can no longer override `tenant` (or
   `telemetry_rule`). A claimed robot gets it from its approval (`claim_hook.allow`), for any tenant id.
 - **Operator policy:**
-  - operators connect only as `strands-op-<tenant>-*`, so they no longer collide with another tenant's operators;
+  - operators connect only as `strands-op-<tenant>-*`, so they no longer collide with another tenant's operators. A
+    tenant other than letters and digits is hashed there as in rule names (`lab-a` → `strands-op-lab_a_<12 hex>-`), so
+    `lab` and `lab-a` never share a prefix;
   - Direct Messages go only to the tenant's own devices, on `strands/<tenant>/*/rpc/*`;
   - lifecycle events are delivered only for those devices: `iot:Subscribe` stays wide (`lifecycle.watch` subscribes
     with `+`, which is literal in a policy) and `iot:Receive` names each device.
