@@ -14,6 +14,8 @@ import numpy as np
 from ..types import Action, Observation
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     from .robot import Robot
 
 
@@ -50,11 +52,27 @@ def operator_gate(robot: Robot, targets: np.ndarray, *, confirmed: bool = False)
 
 
 def confirm_act(
-    robot: Robot, action: Action, *, steps: int | None = None, seconds: float | None = None, confirmed: bool = False
+    robot: Robot,
+    action: Action,
+    *,
+    steps: int | None = None,
+    seconds: float | None = None,
+    confirmed: bool = False,
+    ramp: Callable[..., None],
 ) -> Observation:
-    """``act`` through the operator gate: what an agent tool and the dashboard call.
+    """``act`` through the operator gate: what an agent tool, the dashboard and a mesh peer call.
 
-    The gate is asked once, for the target; a ``seconds`` ramp from the measured pose stays inside the box of the
-    two, so every point of it passes the limits the target passed.
+    The operator is asked once, for the target. A ``seconds`` ramp then passes every point it writes through the
+    rest of the chain again (interlocks, validators, the workspace box): a joint-space line between two allowed
+    poses can leave a Cartesian box, and an interlock reading a door or a light curtain can change mid-move. A
+    refused point is never written; the ramp stops there and the body holds the last pose it reached. ``ramp`` is
+    ``reach.reach``, passed in by ``Robot`` (which imports both) so this module never imports the layer above it.
     """
-    return robot.act(gate(robot, action, confirmed=confirmed), steps=steps, seconds=seconds)
+    targets = gate(robot, action, confirmed=confirmed)
+    if seconds is None:
+        return robot.act(targets, steps=steps)
+    if steps is not None:
+        raise ValueError("act takes steps= or seconds=, not both")
+    q = np.asarray(robot.observe(images=False).joints.positions, dtype=float)  # raw: a joint past its limit may hold
+    ramp(robot, targets, seconds, gate=lambda t: gate(robot, t, confirmed=True, measured=q))
+    return robot.observe(images=False)

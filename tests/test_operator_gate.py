@@ -75,6 +75,8 @@ def test_a_servo_resting_past_its_limit_can_still_hold_and_return():
     s.frames.clear()
     real.confirm_act(hold.positions)  # "hold where you are" is allowed, not refused for where the body is
     assert len(goal_writes(s)) == 2  # torque on, then one Goal_Position write
+    s.actual[d.ids[3]] = 3072 + 40  # the write above brought it back in range: put it past the limit again
+    real.confirm_act(real.observe().joints.positions, seconds=0.2)  # a timed hold too: ramp points see the raw pose
     toward = {"wrist_flex": real.description.limits["wrist_flex"][1]}  # moving back toward the range: allowed
     real.confirm_act(toward)
     with pytest.raises(PermissionError, match="wrist_flex"):  # driving it further out: refused
