@@ -40,12 +40,13 @@ out = provision.register(iot, record, "~/.strands/iot")
 Mesh(f"iot://us-west-2?{out['query']}", tenant="lab-a")
 ```
 
-Each robot gets its own certificate. The key is made on the robot and never leaves it. One fleet policy lets a
-robot connect only as itself and read only inside its tenant. A robot cannot publish another peer's liveliness (only
-a certificate with the controller policy, which commands, can), and it sends telemetry only to the rule its thing's
-`telemetry_rule` attribute names. `register` writes that attribute and `tenant` itself; a label never overrides
-them. Fleet provisioning by claim gets it from the operator's approval (`claim_hook.allow` stores it; the hook
-overrides the request's), so a tenant like `lab-a` gets its hashed rule name too.
+Each robot gets its own certificate. The key is made on the robot and never leaves it. One fleet policy lets a robot
+connect only as itself and read only inside its tenant. A robot cannot publish another peer's liveliness (only a
+certificate with the controller policy, which commands, can), so a certificate link sends no `@peer` beat; add
+`?peer=1` to the `iot://` URL of a certificate that also carries the controller policy. It sends telemetry only to the
+rule its thing's `telemetry_rule` attribute names. `register` writes that attribute and `tenant` itself; a label never
+overrides them. Fleet provisioning by claim gets it from the operator's approval (`claim_hook.allow` stores it; the
+hook overrides the request's), so a tenant like `lab-a` gets its hashed rule name too.
 
 An operator policy names the tenant's devices: an operator direct-messages only those devices, on their rpc topics,
 and hears only their connect and disconnect events. The disconnect audit rule,

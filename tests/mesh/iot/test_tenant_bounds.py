@@ -80,3 +80,24 @@ def test_a_device_never_answers_an_rpc_on_another_tenants_topic():
     assert seen == ["strands/lab/arm-1/rpc/act"]
     t.close()
     caller.close()
+
+
+def test_a_device_certificate_link_sends_no_peer_beat_its_policy_cannot_publish():
+    def beats(url: str, kind: str) -> list[bool]:
+        heard: list[bool] = []
+        ear = iot.IotTransport("iot://fake?broker=peerbeat&client=ear", presence_ttl=0.3)
+        ear.watch_liveliness(f"strands/lab/{kind}/*", lambda key, alive: heard.append(alive))
+        t = iot.IotTransport(url, presence_ttl=0.3)
+        drop = t.liveliness(f"strands/lab/{kind}/arm-1")
+        time.sleep(0.1)
+        drop()  # its goodbye
+        time.sleep(0.05)
+        t.close()
+        ear.close()
+        return heard
+
+    device = "iot://fake?broker=peerbeat&client=arm-1&cert=c.pem"
+    assert beats(device, "@peer") == []  # nothing the fleet policy refuses ever reaches the broker
+    assert beats(device, "@presence") == [True, False]  # its own presence still beats and says goodbye
+    assert beats(device + "&peer=1", "@peer") == [True, False]  # a certificate that also carries controller_policy
+    assert beats("iot://fake?broker=peerbeat&client=strands-op-lab-me", "@peer") == [True, False]  # an IAM operator

@@ -2,7 +2,9 @@
 
 ``iot://us-west-2`` connects with IAM credentials (SigV4 WebSocket); ``?cert=&key=`` as a device certificate;
 ``?endpoint=`` overrides ``aws iot describe-endpoint``; ``?client=`` fixes the MQTT client id (a device policy may
-require its thing name). ``iot://fake?broker=<name>`` is the in-process FakeIotBroker with the same semantics.
+require its thing name). A certificate link sends no ``@peer`` beat (its policy may not publish one) unless ``?peer=1``
+says the certificate also carries ``controller_policy``. ``iot://fake?broker=<name>`` is the in-process FakeIotBroker
+with the same semantics.
 
 A query goes to the ONE client that holds the device (learned from its presence heartbeats) as a Direct Message
 with confirmation: a client that is not connected answers 404 and nothing is queued, so an e-stop never replays
@@ -72,7 +74,11 @@ class IotTransport:
         self.ttl = presence_ttl
         self.tenant = tenant  # the Mesh's: an rpc on another tenant's topic is never answered
         self.link = link or _link(url, tenant)
-        self.rpc = rpc_mode({k: v[0] for k, v in parse_qs(urlparse(url).query).items()})
+        q = {k: v[0] for k, v in parse_qs(urlparse(url).query).items()}
+        self.rpc = rpc_mode(q)
+        # a device certificate's policy cannot publish @peer (a commander's liveliness): it sends none, so the broker
+        # never sees a denied publish; ?peer=1 for a certificate that also carries controller_policy
+        self._peer_beats = not q.get("cert") or q.get("peer") == "1"
         self._pending: dict[str, Future[bytes]] = {}
         self._clients: dict[str, str] = {}  # presence key's device id -> the client holding it
         self._replies: set[str] = set()
@@ -154,6 +160,8 @@ class IotTransport:
             fut.set_result(str(msg["ok"]).encode())
 
     def liveliness(self, key: str) -> Unsubscribe:
+        if "/@peer/" in key and not self._peer_beats:
+            return lambda: None
         stop = threading.Event()
         beat = json.dumps({"alive": True, "client": self.link.client_id}).encode()
 

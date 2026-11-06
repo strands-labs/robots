@@ -3,7 +3,8 @@
 - **Fleet policy:**
   - a device can no longer publish `@peer` liveliness tokens. A device could keep a dead operator "alive" for every
     watchdog in the tenant, or fake its goodbye. The controller policy now carries that grant for certificates that
-    command.
+    command. A certificate `iot://` link therefore sends no `@peer` beat, so the broker never sees a publish the
+    policy refuses; `?peer=1` turns it back on for a certificate that also carries the controller policy.
   - `RetainPublish` is limited to the device's own keys and shadow.
   - telemetry goes only to the Basic Ingest rule named by the thing's new `telemetry_rule` attribute, instead of any
     rule in the account.
