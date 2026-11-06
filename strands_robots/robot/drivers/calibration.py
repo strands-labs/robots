@@ -42,6 +42,29 @@ class Calibration:
     def from_json(cls, data: Mapping[str, Mapping[str, Any]]) -> Calibration:
         return cls({name: JointCalibration(**{k: int(v) for k, v in jc.items()}) for name, jc in data.items()})
 
+    def check_bus(self, *, resolution: int, max_homing: int, source: str) -> Calibration:
+        """This calibration, if every joint fits a bus whose encoder reads ``0..resolution-1`` and whose homing
+        offset register holds ``-max_homing..max_homing``; else ``ValueError`` naming the joint, field and file.
+
+        A span outside the encoder's counts would map a joint's limits to goals several turns past its end stops."""
+        for name, c in self.joints.items():
+            bad = [
+                f"{field}={value} (allowed {lo}..{hi})"
+                for field, value, lo, hi in (
+                    ("range_min", c.range_min, 0, resolution - 1),
+                    ("range_max", c.range_max, 0, resolution - 1),
+                    ("homing_offset", c.homing_offset, -max_homing, max_homing),
+                    ("drive_mode", c.drive_mode, 0, 1),
+                )
+                if not lo <= value <= hi
+            ]
+            if bad:
+                raise ValueError(
+                    f"calibration {source}: joint {name!r} has {', '.join(bad)}; this is not a calibration of "
+                    "this arm. Re-run calibrate() or pass calibration=<path> to a file you trust"
+                )
+        return self
+
 
 # LeRobot 0.5+ writes every SO-10x arm under one robot name (``so_follower`` / ``so_leader``)
 _LEROBOT_RENAMED = {f"so10{v}_{r}": f"so_{r}" for v in "01" for r in ("follower", "leader")}

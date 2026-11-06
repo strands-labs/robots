@@ -64,7 +64,9 @@ The dict keys are the image keys the policy sees. A camera that delivers a diffe
 
 `calibrate(interactive=False)` loads the LeRobot file from `$HF_LEROBOT_CALIBRATION/robots/`, matched by
 `Robot(id=)`. Pass `calibration="my_arm.json"` to use any file. `calibrate()` with no arguments walks you through
-LeRobot's procedure at a terminal and saves the result.
+LeRobot's procedure at a terminal and saves the result. A Feetech calibration must fit the servo: `range_min` and
+`range_max` in 0..4095, `homing_offset` in -2047..2047 and `drive_mode` 0 or 1, or connecting raises `ValueError`
+naming the joint and the file.
 
 ## The operator gate
 
