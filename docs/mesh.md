@@ -48,17 +48,24 @@ A plain `zenoh://` mesh lets any machine that reaches it join. That machine can 
 for a robot, and send it commands that its safety chain then checks. Mounting a real robot on such a mesh logs an
 audit warning. To say who may join, give zenoh a config file with `?config=<path>` or `STRANDS_ZENOH_CONFIG`. That
 file can set TLS with client certificates on `tls/` endpoints, user and password authentication, and access
-control. The file is the session's config. The mesh adds only its lease, any `?listen=` or `?connect=`, and its
-scouting group and peer mode if the file sets neither:
+control. The file is the session's config. The mesh adds only its lease, any `?listen=` or `?connect=`, peer mode if
+the file sets no mode, and its scouting group if the file sets neither `scouting.multicast.enabled` nor its `address`.
+
+TLS settings guard only `tls/` links. A peer that scouts the robot can still offer a plain `tcp/` locator, and zenoh
+connects to it. To admit only certificate holders, allow only the `tls` protocol and turn scouting off:
 
 ```json5
 {
   mode: "peer",
   listen: { endpoints: ["tls/0.0.0.0:7447"] },
-  transport: { link: { tls: {
-    listen_certificate: "robot.pem", listen_private_key: "robot.key",
-    root_ca_certificate: "lab-ca.pem", enable_mtls: true,
-  } } },
+  scouting: { multicast: { enabled: false }, gossip: { enabled: false } },
+  transport: { link: {
+    protocols: ["tls"],
+    tls: {
+      listen_certificate: "robot.pem", listen_private_key: "robot.key",
+      root_ca_certificate: "lab-ca.pem", enable_mtls: true,
+    },
+  } },
 }
 ```
 

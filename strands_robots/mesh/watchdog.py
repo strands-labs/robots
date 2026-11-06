@@ -41,10 +41,11 @@ class MeshWatchdog:
     def on_rpc(self, name: str, peer: str | None) -> Callable[[bool], None] | None:
         """Every rpc, before it runs; a motion rpc returns what to call once it ends (that is a beat too). A motion
         pauses the quiet clock while it runs; only one the device carried out (``ok``) arms the watchdog for its
-        invoker, so a refused request, or several at once, never touches who is watched."""
+        invoker, so a refused request, or several at once, never touches who is watched, nor its quiet clock."""
         with self._lock:
             if name in MOTION_RPCS and peer is not None:
-                self.dog.beat()
+                if peer == self.peer:  # only the watched mover's own requests keep its clock alive
+                    self.dog.beat()
                 self._moving += 1
                 return functools.partial(self._moved, peer=peer)
             if self._armed.is_set() and peer == self.peer:
@@ -54,7 +55,8 @@ class MeshWatchdog:
     def _moved(self, ok: bool = True, peer: str | None = None) -> None:
         with self._lock:
             self._moving -= 1
-            self.dog.beat()
+            if ok or peer == self.peer:  # a refusal from another peer is no sign of life from the mover
+                self.dog.beat()
             if ok and peer is not None:  # the device moved for this peer: it is the one that must stay present
                 self.peer = peer
                 self._armed.set()

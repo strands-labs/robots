@@ -116,12 +116,10 @@ def session_config(zenoh: Any, url: str, presence_ttl: float = 3.0) -> Any:
             cfg.insert_json5(f"{key}/endpoints", json.dumps(ours[key]["endpoints"]))
     if json.loads(cfg.get_json("mode")) is None:
         cfg.insert_json5("mode", '"peer"')
-    if (
-        json.loads(cfg.get_json("scouting/multicast/address")) is None
-        and "listen" not in ours
-        and "connect" not in ours
-    ):
-        cfg.insert_json5("scouting/multicast", json.dumps(ours["scouting"]["multicast"]))
+    unset = all(json.loads(cfg.get_json(f"scouting/multicast/{k}")) is None for k in ("enabled", "address"))
+    if unset and "listen" not in ours and "connect" not in ours:  # the file's own scouting keys are left as they are
+        for k, v in ours["scouting"]["multicast"].items():
+            cfg.insert_json5(f"scouting/multicast/{k}", json.dumps(v))
     return cfg
 
 

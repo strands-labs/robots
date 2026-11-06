@@ -90,6 +90,23 @@ def test_overlapping_refused_motions_arm_nothing_and_keep_the_real_mover_watched
         arm.close()
 
 
+def test_refusals_from_another_peer_never_keep_a_silent_movers_watch_alive():
+    from strands_robots.mesh.watchdog import MeshWatchdog
+
+    arm = Robot("so101")
+    dog = MeshWatchdog(arm, 200, [], "lab")
+    try:
+        dog.on_rpc("act", "mover")(True)
+        end = time.monotonic() + 1.5  # 7x the timeout
+        while dog._armed.is_set() and time.monotonic() < end:
+            dog.on_rpc("act", "stranger")(False)  # refused, every 50 ms
+            time.sleep(0.05)
+        assert not dog._armed.is_set(), "the silent mover's watch fired despite the stranger's refused requests"
+    finally:
+        dog.close()
+        arm.close()
+
+
 def _reply(kind: str, name: str = "observe", **body) -> bytes:
     return wire.encode(wire.envelope("lab", "arm", kind, name, seq=7, **body))
 
@@ -123,6 +140,20 @@ def test_a_zenoh_config_file_is_the_session_config(tmp_path, monkeypatch):
     assert zt.config_file("zenoh://") == str(path)
     monkeypatch.delenv("STRANDS_ZENOH_CONFIG")
     assert zt.config_file("zenoh://") is None
+
+
+def test_a_config_files_own_scouting_is_never_overridden(tmp_path):
+    zenoh = pytest.importorskip("zenoh")
+    from strands_robots.mesh.transports import zenoh as zt
+
+    def scouting(body: dict) -> dict:
+        path = tmp_path / "zenoh.json5"
+        path.write_text(json.dumps(body))
+        return json.loads(zt.session_config(zenoh, f"zenoh://?config={path}").get_json("scouting/multicast"))
+
+    off = scouting({"scouting": {"multicast": {"enabled": False, "interface": "lo0"}}})
+    assert off["enabled"] is False and off["interface"] == "lo0" and off["address"] is None  # the operator's word
+    assert scouting({})["address"] == "224.0.0.224:7447"  # neither key set: the mesh's own group
 
 
 def test_a_real_robot_on_a_mesh_anyone_may_join_is_reported(tenant, caplog):
