@@ -184,8 +184,9 @@ class FeetechBus:
         """Torque on with every servo held where it is: read Present_Position, write it as Goal_Position, then enable.
 
         Torque on drives a servo to the goal it already holds, and after power-up or another session that goal is
-        stale. The present counts are copied as the servos report them, so no calibration is involved, and if the goal
-        write engages torque by itself (as reported for the STS3215) the arm is still held where it is."""
+        stale. The present counts are copied as the servos report them, so no calibration is involved. On the STS3215
+        the goal write engages torque by itself (measured on an SO-101), so the arm is held where it is from that write
+        on; the explicit enable covers servos that wait for it."""
         present = self.sync_read(REG_PRESENT_POSITION, 2, ids, retries=retries)
         self.sync_write(REG_GOAL_POSITION, 2, present)
         self.torque(ids, True)
