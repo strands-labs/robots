@@ -6,13 +6,18 @@
  *                  (?standalone=<scene.json> picks another bundle). The browser never steps physics while a server
  *                  is connected; a server that answers later wins (re-probe backing off 5 s → 60 s, then a reload).
  */
+import { signIn, signedOut } from "./auth.js";
 import { Standalone } from "./standalone.js";
 import { Twin } from "./twin.js";
 
 const $ = (s) => document.querySelector(s);
 const params = new URLSearchParams(location.search);
-const STATIC = params.get("scene");
-const LOCAL_CLI = params.get("cli") || "127.0.0.1:8090"; // ?cli=host:port — where the reader's CLI listens (tests use a free port)
+// ?scene= must be a file on this page's own origin, and ?cli= a bare host:port: neither may bring markup or another
+// site's scene description into the page (a scene's strings end up in the status chips).
+const sameOrigin = (raw) => { try { return raw && !/^[a-z][a-z0-9+.-]*:|^[\\/]{2}/i.test(raw) && new URL(raw, location.href).origin === location.origin ? raw : null; } catch { return null; } };
+const STATIC = sameOrigin(params.get("scene"));
+const CLI_RE = /^(localhost|127\.0\.0\.1|\[::1\]):\d{1,5}$/;
+const LOCAL_CLI = CLI_RE.test(params.get("cli") || "") ? params.get("cli") : "127.0.0.1:8090"; // ?cli=host:port — where the reader's CLI listens (tests use a free port)
 
 const state = { mode: "loading", base: "", desc: null, fps: 0, bytes: 0, lastFrame: null, ws: null, picked: null, chips: {} };
 const twin = new Twin($("#twin"), { onPick: (robotId) => highlight(robotId) });
@@ -200,6 +205,7 @@ function ctx(panel) {
       const res = await fetch(`${state.base}${path}`, { method, headers, body: body === undefined ? undefined : JSON.stringify(body) });
       const text = await res.text();
       let doc = null; try { doc = text ? JSON.parse(text) : null; } catch { doc = { detail: text }; }
+      if (res.status === 401) signedOut(); // the session ended: back to the passkey screen
       if (!res.ok) { const err = new Error(doc?.detail || `HTTP ${res.status}`); err.status = res.status; err.doc = doc; throw err; }
       return doc;
     },
@@ -432,7 +438,7 @@ function statusLine() {
   chip("t", t === null ? "" : `t=<b>${t.toFixed(2)}</b>s`);
   if (state.mode === "server") chip("net", `<b>${state.fps}</b> fps · ${(state.bytes / 1024).toFixed(1)} KB/s`);
   chip("model", twin.model ? `<b>${twin.model.ngeom}</b> geoms · ${twin.model.njnt} joints · compiled ${Math.round(twin.compileMs || 0)} ms` : "", "opt");
-  chip("rev", twin.revision !== null ? `rev ${twin.revision}` : "", "opt");
+  chip("rev", twin.revision !== null ? `rev ${esc(twin.revision)}` : "", "opt");
   chip("unres", twin.unresolved ? `${twin.unresolved} unresolved names` : "", "warn");
 }
 
@@ -485,7 +491,7 @@ function connectState() {
     }
     if (frame.revision === twin.revision) applyFrame(frame);
   };
-  ws.onclose = () => { clearInterval(tick); setMode("error", "server gone"); chip("net", "state socket closed — reconnecting…", "bad"); setTimeout(connectState, 1000); };
+  ws.onclose = () => { clearInterval(tick); signedOut(); setMode("error", "server gone"); chip("net", "state socket closed — reconnecting…", "bad"); setTimeout(connectState, 1000); };
   ws.onopen = () => setMode("server", state.base ? `server · ${LOCAL_CLI}` : "server");
 }
 
@@ -635,6 +641,7 @@ async function probe() {
       notice(`static scene · <b>${twin.model.ngeom}</b> geoms · ${twin.model.njnt} joints · ${(twin.assetBytes / 1048576).toFixed(1)} MB assets · compiled in ${Math.round(twin.compileMs)} ms`);
       return;
     }
+    if (!(await signIn())) { setMode("server", "sign in"); return; } // sign-in on and no session: the passkey screen
     const server = await probe();
     if (server && !server.blocked && !server.unreachable) {
       state.base = server.base;
@@ -670,7 +677,7 @@ async function probe() {
     await standalone(why);
   } catch (err) {
     setMode("error", "error");
-    notice(err.message, true);
+    notice(esc(err.message), true);
     window.__error = String(err.message || err);
     throw err;
   }

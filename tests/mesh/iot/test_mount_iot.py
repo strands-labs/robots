@@ -34,7 +34,7 @@ def test_mount_with_iot_options_mirrors_shadows_and_a_shadow_target_moves_the_ar
     )
     arm = Robot("so101", sim=Simulation())
     device = Mesh(url, tenant=tenant)
-    dev = device.mount(arm, device_id="arm", watchdog_ms=None, iot=IotOptions(shadow_hz=1.0))
+    dev = device.mount(arm, device_id="arm", watchdog_ms=None, iot=IotOptions(shadow_hz=1.0, control=True))
     assert dev.id == "arm"
     manifest = "$aws/things/arm/shadow/name/manifest/update"
     _wait(lambda: manifest in seen)
@@ -191,7 +191,7 @@ def test_a_mount_that_fails_after_the_mirror_started_stops_it(monkeypatch, step)
 
         monkeypatch.setattr(mesh_mod, step, boom)
     with pytest.raises((ValueError, RuntimeError)):
-        mesh.mount(arm, device_id="arm", iot=IotOptions(shadow_hz=1.0), **kw)
+        mesh.mount(arm, device_id="arm", iot=IotOptions(shadow_hz=1.0, control=True), **kw)
     time.sleep(0.3)
     assert list(mesh._mounted) == [] and len(_shadow_threads()) == live_before, "the started mirror was stopped"
     assert dogs() == dogs_before, "the started watchdog was stopped"

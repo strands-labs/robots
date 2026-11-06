@@ -211,6 +211,7 @@ def test_page_events_map_the_agent_stream() -> None:
 def test_page_mic_button_streams_and_logs_the_turn() -> None:
     """Chromium's fake microphone (a tone) through voice.js -> /ws/voice -> the scripted model -> the chat log."""
     sync_api = pytest.importorskip("playwright.sync_api")
+    from .browser import sign_in
     from .test_twin_page import MEDIA
 
     sim = Simulation()
@@ -233,13 +234,14 @@ def test_page_mic_button_streams_and_logs_the_turn() -> None:
             except Exception as exc:  # noqa: BLE001
                 pytest.skip(f"chromium unavailable: {exc}")
             ctx = browser.new_context(viewport={"width": 1400, "height": 860}, permissions=["microphone"])
+            sign_in(ctx, server.url)
             page = ctx.new_page()
             errors: list[str] = []
             page.on("pageerror", lambda e: errors.append(str(e)))
             page.goto(server.url)
             # app.js imports the feature modules (GET /api/panels) once the scene is up, so the scene comes first.
-            page.wait_for_function("window.__sceneLoaded >= 1", timeout=90_000)
-            page.wait_for_function("window.__voiceInfo && window.__voiceInfo.enabled", timeout=30_000)
+            page.wait_for_function("() => window.__sceneLoaded >= 1", timeout=90_000)
+            page.wait_for_function("() => window.__voiceInfo && window.__voiceInfo.enabled", timeout=30_000)
             assert page.query_selector("#chat-slot [data-panel=voice] #voice-mic"), "voice not in the chat-input slot"
 
             def press(selector: str) -> None:  # mouse.click: .click()'s stability wait stalls at swiftshader's ~1 fps
@@ -249,7 +251,7 @@ def test_page_mic_button_streams_and_logs_the_turn() -> None:
 
             press("#voice-mic")
             page.wait_for_function(
-                "(window.__voiceEvents || []).some(e => e.type === 'transcript' && e.role === 'assistant')",
+                "() => (window.__voiceEvents || []).some(e => e.type === 'transcript' && e.role === 'assistant')",
                 timeout=30_000,
             )
             assert page.get_attribute("#voice", "data-state") == "live"
@@ -260,7 +262,7 @@ def test_page_mic_button_streams_and_logs_the_turn() -> None:
             assert page.get_attribute("#voice", "data-muted") == "true"
             page.screenshot(path=str(MEDIA / "voice-panel.png"))
             press("#voice-mic")
-            page.wait_for_function("document.querySelector('#voice').dataset.state === 'off'", timeout=10_000)
+            page.wait_for_function("() => document.querySelector('#voice').dataset.state === 'off'", timeout=10_000)
             assert not errors, errors
             browser.close()
     finally:

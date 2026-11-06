@@ -1,6 +1,7 @@
 """Drivers against simulated buses: no hardware is touched here."""
 
 import contextlib
+import copy
 import json
 import math
 import os
@@ -806,3 +807,48 @@ def test_close_releases_the_port_even_when_the_servos_went_dark():
     with pytest.raises(ft.ProtocolError):
         d.close()
     assert s.closed
+
+
+# a calibration whose counts do not fit the servo is refused at connect, from a file or from the caller
+
+
+def _with(joint: str, **fields) -> dict:
+    cal = copy.deepcopy(CAL)
+    cal[joint].update(fields)
+    return cal
+
+
+@pytest.mark.parametrize(
+    ("fields", "named"),
+    [
+        ({"range_min": 0, "range_max": 65535}, "range_max=65535"),
+        ({"range_min": -4096, "range_max": 3072}, "range_min=-4096"),
+        ({"range_max": 70000}, "range_max=70000"),
+        ({"homing_offset": 5000}, "homing_offset=5000"),
+        ({"drive_mode": 7}, "drive_mode=7"),
+    ],
+)
+def test_a_calibration_file_outside_the_servo_counts_is_refused(tmp_path, monkeypatch, fields, named):
+    monkeypatch.setenv("HF_LEROBOT_CALIBRATION", str(tmp_path))
+    path = tmp_path / "robots" / "so101_follower" / "so101_follower.json"
+    path.parent.mkdir(parents=True)
+    path.write_text(json.dumps(_with("shoulder_lift", **fields)))
+    with pytest.raises(ValueError, match=named) as err:
+        make_driver(cal=None)
+    assert "shoulder_lift" in str(err.value) and str(path) in str(err.value)
+
+
+def test_a_caller_calibration_outside_the_servo_counts_is_refused():
+    with pytest.raises(ValueError, match="range_max=65535"):
+        make_driver(cal=_with("elbow_flex", range_min=0, range_max=65535))
+    with pytest.raises(ValueError, match="homing_offset=-3000"):
+        make_driver(cal=Calibration.from_json(_with("gripper", homing_offset=-3000)))
+
+
+def test_a_calibration_inside_the_servo_counts_still_loads():
+    full = _with("wrist_roll", range_min=0, range_max=4095, homing_offset=-2047)
+    drv, _ = make_driver(cal=full)
+    assert drv.calibration == Calibration.from_json(full)
+    for name in drv.names:
+        lo, hi = drv.description.limits[name]
+        assert 0 <= drv.rad_to_counts(name, lo) <= 4095 and 0 <= drv.rad_to_counts(name, hi) <= 4095

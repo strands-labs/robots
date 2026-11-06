@@ -37,6 +37,15 @@ arm.tool(policies={"wave": my_policy})
 The agent can then call `run(policy="wave", ...)`. Give a remote policy this way too. The agent cannot pass
 a network address itself.
 
+A robot reached over the mesh counts as a real robot. An agent's `run` through `mesh.tool` is refused unless you
+build the tool with the operator's answer:
+
+```python
+from strands_robots.mesh.tool import use_mesh
+
+tool = use_mesh(lab, approve=lambda plan: input(f"allow {plan}? [y/N] ") == "y")
+```
+
 ## What an agent cannot do
 
 | Action | Who does it |

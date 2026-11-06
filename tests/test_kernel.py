@@ -1062,6 +1062,37 @@ def test_a_policy_with_a_start_pose_is_taken_there_before_step_one():
         robot.run(bad, steps=1)
 
 
+@pytest.mark.parametrize(
+    "kwargs, match",
+    [
+        ({"push": True}, "record="),  # push with nothing to upload
+        ({"record": "d", "push": True}, "hf://owner/name"),  # push to a folder
+        ({"record": "d", "hz": 12.5}, "integer fps"),  # a LeRobot dataset has an integer fps
+        ({"record": "d", "hz": 10}, "20 fps; this run records at 10"),  # a dataset already recorded at 20 fps
+    ],
+    ids=["push-without-record", "push-to-a-folder", "non-integer-hz", "dataset-at-another-fps"],
+)
+def test_a_recording_that_is_refused_never_ramps_to_the_start_pose(tmp_path, kwargs, match):
+    """A run that cannot be recorded never moves the robot: every recording check runs before the start-pose ramp,
+    and the policy is still released."""
+    robot, drv = _hw()
+    if "record" in kwargs:
+        kwargs = {**kwargs, "record": tmp_path / kwargs["record"]}
+    if kwargs.get("hz") == 10:
+        pytest.importorskip("lerobot.datasets.lerobot_dataset")
+        robot.run(lambda obs: obs.joints.positions, steps=3, hz=20, record=kwargs["record"])
+        drv.writes.clear()
+    before = robot.observe(images=False).joints.positions.copy()
+    released = []
+    pol = _FromReady()
+    pol.detach = lambda: released.append(True)
+    with pytest.raises(ValueError, match=match):
+        robot.run(pol, steps=5, **{"hz": 50, **kwargs})
+    assert drv.writes == []  # not one ramp write reached the body
+    assert np.array_equal(robot.observe(images=False).joints.positions, before)
+    assert released == [True]
+
+
 def test_a_start_pose_is_in_the_policys_units():
     from strands_robots.policy import Policy as Base
     from strands_robots.units import lerobot_units

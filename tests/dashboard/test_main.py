@@ -20,3 +20,10 @@ def test_robots_and_port() -> None:
 def test_a_bad_port_is_refused() -> None:
     with pytest.raises(SystemExit):
         parse(["--port", "x"])
+
+
+def test_sign_in_flags() -> None:
+    a = parse([])
+    assert (a.print_token, a.no_auth) == (False, False)  # passkey sign-in is on unless asked
+    a = parse(["--print-token", "--no-auth"])
+    assert a.print_token and a.no_auth

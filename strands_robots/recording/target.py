@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 HF_PREFIX = "hf://"
+_HUB_NAME = re.compile(r"[A-Za-z0-9][\w.-]*")  # what the Hub accepts for an owner or a name
 
 
 def is_repo_id(target: str | Path) -> bool:
@@ -15,7 +17,8 @@ def is_repo_id(target: str | Path) -> bool:
 def repo_id(target: str | Path) -> str:
     """``hf://owner/name`` -> ``owner/name``."""
     rid = str(target)[len(HF_PREFIX) :]
-    if rid.count("/") != 1 or not all(rid.split("/")):
+    parts = rid.split("/")
+    if len(parts) != 2 or not all(_HUB_NAME.fullmatch(p) and ".." not in p for p in parts):
         raise ValueError(f"a Hub target is hf://owner/name, got {target!r}")
     return rid
 

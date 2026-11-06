@@ -12,26 +12,7 @@
 const $ = (s) => document.querySelector(s);
 const events = (window.__voiceEvents = []);
 
-const WORKLET = `
-class Down extends AudioWorkletProcessor {
-  constructor(o) { super(); this.ratio = sampleRate / o.processorOptions.rate; this.acc = []; this.pos = 0;
-    this.frame = Math.round(o.processorOptions.rate / 50); this.buf = new Int16Array(this.frame); this.n = 0; }
-  process(inputs) {
-    const ch = inputs[0] && inputs[0][0]; if (!ch) return true;
-    let sum = 0;
-    for (let i = 0; i < ch.length; i++) sum += ch[i] * ch[i];
-    // linear-interpolated resample from the context rate to the model's rate
-    for (; this.pos < ch.length; this.pos += this.ratio) {
-      const i = Math.floor(this.pos), f = this.pos - i, a = ch[i], b = i + 1 < ch.length ? ch[i + 1] : a;
-      const v = Math.max(-1, Math.min(1, a + (b - a) * f));
-      this.buf[this.n++] = v < 0 ? v * 0x8000 : v * 0x7fff;
-      if (this.n === this.frame) { this.port.postMessage({ pcm: this.buf.buffer, rms: Math.sqrt(sum / ch.length) }, [this.buf.buffer]); this.buf = new Int16Array(this.frame); this.n = 0; }
-    }
-    this.pos -= ch.length;
-    return true;
-  }
-}
-registerProcessor("strands-down", Down);`;
+const WORKLET = new URL("../voice-worklet.js", import.meta.url).href; // a file: the page runs only its own scripts
 
 const MIC = '<svg viewBox="0 0 24 24" width="13" height="13" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/></svg>';
 const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
@@ -80,8 +61,7 @@ class Voice {
       this.out = new AudioContext({ sampleRate: ready.output_rate });
       this.stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, channelCount: 1 } });
       this.ctx = new AudioContext();
-      const url = URL.createObjectURL(new Blob([WORKLET], { type: "application/javascript" }));
-      await this.ctx.audioWorklet.addModule(url);
+      await this.ctx.audioWorklet.addModule(WORKLET);
       this.node = new AudioWorkletNode(this.ctx, "strands-down", { processorOptions: { rate: ready.input_rate } });
       this.node.port.onmessage = ({ data }) => {
         this.ui.level.style.setProperty("--level", this.muted ? 0 : Math.min(1, data.rms * 4).toFixed(3));

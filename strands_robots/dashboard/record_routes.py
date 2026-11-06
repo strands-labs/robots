@@ -1,6 +1,7 @@
 """The record routes (``dashboard/record.py``): start, save or discard an episode, stop, status, options.
 
-The recorder only observes, so none of these needs X-Confirm; it is ``app.state.recorder`` for other modules.
+The recorder only observes the robots, so none of these needs X-Confirm, but it writes files: a dataset goes only
+inside ``takes.recordings_dir()`` (or to an ``hf://`` name). It is ``app.state.recorder`` for other modules.
 """
 
 from __future__ import annotations

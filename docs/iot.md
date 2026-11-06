@@ -49,13 +49,21 @@ robot connect only as itself and read only inside its tenant.
 
 To keep the key in a hardware token, pass a percent-encoded `pkcs11:` URI as `key=`. Set the PIN in `PKCS11_PIN`.
 
+**Fleet provisioning by claim.** One claim certificate serves the whole fleet, so it decides nothing by itself.
+Deploy `claim_hook.HOOK_SOURCE` as a Lambda (its role needs `iot:DescribeThing` and `ssm:GetParameter` /
+`ssm:DeleteParameter` on `/strands-robots/claim/*`), then `claim.create_template(iot, role_arn, hook_arn=...)`;
+the template is never created or left without the hook. Approve each robot before its first boot with
+`claim_hook.allow(ssm, device_id, tenant=..., device_type=...)`, which returns a one-time secret for that robot,
+and claim with `claim.claim(..., secret=...)`. The hook accepts only a new, approved name whose certificate CN is
+that name, with the approval's secret, tenant and device type, and then deletes the approval.
+
 ## Shadows
 
 | Shadow | Holds |
 |---|---|
 | `manifest` | The robot's controls and ranges, written at mount |
 | `state` | The live state at `shadow_hz` (at most 1 Hz) and who stopped it |
-| `control` | Targets you write. They pass the safety chain. |
+| `control` | Targets you write, with `IotOptions(control=True)`. They pass the safety chain. |
 
 ```python
 data = boto3.client("iot-data", region_name="us-west-2")
@@ -65,6 +73,11 @@ data.update_thing_shadow(thingName="arm-1", shadowName="control", payload=json.d
 
 A refused target appears under `reported.refused`. A target older than `stale_s` (default 2 s) is dropped. Use the
 `estop` rpc or `broadcast("estop")` to stop a robot, not a shadow.
+
+The `control` shadow is off unless the mount passes `IotOptions(control=True)`. A target moves the robot the way an
+`act` rpc does: it arms the mount's watchdog, so a writer that stops writing for `watchdog_ms` gets the robot's
+`on_disconnect`, and it is logged to `strands_robots.audit`. A real robot mounted with `watchdog_ms=None` is
+observe-only and refuses every `control` target by name.
 
 ## Rules
 
@@ -76,6 +89,11 @@ rules.apply_rules(iot, rules.rules_for("lab-a", role_arn, sns_topic_arn=alerts, 
 
 Rules forward e-stops, faults and run events to SNS, S3 or Timestream. Pass a role that already exists. A new
 role can drop messages until IAM catches up.
+
+A stored record is filed under the rule's own tenant and the publishing thing, never under a `tenant` or
+`device_id` the message body names: S3 keys are `recordings/<tenant>/<device>/<event>/<ms>.json`. When several
+tenants share one bucket, give each tenant's rule role `s3:PutObject` on `recordings/<tenant>/*` only; give each
+tenant its own Timestream table.
 
 ## Greengrass and video
 

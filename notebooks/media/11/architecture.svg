@@ -1,0 +1,104 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="760" viewBox="0 0 1200 760" font-family="Helvetica,Arial,sans-serif">
+<rect width="1200" height="820" fill="#FAFAFA"/>
+<text x="600" y="36" text-anchor="middle" font-size="20" font-weight="bold" fill="#1A3B5C">From the Hugging Face Hub to robot hardware, on strands-robots 0.6</text>
+<text x="600" y="58" text-anchor="middle" font-size="13" font-weight="normal" fill="#5b6b7b">what notebook 11 runs: one SO-101, one agent, the same Robot in simulation and on hardware</text>
+<rect x="40" y="84" width="250" height="64" rx="12" fill="#fff" stroke="#5b6b7b" stroke-width="2"/>
+<text x="165" y="110" text-anchor="middle" font-size="13.5" font-weight="bold" fill="#1A3B5C">Amazon Bedrock</text>
+<text x="165" y="130" text-anchor="middle" font-size="11" font-weight="normal" fill="#5b6b7b">the agent's model (STRANDS_MODEL_ID)</text>
+<rect x="40" y="176" width="330" height="150" rx="12" fill="#fff" stroke="#FF6B35" stroke-width="2"/>
+<circle cx="58" cy="194" r="12" fill="#1A3B5C"/>
+<text x="58" y="198.5" text-anchor="middle" font-size="12.5" font-weight="bold" fill="#fff">1</text>
+<svg x="76" y="184" width="18" height="26" viewBox="-22 -4 332 474" overflow="visible">
+    <path d="M97.2902 52.7884C85.0674 49.1667 72.2234 56.1389 68.6017 68.3616C64.9801 80.5843 71.9524 93.4283 84.1749 97.0501L235.117 139.775C245.223 142.769 246.357 156.628 236.874 161.226L32.546 260.291C-14.9439 283.316 -9.16107 352.74 41.4835 367.591L189.551 411.009L190.125 411.169C202.183 414.376 214.665 407.396 218.196 395.355C221.784 383.122 214.774 370.296 202.541 366.709L54.4738 323.291C44.3447 320.321 43.1879 306.436 52.6857 301.831L257.014 202.766C304.432 179.776 298.758 110.483 248.233 95.512L97.2902 52.7884Z" fill="#0E0E0E"/>
+    <path d="M259.147 0.981812C271.389 -2.57498 284.197 4.46571 287.754 16.7074C291.311 28.9492 284.27 41.757 272.028 45.3138L71.1727 103.671C40.7142 112.521 37.1976 154.262 65.7459 168.083L241.343 253.093C307.872 285.302 299.794 382.546 228.862 403.336L30.4041 461.502C18.1707 465.088 5.34708 458.078 1.76153 445.844C-1.8239 433.611 5.18637 420.787 17.4197 417.202L215.878 359.035C246.277 350.125 249.739 308.449 221.226 294.645L45.6297 209.635C-20.9834 177.386 -12.7772 79.9893 58.2928 59.3402L259.147 0.981812Z" fill="#00FF77"/>
+    <path d="M259.147 0.981812C271.389 -2.57498 284.197 4.46571 287.754 16.7074C291.311 28.9492 284.27 41.757 272.028 45.3138L71.1727 103.671C40.7142 112.521 37.1976 154.262 65.7459 168.083L241.343 253.093C307.872 285.302 299.794 382.546 228.862 403.336L30.4041 461.502C18.1707 465.088 5.34708 458.078 1.76153 445.844C-1.8239 433.611 5.18637 420.787 17.4197 417.202L215.878 359.035C246.277 350.125 249.739 308.449 221.226 294.645L45.6297 209.635C-20.9834 177.386 -12.7772 79.9893 58.2928 59.3402L259.147 0.981812Z" fill="black" fill-opacity="0.2"/>
+  </svg>
+<text x="225" y="204" text-anchor="middle" font-size="15" font-weight="bold" fill="#1A3B5C">Strands Agent</text>
+<text x="205" y="232" text-anchor="middle" font-size="11.5" font-weight="normal" fill="#1A3B5C" font-family="Menlo,Consolas,monospace">arm.tool(policies={...})</text>
+<text x="205" y="250" text-anchor="middle" font-size="10.5" font-weight="normal" fill="#5b6b7b">describe / observe / act / run / stop / hold / estop</text>
+<text x="205" y="278" text-anchor="middle" font-size="11.5" font-weight="normal" fill="#1A3B5C" font-family="Menlo,Consolas,monospace">sim.tool</text>
+<text x="205" y="296" text-anchor="middle" font-size="10.5" font-weight="normal" fill="#5b6b7b">add_object / camera / render / set_pose / ...</text>
+<text x="205" y="316" text-anchor="middle" font-size="10" font-weight="normal" fill="#8a97a5" font-style="italic">a refusal comes back to the model as text</text>
+<line x1="165" y1="148" x2="165" y2="174" stroke="#5b6b7b" stroke-width="2" marker-end="url(#a)" marker-start="url(#s)"/>
+<rect x="430" y="176" width="340" height="150" rx="12" fill="#F3F6FA" stroke="#1A3B5C" stroke-width="2.4"/>
+<text x="600" y="204" text-anchor="middle" font-size="15" font-weight="bold" fill="#1A3B5C" font-family="Menlo,Consolas,monospace">Robot("so101")</text>
+<text x="600" y="228" text-anchor="middle" font-size="11.5" font-weight="normal" fill="#5b6b7b">Description from the registry -&gt; manifest</text>
+<text x="600" y="250" text-anchor="middle" font-size="11.5" font-weight="bold" fill="#1A3B5C">safety chain on every write:</text>
+<text x="600" y="268" text-anchor="middle" font-size="11" font-weight="normal" fill="#5b6b7b">joint bounds, refuse rather than clamp, step limits</text>
+<text x="600" y="288" text-anchor="middle" font-size="11" font-weight="normal" fill="#5b6b7b">estop() latches until resume(approved_by=)</text>
+<text x="600" y="310" text-anchor="middle" font-size="11" font-weight="normal" fill="#1A3B5C" font-family="Menlo,Consolas,monospace">run(policy, record=...): observe -&gt; policy -&gt; act</text>
+<line x1="370" y1="250" x2="428" y2="250" stroke="#1A3B5C" stroke-width="2" marker-end="url(#a)"/>
+<text x="399.0" y="242" text-anchor="middle" font-size="10.5" font-weight="normal" fill="#1A3B5C">tool calls</text>
+<rect x="830" y="176" width="330" height="150" rx="12" fill="#fff" stroke="#2563EB" stroke-width="2"/>
+<circle cx="848" cy="194" r="12" fill="#1A3B5C"/>
+<text x="848" y="198.5" text-anchor="middle" font-size="12.5" font-weight="bold" fill="#fff">3</text>
+<text x="1005" y="204" text-anchor="middle" font-size="15" font-weight="bold" fill="#1A3B5C">Policy</text>
+<text x="995" y="230" text-anchor="middle" font-size="11.5" font-weight="normal" fill="#5b6b7b">a function (wave), registered by name</text>
+<text x="995" y="254" text-anchor="middle" font-size="11.5" font-weight="normal" fill="#1A3B5C" font-family="Menlo,Consolas,monospace">&lt;owner&gt;/&lt;repo&gt;: a LeRobot checkpoint</text>
+<text x="995" y="272" text-anchor="middle" font-size="11" font-weight="normal" fill="#5b6b7b">loaded in-process (here an ACT, CPU)</text>
+<text x="995" y="296" text-anchor="middle" font-size="11" font-weight="normal" fill="#5b6b7b">registered as act: the agent runs it by name</text>
+<text x="995" y="314" text-anchor="middle" font-size="11" font-weight="normal" fill="#8a97a5" font-style="italic">its actions pass the safety chain</text>
+<line x1="828" y1="250" x2="772" y2="250" stroke="#2563EB" stroke-width="2" marker-end="url(#a)"/>
+<text x="800" y="242" text-anchor="middle" font-size="10.5" font-weight="normal" fill="#2563EB">actions</text>
+<rect x="830" y="84" width="330" height="64" rx="12" fill="#FFF8E6" stroke="#C98A00" stroke-width="2"/>
+<text x="995" y="110" text-anchor="middle" font-size="13.5" font-weight="bold" fill="#1A3B5C">Hugging Face Hub</text>
+<text x="995" y="130" text-anchor="middle" font-size="11.5" font-weight="normal" fill="#5b6b7b">model repos  |  dataset repos</text>
+<line x1="940" y1="148" x2="940" y2="174" stroke="#C98A00" stroke-width="2" marker-end="url(#a)"/>
+<text x="980" y="166" text-anchor="middle" font-size="10.5" font-weight="normal" fill="#C98A00">download</text>
+<rect x="430" y="380" width="340" height="128" rx="12" fill="#EAF7EF" stroke="#00A34D" stroke-width="2"/>
+<text x="600" y="406" text-anchor="middle" font-size="14" font-weight="bold" fill="#1A3B5C">Simulation() (default)</text>
+<text x="600" y="430" text-anchor="middle" font-size="11.5" font-weight="normal" fill="#5b6b7b">MuJoCo world: the arm, the red cube</text>
+<text x="600" y="450" text-anchor="middle" font-size="11.5" font-weight="normal" fill="#5b6b7b">cameras on the arm: front, wrist</text>
+<text x="600" y="472" text-anchor="middle" font-size="11" font-weight="normal" fill="#8a97a5" font-style="italic">no hardware, no GPU</text>
+<text x="600" y="494" text-anchor="middle" font-size="10.5" font-weight="bold" fill="#00A34D">Steps 1, 2, 3, 5 run here</text>
+<rect x="430" y="540" width="340" height="128" rx="12" fill="#fff" stroke="#00A34D" stroke-width="2" stroke-dasharray="7 5"/>
+<circle cx="448" cy="558" r="12" fill="#1A3B5C"/>
+<text x="448" y="562.5" text-anchor="middle" font-size="12.5" font-weight="bold" fill="#fff">4</text>
+<text x="610" y="566" text-anchor="middle" font-size="14" font-weight="bold" fill="#1A3B5C">SO-101 on USB (reference)</text>
+<text x="600" y="590" text-anchor="middle" font-size="10.5" font-weight="normal" fill="#1A3B5C" font-family="Menlo,Consolas,monospace">Robot("so101", port="/dev/ttyACM0", ...)</text>
+<text x="600" y="612" text-anchor="middle" font-size="11" font-weight="normal" fill="#5b6b7b">native Feetech driver, LeRobot calibration</text>
+<text x="600" y="632" text-anchor="middle" font-size="11" font-weight="normal" fill="#5b6b7b">confirm= sees every target a tool asks for</text>
+<text x="600" y="652" text-anchor="middle" font-size="11" font-weight="normal" fill="#5b6b7b">approve= sees a policy run's plan once</text>
+<line x1="560" y1="326" x2="560" y2="378" stroke="#1A3B5C" stroke-width="2" marker-end="url(#a)"/>
+<text x="585" y="360" text-anchor="middle" font-size="10.5" font-weight="normal" fill="#1A3B5C">body</text>
+<path d="M 750 326 L 750 352 L 792 352 L 792 604 L 772 604" fill="none" stroke="#1A3B5C" stroke-width="2" stroke-dasharray="6 5" marker-end="url(#a)"/>
+<text x="800" y="480" text-anchor="start" font-size="10.5" font-weight="normal" fill="#1A3B5C">or</text>
+<rect x="830" y="380" width="330" height="160" rx="12" fill="#fff" stroke="#C98A00" stroke-width="2"/>
+<circle cx="848" cy="398" r="12" fill="#1A3B5C"/>
+<text x="848" y="402.5" text-anchor="middle" font-size="12.5" font-weight="bold" fill="#fff">2</text>
+<text x="1005" y="406" text-anchor="middle" font-size="15" font-weight="bold" fill="#1A3B5C">Recording</text>
+<text x="995" y="432" text-anchor="middle" font-size="11" font-weight="normal" fill="#1A3B5C" font-family="Menlo,Consolas,monospace">run(record=dir | 'hf://user/name')</text>
+<text x="995" y="452" text-anchor="middle" font-size="11.5" font-weight="normal" fill="#5b6b7b">LeRobot v3 through LeRobot's writer</text>
+<text x="995" y="472" text-anchor="middle" font-size="11.5" font-weight="normal" fill="#5b6b7b">state, action, front + wrist video</text>
+<text x="995" y="494" text-anchor="middle" font-size="11.5" font-weight="normal" fill="#5b6b7b">push=True uploads when the episode ends</text>
+<text x="995" y="516" text-anchor="middle" font-size="11.5" font-weight="normal" fill="#1A3B5C">LeRobotDataset reads it back</text>
+<text x="995" y="532" text-anchor="middle" font-size="10" font-weight="normal" fill="#8a97a5" font-style="italic">(code-side: the agent does not record)</text>
+<path d="M 772 300 L 814 300 L 814 455 L 828 455" fill="none" stroke="#C98A00" stroke-width="2" marker-end="url(#a)"/>
+<text x="808" y="392" text-anchor="end" font-size="10.5" font-weight="normal" fill="#C98A00">frames</text>
+<path d="M 1160 470 C 1192 420, 1192 160, 1162 128" fill="none" stroke="#C98A00" stroke-width="2" stroke-dasharray="6 5" marker-end="url(#a)"/>
+<text x="1178" y="300" text-anchor="end" font-size="10.5" font-weight="normal" fill="#C98A00">push</text>
+<rect x="40" y="380" width="330" height="288" rx="12" fill="#EAF1FE" stroke="#2563EB" stroke-width="2"/>
+<circle cx="58" cy="398" r="12" fill="#1A3B5C"/>
+<text x="58" y="402.5" text-anchor="middle" font-size="12.5" font-weight="bold" fill="#fff">5</text>
+<text x="215" y="406" text-anchor="middle" font-size="15" font-weight="bold" fill="#1A3B5C">The arm on a mesh</text>
+<rect x="64" y="424" width="282" height="54" rx="8" fill="#fff" stroke="#FF6B35" stroke-width="2"/>
+<text x="205" y="446" text-anchor="middle" font-size="12" font-weight="bold" fill="#1A3B5C">second Agent</text>
+<text x="205" y="466" text-anchor="middle" font-size="11" font-weight="normal" fill="#1A3B5C" font-family="Menlo,Consolas,monospace">one tool: use_mesh</text>
+<rect x="64" y="500" width="282" height="56" rx="8" fill="#fff" stroke="#2563EB" stroke-width="2"/>
+<text x="205" y="522" text-anchor="middle" font-size="11" font-weight="normal" fill="#1A3B5C" font-family="Menlo,Consolas,monospace">Mesh("zenoh://...")  "me"</text>
+<text x="205" y="542" text-anchor="middle" font-size="10.5" font-weight="normal" fill="#5b6b7b">discover("device(role:arm)"), invoke</text>
+<rect x="64" y="584" width="282" height="56" rx="8" fill="#fff" stroke="#2563EB" stroke-width="2"/>
+<text x="205" y="606" text-anchor="middle" font-size="11" font-weight="normal" fill="#1A3B5C" font-family="Menlo,Consolas,monospace">Mesh(...)  "bench"</text>
+<text x="205" y="626" text-anchor="middle" font-size="10.5" font-weight="normal" fill="#5b6b7b">bench.mount(arm): manifest + rpcs</text>
+<line x1="205" y1="478" x2="205" y2="498" stroke="#2563EB" stroke-width="2" marker-end="url(#a)"/>
+<line x1="205" y1="556" x2="205" y2="582" stroke="#2563EB" stroke-width="2" marker-end="url(#a)" marker-start="url(#s)"/>
+<text x="238" y="574" text-anchor="middle" font-size="10.5" font-weight="normal" fill="#2563EB">Zenoh</text>
+<text x="205" y="660" text-anchor="middle" font-size="10" font-weight="normal" fill="#8a97a5" font-style="italic">iot://... puts the same two on AWS IoT Core</text>
+<path d="M 346 612 L 400 612 L 400 300 L 428 300" fill="none" stroke="#2563EB" stroke-width="2" marker-end="url(#a)"/>
+<text x="396" y="352" text-anchor="end" font-size="10.5" font-weight="normal" fill="#2563EB">act, through the chain</text>
+<text x="40" y="712" text-anchor="start" font-size="11.5" font-weight="normal" fill="#1A3B5C">Numbers are the notebook's steps.  Solid: runs in the notebook.  Dashed: the hardware path, shown as code.</text>
+<text x="40" y="734" text-anchor="start" font-size="11.5" font-weight="normal" fill="#5b6b7b">Every write, from a tool, a policy or the mesh, goes through the same Robot and its safety chain.</text>
+<defs><marker id="a" markerWidth="9" markerHeight="9" refX="7" refY="4.5" orient="auto"><path d="M0,0 L9,4.5 L0,9 z" fill="context-stroke"/></marker>
+<marker id="s" markerWidth="9" markerHeight="9" refX="2" refY="4.5" orient="auto-start-reverse"><path d="M0,0 L9,4.5 L0,9 z" fill="context-stroke"/></marker></defs>
+</svg>

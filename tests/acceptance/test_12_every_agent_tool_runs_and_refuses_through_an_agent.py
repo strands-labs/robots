@@ -102,12 +102,16 @@ def test_every_agent_tool_runs_and_refuses_through_an_agent(hold_policy):
     meshed = Robot("so101", id="mesh-arm", position=[0.0, 1.0, 0.0])
     device_side.mount(meshed, device_id="mesh-arm", labels={"role": "arm"}, watchdog_ms=None)
     assert ctl.discover("device(role:arm)", min_count=1, timeout=3.0)
-    tools = [arm.sim.tool, arm.tool, ctl.tool]
+    from strands_robots.mesh.tool import use_mesh
+
+    asked: list = []  # the operator allows the agent's mesh run (asked once, with its plan)
+    tools = [arm.sim.tool, arm.tool, use_mesh(ctl, approve=lambda plan: asked.append(plan) or True)]
     agent = Agent(tools=tools, callback_handler=None)
     try:
         _walk(agent, tools[0], SIM, lambda v, a: {"rpc": v, **({v: a} if a else {})})
         _walk(agent, tools[1], ROBOT, lambda v, a: {"rpc": v, **({v: a} if a else {})})
         _walk(agent, tools[2], MESH, lambda v, a: {"action": v, **(a or {})})
+        assert [p.robot for p in asked] == ["mesh-arm"]
     finally:
         ctl.close()
         device_side.close()

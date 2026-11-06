@@ -108,12 +108,12 @@ def test_a_second_run_is_refused_while_the_first_runs_and_stop_halts_it(lab):
     gate = arm.confirm_act
     arm.confirm_act = lambda *a, **k: (writes.append(1), gate(*a, **k))[1]  # type: ignore[method-assign]
     run = {"policy": lambda o: {"shoulder_pan": 0.1}, "seconds": 3, "hz": 20}
-    dispatch(m, {"action": "run", "device_id": "arm", "run": run})
+    dispatch(m, {"action": "run", "device_id": "arm", "run": run}, approve=lambda plan: True)
     deadline = time.monotonic() + 2.0
     while not writes and time.monotonic() < deadline:  # the first loop is writing before the second run is asked
         time.sleep(0.01)
     with pytest.raises(RuntimeError, match="already has a running task"):
-        dispatch(m, {"action": "run", "device_id": "arm", "run": run})
+        dispatch(m, {"action": "run", "device_id": "arm", "run": run}, approve=lambda plan: True)
     dispatch(m, {"action": "stop", "device_id": "arm"})
     n = len(writes)
     time.sleep(0.5)
@@ -163,3 +163,36 @@ def test_act_with_seconds_reaches_the_pose_through_the_tool(lab):
     assert m.tool.tool_spec["inputSchema"]["json"]["properties"]["seconds"]["type"] == "number"
     status, obs = call(m.tool, action="act", device_id="arm", act={"shoulder_pan": 0.4}, seconds=1.0)
     assert status == "success" and obs["joints"]["shoulder_pan"] == pytest.approx(0.4, abs=0.02)
+
+
+def test_a_model_cannot_point_a_run_at_a_network_address(lab):
+    m, _ = lab
+    status, text = call(m.tool, action="run", device_id="arm", run={"policy": "zenoh://10.0.0.9:7447/anything"})
+    assert status == "error" and "network address" in text and not m.tasks  # nothing connected, nothing started
+
+
+def test_the_mesh_tool_runs_as_an_agent_so_every_run_gate_applies(lab, monkeypatch):
+    from strands_robots.mesh import tool as mesh_tool
+    from strands_robots.robot.run.source import is_agent
+
+    m, _ = lab
+    seen = []
+    monkeypatch.setattr(mesh_tool, "dispatch", lambda mesh, inp, approve=None: seen.append(is_agent()) or [])
+    call(mesh_tool.use_mesh(m), action="list")
+    assert seen == [True] and not is_agent()  # marked inside the call only
+
+
+def test_an_agents_run_on_a_device_needs_the_operators_approve(lab):
+    from strands_robots.mesh.tool import use_mesh
+
+    m, _ = lab
+    run = {"policy": lambda o: {"shoulder_pan": 0.1}, "steps": 3, "hz": 20}
+    status, text = call(m.tool, action="run", device_id="arm", run=run)
+    assert status == "error" and "approve=" in text and not m.tasks
+    asked: list = []
+    status, out = call(
+        use_mesh(m, approve=lambda plan: asked.append(plan) or True), action="run", device_id="arm", run=run
+    )
+    assert status == "success" and out["started"] == "arm"
+    assert m.tasks["arm"].stop(timeout=5.0) is not None  # the run ended without a refusal
+    assert [p.robot for p in asked] == ["arm"]

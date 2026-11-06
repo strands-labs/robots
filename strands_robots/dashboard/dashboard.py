@@ -14,6 +14,7 @@ from functools import cached_property
 from typing import TYPE_CHECKING, Any
 
 from .._extras import hint
+from .auth import configure
 from .connect import Connections
 from .twin_scene import SceneXml, robot_cards, scene_to_mjcf
 
@@ -29,7 +30,8 @@ if TYPE_CHECKING:
 
 class Dashboard:
     """A browser twin of ``sim``; ``robots=`` are hardware robots (their twins get a real card); ``model=`` chats;
-    ``voice=`` talks (``"openai"`` | ``"nova"`` | ``"auto"`` | a BidiModel factory, see ``dashboard.voice``)."""
+    ``voice=`` talks (``"openai"`` | ``"nova"`` | ``"auto"`` | a BidiModel factory, see ``dashboard.voice``); ``auth=``
+    is passkey sign-in (``True``; ``self.auth.token()`` signs a script in; ``False`` is refused with a real robot)."""
 
     def __init__(
         self,
@@ -41,12 +43,15 @@ class Dashboard:
         agent: Any = None,
         mesh: Any = None,
         voice: Any = None,
+        auth: Any = True,
+        unauthenticated_hardware: bool = False,
     ) -> None:
         if hz <= 0:
             raise ValueError(f"hz must be > 0, got {hz}")
         self.sim = sim
         self.hz = hz
         self.real: dict[str, Robot] = {r.id: r for r in robots}
+        self.auth = configure(auth, hardware=bool(self.real), insist=unauthenticated_hardware)  # dashboard/auth/
         self._scene_cache: tuple[int, SceneXml] | None = None
         self._app: Any = None
         self.model = model
@@ -56,10 +61,6 @@ class Dashboard:
             raise ValueError(f"voice must be 'openai', 'nova', 'auto' or a BidiModel factory, got {voice!r}")
         self.voice = voice  # a fresh BidiModel per /ws/voice conversation
         self._agent_revision: int | None = None
-
-    @property
-    def revision(self) -> int:
-        return self.sim.revision
 
     def scene_xml(self) -> SceneXml:
         with self.sim.lock:
@@ -173,7 +174,7 @@ class Dashboard:
         if not isinstance(name, str) or not name:
             raise ValueError('body must be {"name": "<registry name>", "id": <str|null>, "position": [x, y, z]}')
         robot = Robot(name, sim=self.sim, id=id, position=position)
-        return {"id": robot.id, "name": robot.name, "action_keys": list(robot.action_keys), "revision": self.revision}
+        return {"id": robot.id, "name": robot.name, "action_keys": [*robot.action_keys], "revision": self.sim.revision}
 
     def estop(self, rid: str) -> dict[str, Any]:
         """The page's E-STOP: bypasses the safety chain and latches (real or simulated, no confirm needed)."""
@@ -218,9 +219,9 @@ class Dashboard:
             if self.model is None:
                 raise RuntimeError(NO_CHAT)
             self._agent = chat.build_agent(self.sim, self.model, self.real.values())
-        elif self._agent_revision != self.revision:
+        elif self._agent_revision != self.sim.revision:
             chat.refresh_tools(self._agent, self.sim, self.real.values())
-        self._agent_revision = self.revision
+        self._agent_revision = self.sim.revision
         return self._agent
 
     @property
@@ -232,11 +233,11 @@ class Dashboard:
 
     def start(self, *, host: str = "127.0.0.1", port: int = 0) -> Server:
         """Serve in a background thread; ``.url`` and ``.stop()`` on the returned handle."""
-        return _web()[1](self.app, host=host, port=port).start()
+        return self.auth.announce(_web()[1](self.app, host=host, port=port)).start()
 
     def serve(self, *, host: str = "127.0.0.1", port: int = 8090) -> None:
         """Serve in this thread until interrupted. Loopback only."""
-        _web()[1](self.app, host=host, port=port).run()
+        self.auth.announce(_web()[1](self.app, host=host, port=port)).run()
 
 
 def _web() -> tuple[Any, type[Server]]:

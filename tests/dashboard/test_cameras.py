@@ -64,7 +64,7 @@ def test_the_page_shows_each_camera_as_the_world_renders_it(served) -> None:
 
     _, url = served
     with page_on(url) as page:
-        page.wait_for_function("document.querySelector('.card.cam img')?.naturalWidth > 0", timeout=30_000)
+        page.wait_for_function("() => document.querySelector('.card.cam img')?.naturalWidth > 0", timeout=30_000)
         size = page.evaluate("(i => [i.naturalWidth, i.naturalHeight])(document.querySelector('.card.cam img'))")
         page.screenshot(path=str(MEDIA / "row5-camera-card.png"))
         assert size == [96, 64]

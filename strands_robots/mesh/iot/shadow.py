@@ -6,7 +6,7 @@ the mesh key that carries the full record; written once at mount, deleted at unm
 met the device draws it from one GET), ``state`` (``reported`` = the live state at ``shadow_hz`` ≤ 1, the last-known
 view; the live stream stays on the ``state`` key) and ``control`` (``desired.<control>`` = an operator's target,
 which arrives as a delta and goes through ``robot.confirm_act`` like every other write; the outcome is written back
-to ``reported``, a refusal verbatim under ``reported.refused``).
+to ``reported``, a refusal verbatim under ``reported.refused``; like an ``act`` it arms the watchdog and is audited).
 
 An e-stop or resume as a shadow field is refused: the shadow is eventually consistent and persists, a latch is
 immediate and must never replay. The lockout is *reported* into ``state`` so a late operator sees it.
@@ -15,6 +15,7 @@ immediate and must never replay. The lockout is *reported* into ``state`` so a l
 from __future__ import annotations
 
 import json
+import logging
 import threading
 import time
 from collections.abc import Callable, Mapping
@@ -34,6 +35,7 @@ STAMP_RESOLUTION_S = 1.0
 """AWS writes ``metadata.<key>.timestamp`` as integer epoch seconds: a write time is truncated by up to 999 ms before
 the delta leaves the broker, so no staleness bound under one second can be told apart from that truncation."""
 MIN_STALE_S = STAMP_RESOLUTION_S
+AUDIT = logging.getLogger("strands_robots.audit")
 
 
 def shadow_topic(thing: str, name: str, op: str) -> str:
@@ -68,12 +70,15 @@ class ShadowMirror:
         stale_s: float | None = 2.0,
         lockout: Callable[[], Mapping[str, Any]] | None = None,
         clock: Callable[[], float] = time.time,
+        control: bool = True,
+        on_rpc: Callable[[str, str | None], Callable[[bool], None] | None] | None = None,
     ) -> None:
         """``link`` publishes/subscribes MQTT topics (``AwsLink`` or ``FakeLink``); ``thing`` defaults to the device
         id (the thing name IS the device id, MAPPING 3.1). ``lockout()`` returns the device's lockout as a dict so the
         ``state`` shadow reports it. A desired target whose ``metadata`` stamp is older than ``stale_s`` at delivery
-        is dropped as stale (``None``: never). The bound is the shadow's own, not the mesh watchdog: a shadow is
-        eventually consistent and its stamps resolve to whole seconds, a watchdog is a 500 ms liveness check."""
+        is dropped as stale (``None``: never). ``control=False`` never listens for targets. ``on_rpc`` is the
+        mount's watchdog hook: an applied target arms it as ``shadow:<thing>``, so a writer that stops writing gets
+        ``on_disconnect`` after ``watchdog_ms``; with no hook a hardware robot refuses every target (observe-only)."""
         if not 0 < shadow_hz <= MAX_SHADOW_HZ:
             raise ValueError(
                 f"shadow_hz={shadow_hz} is over the {MAX_SHADOW_HZ:g} Hz shadow limit (20 req/s per-thing quota, "
@@ -87,7 +92,8 @@ class ShadowMirror:
         self.link, self.robot, self.record = link, robot, dict(record)
         self.thing = thing or str(record["id"])
         self.shadow_hz, self.stale_s, self.clock = float(shadow_hz), stale_s, clock
-        self._lockout = lockout
+        self._lockout, self.control, self._on_rpc = lockout, bool(control), on_rpc
+        self._observe_only = on_rpc is None and bool(getattr(robot, "is_real", False))
         self._controls = {str(c["name"]) for c in (self.record.get("manifest") or {}).get("controls") or ()}
         self._undo: list[Callable[[], None]] = []
         self._stop = threading.Event()
@@ -106,7 +112,8 @@ class ShadowMirror:
         """Write ``manifest``, start reporting ``state`` at ``shadow_hz``, listen for ``control`` deltas."""
         self._update("manifest", {"reported": manifest_doc(self.record)})
         self._worker.start()
-        self._undo.append(self.link.subscribe(shadow_topic(self.thing, "control", "update/delta"), self._on_delta))
+        if self.control:
+            self._undo.append(self.link.subscribe(shadow_topic(self.thing, "control", "update/delta"), self._on_delta))
         if hasattr(self.robot, "subscribe"):
             self._undo.append(self.robot.subscribe("state", self._on_state, hz=self.shadow_hz))
         return self
@@ -187,14 +194,15 @@ class ShadowMirror:
             self._wake.notify()
 
     def apply(self, desired: Mapping[str, Any], stamps: Mapping[str, Any] | None = None) -> dict[str, Any]:
-        """One delta: split into targets for ``confirm_act`` and refusals; write the outcome to ``control``.
-        Returns the reported document."""
+        """One delta: targets go to ``confirm_act``, the rest are refused; returns what is written to ``control``."""
         action: dict[str, float] = {}
         refused: dict[str, str] = {}
         clear: dict[str, None] = {}
         for key, value in desired.items():
             key = str(key)
-            if key in _RPC_FIELDS:
+            if self._observe_only and key in self._controls:
+                refused[key] = f"{self.thing} is mounted observe-only (a hardware device with watchdog_ms=None)"
+            elif key in _RPC_FIELDS:
                 refused[key] = f"{key} is an rpc, not a shadow field"
             elif key not in self._controls:
                 refused[key] = f"{self.thing} has no control {key!r}"
@@ -209,6 +217,7 @@ class ShadowMirror:
                 clear[key] = None
         reported: dict[str, Any] = {}
         if action:
+            done = (self._on_rpc("act", f"shadow:{self.thing}") if self._on_rpc else None) or (lambda ok: None)
             try:
                 self.robot.confirm_act(action)
                 self.applied.append(action)
@@ -217,6 +226,9 @@ class ShadowMirror:
                 for k in action:
                     refused[f"{k}.pos"] = str(exc)
                     clear[f"{k}.pos"] = None
+            finally:
+                done(f"{next(iter(action))}.pos" not in refused)  # as for an act rpc: a refused target arms nothing
+        AUDIT.info("%s shadow:control %s keys=%s", self.thing, "refused" if refused else "ok", sorted(desired))
         reported["refused"] = refused or None
         self._write_control(reported, clear)
         return reported

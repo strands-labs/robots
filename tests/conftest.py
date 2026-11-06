@@ -22,3 +22,53 @@ def _fresh_default_world():
     if Simulation._default is not None:
         Simulation._default.close()
     Simulation._default = None
+
+
+_LOOPBACK = ("localhost", "127.0.0.1", "::1", "[::1]")
+
+
+def dashboard_token() -> str:
+    """A session token for the dashboards this test starts (they share the test's passkey store)."""
+    from strands_robots.dashboard.auth import Auth
+
+    return Auth().token("tests")
+
+
+@pytest.fixture(autouse=True)
+def _dashboard_signed_in(request, tmp_path, monkeypatch):
+    """Each test gets its own dashboard passkey store; its httpx and websockets calls to a loopback dashboard carry a
+    session token, as a signed-in script's would. ``@pytest.mark.signed_out`` sends none."""
+    monkeypatch.setenv("STRANDS_ROBOTS_DASHBOARD_AUTH", str(tmp_path / "dashboard-auth.json"))
+    if request.node.get_closest_marker("signed_out"):
+        return
+    try:
+        import httpx
+    except ImportError:
+        return
+    send = httpx.Client.send
+
+    def signed(self, req, **kw):
+        if req.url.host in _LOOPBACK and "authorization" not in req.headers:
+            req.headers["authorization"] = f"Bearer {dashboard_token()}"
+        return send(self, req, **kw)
+
+    monkeypatch.setattr(httpx.Client, "send", signed)
+    try:
+        import websockets.sync.client as wsc
+    except ImportError:
+        return
+    connect = wsc.connect
+
+    def ws_signed(uri, *a, additional_headers=None, **kw):
+        headers = dict(additional_headers or {})
+        if not any(k.lower() == "authorization" for k in headers):
+            headers["Authorization"] = f"Bearer {dashboard_token()}"
+        return connect(uri, *a, additional_headers=headers, **kw)
+
+    monkeypatch.setattr(wsc, "connect", ws_signed)
+
+
+@pytest.fixture(autouse=True)
+def _recordings_in_tmp(tmp_path, monkeypatch):
+    """The dashboard records only inside STRANDS_ROBOTS_RECORDINGS: each test's own tmp_path."""
+    monkeypatch.setenv("STRANDS_ROBOTS_RECORDINGS", str(tmp_path))

@@ -172,7 +172,7 @@ class Robot(DeviceVerbs):
         self, action: Action, *, steps: int | None = None, seconds: float | None = None, confirmed: bool = False
     ) -> Observation:
         """``act`` through the operator gate (asked once, for the target): what an agent tool and the dashboard call."""
-        return _gate.confirm_act(self, action, steps=steps, seconds=seconds, confirmed=confirmed)
+        return _gate.confirm_act(self, action, steps=steps, seconds=seconds, confirmed=confirmed, ramp=_reach.reach)
 
     def act(self, action: Action, *, steps: int | None = None, seconds: float | None = None) -> Observation:
         """Write targets for THIS body and advance its world (a real body: its twin's) one control step.

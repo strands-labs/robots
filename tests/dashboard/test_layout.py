@@ -10,6 +10,8 @@ import pytest
 pytest.importorskip("mujoco")
 pytest.importorskip("fastapi")
 
+from conftest import dashboard_token  # noqa: E402
+
 from strands_robots import Robot, Simulation  # noqa: E402
 from strands_robots.dashboard import Dashboard  # noqa: E402
 
@@ -45,10 +47,10 @@ def test_chat_input_is_never_covered_and_stop_all_latches_every_robot() -> None:
 
             box = page.locator("#stop-all").bounding_box()
             page.mouse.click(box["x"] + box["width"] / 2, box["y"] + box["height"] / 2)
-            page.wait_for_function("window.__safety.stopAll", timeout=10_000)
+            page.wait_for_function("() => window.__safety.stopAll", timeout=10_000)
             assert page.evaluate("window.__safety.stopAll.ok") == 2, page.evaluate("window.__safety")
             assert arm.estopped and g1.estopped
-            latched = "[...document.querySelectorAll('.card[data-id]')].every(c => c.dataset.latched === 'yes')"
+            latched = "() => [...document.querySelectorAll('.card[data-id]')].every(c => c.dataset.latched === 'yes')"
             page.wait_for_function(latched, timeout=5_000)
             got = page.evaluate(COVERED)  # latched cards grow Resume buttons; still nothing over the input
             assert got["covered"] == 0, got
@@ -67,7 +69,8 @@ def test_a_panel_registers_a_tab_and_gets_the_context() -> None:
     Robot("so101", sim=sim)
     server = Dashboard(sim).start()
     try:
-        with urllib.request.urlopen(f"{server.url}/api/panels", timeout=5) as r:
+        signed = {"Authorization": f"Bearer {dashboard_token()}"}
+        with urllib.request.urlopen(urllib.request.Request(f"{server.url}/api/panels", headers=signed), timeout=5) as r:
             assert isinstance(json.loads(r.read())["panels"], list)
         with page_on(server.url) as page:
             got = page.evaluate(
@@ -130,7 +133,7 @@ def test_a_phone_sees_every_robot_and_reaches_every_tab_from_the_dock() -> None:
     server = Dashboard(sim).start()
     try:
         with page_on(server.url, viewport=(390, 844)) as page:
-            page.wait_for_function("window.__twin.pose && window.__twin.framed", timeout=60_000)
+            page.wait_for_function("() => window.__twin.pose && window.__twin.framed", timeout=60_000)
             got = page.evaluate(IN_FRAME)
             assert set(got["worst"]) >= {"so101", "g1"} and max(got["worst"].values()) <= 1.0, got
             assert got["h"] > 600, got  # the sheet starts folded: the stage has the screen
@@ -140,13 +143,13 @@ def test_a_phone_sees_every_robot_and_reaches_every_tab_from_the_dock() -> None:
             )
             assert {"robots", "chat"} <= set(tabs), tabs
             page.locator('#tabs button[data-tab="chat"]').click()
-            page.wait_for_function("document.querySelector('#prompt').getBoundingClientRect().height > 0")
+            page.wait_for_function("() => document.querySelector('#prompt').getBoundingClientRect().height > 0")
             assert page.evaluate(COVERED)["covered"] == 0
-            page.wait_for_function(f"({IN_FRAME})().h < 600")  # the sheet takes its half, the camera re-frames
+            page.wait_for_function(f"() => ({IN_FRAME})().h < 600")  # the sheet takes its half, the camera re-frames
             got = page.evaluate(IN_FRAME)
             assert max(got["worst"].values()) <= 1.0, got
             page.locator('#tabs button[data-tab="chat"]').click()  # the open tab again folds the sheet
-            page.wait_for_function("document.querySelector('#app').dataset.side === 'closed'")
+            page.wait_for_function("() => document.querySelector('#app').dataset.side === 'closed'")
             assert not page.errors, page.errors
     finally:
         server.stop()
