@@ -23,7 +23,7 @@ from ...units import Units
 from ..base import PolicyFault
 from ..requirements import Requirements
 from .contract import Contract, lerobot
-from .link import wan_defaults
+from .link import check_router, wan_defaults
 from .sequential import Sequential, ledgered
 
 if TYPE_CHECKING:
@@ -70,16 +70,19 @@ class ZenohPolicy:
         start_pose: Mapping[str, float] | Sequence[float] | None = None,
         start_seconds: float = 3.0,
         tasks: Sequence[str] | None = None,
+        trusted: bool = False,
         **settings: Any,
     ) -> None:
         """``execution``: see the module docstring. ``start_pose`` (the deployment's units; a mapping of joint -> value
         or a full vector) is where its episodes begin: ``robot.run`` ramps there over ``start_seconds`` first. Left
         out, the server's descriptor may say (``start_pose``); else the run begins where the body is. ``tasks``: the
         instructions it was trained on — any other ``run(instruction=)`` is refused naming them before a frame goes
-        out; left out, the descriptor may say (``tasks``); else any instruction is sent."""
+        out; left out, the descriptor may say (``tasks``); else any instruction is sent. ``trusted``: a real robot
+        takes a server behind a zenoh router (``tls``/``quic``/``ws``) only once the operator vouches for every
+        client of that router (or ``STRANDS_ZENOH_TRUSTED=1``): any of them can answer for the server."""
         if execution not in EXECUTIONS:
             raise ValueError(f"execution must be one of {', '.join(map(repr, EXECUTIONS))}, got {execution!r}")
-        self.endpoint, self.deployment, self.settings = endpoint, deployment, settings
+        self.endpoint, self.deployment, self.settings, self.trusted = endpoint, deployment, settings, trusted
         self.asked: Execution = execution
         self.execution: str | None = None  # resolved at attach, from the server
         self._start_pose, self.start_seconds = start_pose, float(start_seconds)
@@ -120,6 +123,7 @@ class ZenohPolicy:
 
     def attach(self, robot: Any) -> None:
         self.detach()
+        check_router(repr(self), self.endpoint, robot, self.trusted)
         client = self._connect()
         try:
             caps, sem = client.capabilities, client.descriptor["semantics"]

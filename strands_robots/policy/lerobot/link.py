@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ipaddress
+import os
 from typing import Any
 
 WAN_TIMEOUT_S = (
@@ -28,6 +29,30 @@ def is_local(endpoint: str) -> bool:
     return addr.is_private or addr.is_loopback or addr.is_link_local
 
 
+ROUTED = ("tls", "quic", "ws", "wss")
+"""Links that reach the server through a zenoh router: every client of that router shares the session's keys."""
+
+
+def routed(endpoint: str) -> bool:
+    """``<link>/host:port`` goes through a router (``tls``/``quic``/``ws``), not straight to the server."""
+    return endpoint.split("/", 1)[0] in ROUTED
+
+
+def trusted(asked: bool) -> bool:
+    """The operator vouches for the router's clients: ``trusted=True`` or ``STRANDS_ZENOH_TRUSTED=1``."""
+    return asked or os.environ.get("STRANDS_ZENOH_TRUSTED", "").lower() in ("1", "true", "yes")
+
+
+def check_router(who: str, endpoint: str, robot: Any, asked: bool) -> None:
+    """A real robot never takes actions through a router whose clients nobody vouched for (``PermissionError``)."""
+    if getattr(robot, "is_real", False) and routed(endpoint) and not trusted(asked):
+        raise PermissionError(
+            f"{who}: a real robot takes actions from {endpoint} only once you vouch for every client of that zenoh "
+            "router, since any of them can answer for the server: Policy(..., trusted=True) or "
+            "STRANDS_ZENOH_TRUSTED=1 (docs/lerobot.md)"
+        )
+
+
 def wan_defaults(endpoint: str, settings: dict[str, Any], descriptor: dict[str, Any] | None = None) -> dict[str, Any]:
     """LeRobot client settings a link implies, under anything the caller set by name.
 
@@ -36,8 +61,7 @@ def wan_defaults(endpoint: str, settings: dict[str, Any], descriptor: dict[str, 
     ``action_deadline_s`` (the hello's ``limits``) — a server allowed 5 s to answer is not a client fault at 5 s.
     """
     out: dict[str, Any] = {}
-    link = endpoint.split("/", 1)[0]
-    if link in ("tls", "quic", "ws", "wss"):
+    if routed(endpoint):
         out["zenoh_mode"] = "client"
     if not is_local(endpoint):
         out.update(handshake_timeout_s=WAN_TIMEOUT_S, action_timeout_s=WAN_TIMEOUT_S, startup_timeout_s=WAN_TIMEOUT_S)
