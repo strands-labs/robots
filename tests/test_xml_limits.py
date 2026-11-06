@@ -55,6 +55,16 @@ def test_limited_false_and_autolimits_off_leave_a_joint_unlimited(tmp_path):
     assert _limits(tmp_path, body, compiler=off) == {}
 
 
+def test_an_empty_or_inverted_range_under_auto_is_unlimited_as_in_mujoco(tmp_path):
+    default = '<default><default class="m"><joint armature="0.1" range="0 0"/></default></default>'
+    body = (
+        '<body><joint name="inherited" class="m"/><joint name="inverted" range="1 -1"/>'
+        '<joint name="own" class="m" range="-1 1"/><geom size="0.1"/></body>'
+    )
+    lim = _limits(tmp_path, body, compiler='<compiler angle="radian"/>', default=default)
+    assert lim == {"own": (-1.0, 1.0)}
+
+
 def test_default_joints_are_not_counted_as_joints(tmp_path):
     path = tmp_path / "m.xml"
     path.write_text(

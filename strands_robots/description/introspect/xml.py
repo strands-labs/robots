@@ -124,6 +124,8 @@ def introspect_xml(path: Path, fmt: str) -> dict[str, Any]:
         if limited == "false" or (limited == "auto" and (rng is None or not autolimits)):
             continue
         lo, hi = (float(x) for x in (rng or "0 0").split()[:2])
+        if limited == "auto" and lo >= hi:  # MuJoCo: auto means limited only when range[0] < range[1]
+            continue
         if jt == "hinge" and degrees:
             lo, hi = math.radians(lo), math.radians(hi)
         limits[name] = (lo, hi)
