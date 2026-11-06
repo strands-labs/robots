@@ -140,7 +140,8 @@ A real robot moves only through its operator gate. Keep these invariants when yo
   prefixes), and moves a real robot only with `X-Confirm: yes`, which chat and voice never send. Tests sign in through
   `tests/conftest.py` (per-test passkey store; `@pytest.mark.signed_out` sends no token).
 - Feetech writes are speed-capped (`robot/drivers/slew.py`, 2 rad/s), and torque comes on only after every goal is
-  computed. Unitree and microduck drivers are observe-only.
+  computed, with every servo first held where it is (`FeetechBus.engage`: Goal := Present, then torque). Unitree and
+  microduck drivers are observe-only.
 
 ## Where things live
 

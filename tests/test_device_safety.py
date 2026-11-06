@@ -435,7 +435,7 @@ def test_a_latched_lapse_is_left_to_the_estop_so_a_failed_read_is_never_retried_
     assert dog.poll() is False and goal_writes(s) == [] and d.extras()["torque"] is torque
     dog.beat()
     now[0] = 0.7  # the commander came back, then went quiet again: this lapse is the watchdog's
-    assert dog.poll() is True and len(goal_writes(s)) == (1 if torque else 2)  # a limp arm's hold enables torque first
+    assert dog.poll() is True and len(goal_writes(s)) == (1 if torque else 3)  # limp: Goal := Present, torque, hold
     assert d.extras()["torque"] is True
     real.close()
 
