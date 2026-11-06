@@ -59,7 +59,7 @@ def attach(
     record: Mapping[str, Any],
     lockout: Any,
     *,
-    on_rpc: Callable[[str, str | None], Callable[[], None] | None] | None = None,
+    on_rpc: Callable[[str, str | None], Callable[[bool], None] | None] | None = None,
 ) -> Unsubscribe:
     """Start the IoT-native pieces for one mounted device on every IoT transport. ``lockout`` is the device's
     ``Lockout``; the ``state`` shadow reports it synced with the robot's latch, as the ``lockout`` rpc does.

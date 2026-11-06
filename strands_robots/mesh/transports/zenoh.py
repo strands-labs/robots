@@ -3,6 +3,12 @@
 ``zenoh://`` scouts on ``224.0.0.224:7447`` (zero config on a LAN). ``zenoh://?listen=tcp/0.0.0.0:7447`` and/or
 ``?connect=tcp/host:7447`` give explicit endpoints and switch scouting off. ``?scout=addr:port`` or
 ``STRANDS_ZENOH_SCOUT`` move the group.
+
+zenoh peers carry no identity by default: anything that joins the session can publish, answer and query. To say who
+may join, give a zenoh config file (``?config=<path>`` or ``STRANDS_ZENOH_CONFIG``): TLS with client certificates on
+``tls/`` endpoints, user/password authentication, access control. The file is the session's config; this module only
+adds the lease, any ``?listen=``/``?connect=``, and the strands scouting group and peer mode when the file sets
+neither. ``ZenohTransport.open_peers`` is True when no file was given.
 """
 
 from __future__ import annotations
@@ -91,13 +97,40 @@ def _undeclarer(entity: Any) -> Unsubscribe:
     return undo
 
 
+def config_file(url: str) -> str | None:
+    """The zenoh config file a URL names (``?config=``), else ``STRANDS_ZENOH_CONFIG``, else None."""
+    q = parse_qs(urlparse(url).query)
+    path = (q.get("config") or [os.environ.get("STRANDS_ZENOH_CONFIG", "")])[0]
+    return os.path.expanduser(path) if path else None
+
+
+def session_config(zenoh: Any, url: str, presence_ttl: float = 3.0) -> Any:
+    """The ``zenoh.Config``: :func:`config` alone, or the config file with what :func:`config` decides laid over it."""
+    ours, path = config(url, presence_ttl), config_file(url)
+    if path is None:
+        return zenoh.Config.from_json5(json.dumps(ours))
+    cfg = zenoh.Config.from_file(path)
+    cfg.insert_json5("transport/link/tx/lease", json.dumps(ours["transport"]["link"]["tx"]["lease"]))
+    for key in ("listen", "connect"):
+        if key in ours:
+            cfg.insert_json5(f"{key}/endpoints", json.dumps(ours[key]["endpoints"]))
+    if json.loads(cfg.get_json("mode")) is None:
+        cfg.insert_json5("mode", '"peer"')
+    unset = all(json.loads(cfg.get_json(f"scouting/multicast/{k}")) is None for k in ("enabled", "address"))
+    if unset and "listen" not in ours and "connect" not in ours:  # the file's own scouting keys are left as they are
+        for k, v in ours["scouting"]["multicast"].items():
+            cfg.insert_json5(f"scouting/multicast/{k}", json.dumps(v))
+    return cfg
+
+
 class ZenohTransport:
     def __init__(self, url: str, presence_ttl: float = 3.0) -> None:
         zenoh = _zenoh()
         self.url = url
         self._zenoh = zenoh
+        self.open_peers = config_file(url) is None  # no config file: any peer that reaches the session may join
         self._pool = ThreadPoolExecutor(max_workers=8, thread_name_prefix="mesh-rpc")
-        self.session = zenoh.open(zenoh.Config.from_json5(json.dumps(config(url, presence_ttl))))
+        self.session = zenoh.open(session_config(zenoh, url, presence_ttl))
         _OPEN[id(self.session)] = self.session
 
     def publish(self, key: str, payload: bytes) -> None:

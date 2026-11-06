@@ -289,3 +289,21 @@ def test_an_exception_inside_apply_is_reported_and_the_worker_lives_on(lab):
     op.publish(shadow_topic("arm", "control", "update/delta"), json.dumps({"state": {"elbow_flex.pos": 0.2}}).encode())
     _wait(lambda: {"elbow_flex": 0.2} in mirror.applied)
     mirror.stop()
+
+
+def test_the_watchdog_hook_hears_whether_a_shadow_target_was_written(lab):
+    """As for an act rpc: an applied target ends with done(True); one the safety chain refuses with done(False), so a
+    refused target leaves the watchdog as it was."""
+    arm, rec, device, _op, _seen = lab
+    calls: list[tuple[str, str | None]] = []
+    ended: list[bool] = []
+
+    def on_rpc(name, peer):
+        calls.append((name, peer))
+        return ended.append
+
+    mirror = ShadowMirror(device, arm, rec, shadow_hz=1.0, stale_s=None, on_rpc=on_rpc)
+    mirror.apply({"shoulder_pan.pos": 0.2})
+    mirror.apply({"elbow_flex.pos": 3.1})  # past its limit: refused by the safety chain
+    assert calls == [("act", "shadow:arm"), ("act", "shadow:arm")]
+    assert ended == [True, False]
