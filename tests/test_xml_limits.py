@@ -104,3 +104,56 @@ def test_the_xml_walk_matches_mujoco_on_registry_models(name):
     assert a["limits"].keys() == b["limits"].keys()
     for key, rng in a["limits"].items():
         assert _close(rng, b["limits"][key]), key
+
+
+def _attach_models(tmp_path, arm_file="../arm/arm.xml"):
+    (tmp_path / "arm").mkdir()
+    (tmp_path / "sub").mkdir()
+    (tmp_path / "arm" / "arm.xml").write_text(
+        '<mujoco><compiler angle="radian"/><worldbody><body name="A"><joint name="j" range="-0.5 0.5"/>'
+        '<geom size=".1"/></body></worldbody><actuator><position name="pa" joint="j"/></actuator></mujoco>'
+    )
+    (tmp_path / "sub" / "inc.xml").write_text(f'<mujoco><asset><model name="arm" file="{arm_file}"/></asset></mujoco>')
+    (tmp_path / "m.xml").write_text(
+        '<mujoco><include file="sub/inc.xml"/><worldbody><body name="b"><joint name="k" range="-10 10"/>'
+        '<geom size=".1"/><attach model="arm" body="A" prefix="p_"/></body></worldbody>'
+        '<actuator><position name="ka" joint="k"/></actuator></mujoco>'
+    )
+    return tmp_path / "m.xml"
+
+
+@pytest.mark.parametrize("arm_file", ["../arm/arm.xml", "arm/arm.xml"])
+def test_an_attached_model_brings_its_joints_limits_and_actuators(tmp_path, arm_file):
+    out = introspect_xml(_attach_models(tmp_path, arm_file), "mjcf")
+    assert out["joints"] == ["k", "p_j"] and out["actuators"] == ["ka", "p_pa"]
+    assert out["action_joints"] == ["k", "p_j"]
+    assert _close(out["limits"]["k"], (-math.pi / 18, math.pi / 18)) and _close(out["limits"]["p_j"], (-0.5, 0.5))
+
+
+def test_an_attached_model_matches_mujoco(tmp_path):
+    mujoco = pytest.importorskip("mujoco")
+    path = _attach_models(tmp_path)
+    m = mujoco.MjModel.from_xml_path(str(path))
+    out = introspect_xml(path, "mjcf")
+    assert out["joints"] == [m.joint(i).name for i in range(m.njnt)]
+    assert out["actuators"] == [m.actuator(i).name for i in range(m.nu)]
+    for i in range(m.njnt):
+        assert _close(out["limits"][m.joint(i).name], tuple(m.jnt_range[i]))
+
+
+def test_an_actuator_on_a_joint_the_walk_cannot_find_refuses_the_model(tmp_path):
+    (tmp_path / "m.xml").write_text(
+        '<mujoco><worldbody><body><joint name="k" range="-10 10"/><geom size=".1"/></body></worldbody>'
+        '<actuator><position name="ghost" joint="elsewhere"/></actuator></mujoco>'
+    )
+    with pytest.raises(ValueError, match="elsewhere"):
+        introspect_xml(tmp_path / "m.xml", "mjcf")
+
+
+def test_an_attach_whose_model_is_missing_refuses_the_model(tmp_path):
+    (tmp_path / "m.xml").write_text(
+        '<mujoco><asset><model name="arm" file="nowhere.xml"/></asset><worldbody><body name="b"><geom size=".1"/>'
+        '<attach model="arm" body="A" prefix=""/></body></worldbody></mujoco>'
+    )
+    with pytest.raises(ValueError, match="arm"):
+        introspect_xml(tmp_path / "m.xml", "mjcf")
