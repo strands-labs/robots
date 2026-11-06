@@ -12,8 +12,12 @@ import { Twin } from "./twin.js";
 
 const $ = (s) => document.querySelector(s);
 const params = new URLSearchParams(location.search);
-const STATIC = params.get("scene");
-const LOCAL_CLI = params.get("cli") || "127.0.0.1:8090"; // ?cli=host:port — where the reader's CLI listens (tests use a free port)
+// ?scene= must be a file on this page's own origin, and ?cli= a bare host:port: neither may bring markup or another
+// site's scene description into the page (a scene's strings end up in the status chips).
+const sameOrigin = (raw) => { try { return raw && !/^[a-z][a-z0-9+.-]*:|^[\\/]{2}/i.test(raw) && new URL(raw, location.href).origin === location.origin ? raw : null; } catch { return null; } };
+const STATIC = sameOrigin(params.get("scene"));
+const CLI_RE = /^(localhost|127\.0\.0\.1|\[::1\]):\d{1,5}$/;
+const LOCAL_CLI = CLI_RE.test(params.get("cli") || "") ? params.get("cli") : "127.0.0.1:8090"; // ?cli=host:port — where the reader's CLI listens (tests use a free port)
 
 const state = { mode: "loading", base: "", desc: null, fps: 0, bytes: 0, lastFrame: null, ws: null, picked: null, chips: {} };
 const twin = new Twin($("#twin"), { onPick: (robotId) => highlight(robotId) });
@@ -434,7 +438,7 @@ function statusLine() {
   chip("t", t === null ? "" : `t=<b>${t.toFixed(2)}</b>s`);
   if (state.mode === "server") chip("net", `<b>${state.fps}</b> fps · ${(state.bytes / 1024).toFixed(1)} KB/s`);
   chip("model", twin.model ? `<b>${twin.model.ngeom}</b> geoms · ${twin.model.njnt} joints · compiled ${Math.round(twin.compileMs || 0)} ms` : "", "opt");
-  chip("rev", twin.revision !== null ? `rev ${twin.revision}` : "", "opt");
+  chip("rev", twin.revision !== null ? `rev ${esc(twin.revision)}` : "", "opt");
   chip("unres", twin.unresolved ? `${twin.unresolved} unresolved names` : "", "warn");
 }
 
@@ -673,7 +677,7 @@ async function probe() {
     await standalone(why);
   } catch (err) {
     setMode("error", "error");
-    notice(err.message, true);
+    notice(esc(err.message), true);
     window.__error = String(err.message || err);
     throw err;
   }

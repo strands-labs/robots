@@ -37,7 +37,7 @@ def test_two_robots_are_painted_from_the_scene(served) -> None:
         assert any(j.startswith("so101/") for j in joints)
         assert any(j.startswith("unitree_g1/") for j in joints)
         assert page.evaluate("window.__twin.model.nmesh") == Dashboard(sim).scene_json()["stats"]["nmesh"]
-        page.wait_for_function("window.__twin.frames > 5", timeout=20_000)
+        page.wait_for_function("() => window.__twin.frames > 5", timeout=20_000)
         assert page.evaluate("window.__twin.geoms.length") > 0
         MEDIA.mkdir(parents=True, exist_ok=True)
         page.screenshot(path=str(MEDIA / "row1-two-robots.png"))

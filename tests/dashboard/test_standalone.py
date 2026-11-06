@@ -64,7 +64,9 @@ def site() -> Iterator[str]:
 @pytest.fixture(scope="module")
 def page(site: str) -> Iterator[Any]:
     with page_on(site, timeout_ms=120_000) as pg:
-        pg.wait_for_function("window.__standalone && window.__standalone.stats || window.__error", timeout=120_000)
+        pg.wait_for_function(
+            "() => window.__standalone && window.__standalone.stats || window.__error", timeout=120_000
+        )
         yield pg
 
 
@@ -116,7 +118,7 @@ def test_s3_w_walks_it_a_metre(page: Any) -> None:
 def test_s4_switching_skill_changes_the_motion(page: Any) -> None:
     t0 = page.evaluate("window.__standalone.stats.t")
     page.select_option("#skill", "velstand")
-    page.wait_for_function("window.__standalone.skill === 'velstand'", timeout=20_000)
+    page.wait_for_function("() => window.__standalone.skill === 'velstand'", timeout=20_000)
     page.evaluate("window.__standalone.command(0, 0, 1.0)")
     s = _samples(page, 6)
     page.evaluate("window.__standalone.command(0, 0, 0)")
@@ -149,7 +151,7 @@ def test_s6_with_a_server_the_page_never_steps_physics(page: Any) -> None:
     sign_in(pg.context, server.url)
     try:
         pg.goto(server.url, wait_until="commit", timeout=60_000)
-        pg.wait_for_function("window.__sceneLoaded >= 1 || window.__error", timeout=60_000)
+        pg.wait_for_function("() => window.__sceneLoaded >= 1 || window.__error", timeout=60_000)
         time.sleep(2.0)
         got = pg.evaluate(
             """({mode: document.querySelector('#mode').dataset.mode, loop: window.__standalone || null,

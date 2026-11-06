@@ -41,7 +41,7 @@ def test_server_act_reaches_the_twin_within_200ms() -> None:
     server = Dashboard(sim).start()
     try:
         with page_on(server.url) as page:
-            page.wait_for_function("window.__twin.frames > 5", timeout=20_000)
+            page.wait_for_function("() => window.__twin.frames > 5", timeout=20_000)
             key = arm.action_keys[0]
             joint = f"{arm.id}/{arm.description.unlabel(key)}"
             names = page.evaluate("window.__twin.model.jnt_names")
@@ -57,7 +57,7 @@ def test_server_act_reaches_the_twin_within_200ms() -> None:
                 value = float(obs.joints.positions[0])
                 assert abs(value - before) > 1e-6
                 page.evaluate(PROBE, [adr, value])
-                page.wait_for_function("window.__probe.hit !== null", timeout=5_000, polling=5)
+                page.wait_for_function("() => window.__probe.hit !== null", timeout=5_000, polling=5)
                 latencies.append(page.evaluate("window.__probe.hit") - t0)
             assert not page.errors, page.errors
     finally:

@@ -40,18 +40,18 @@ def test_the_connect_panel_attaches_moves_estops_and_resumes_a_peers_arm() -> No
     try:
         with page_on(server.url) as page:
             page.on("dialog", lambda d: (asked.append(d.message), d.accept()))
-            page.wait_for_function("window.__connect && window.__connect.ready", timeout=120_000)
+            page.wait_for_function("() => window.__connect && window.__connect.ready", timeout=120_000)
             page.evaluate("window.SR.select('connect')")  # a side-column tab: hidden until picked
             page.locator('#cx-peers [data-attach="far_arm"]').dispatch_event("click")
             page.wait_for_selector(f"{ARM} img", timeout=30_000)
             page.wait_for_function(
-                "document.querySelector('#cx-robots img').naturalWidth === 96", timeout=30_000
+                "() => document.querySelector('#cx-robots img').naturalWidth === 96", timeout=30_000
             )  # the peer's own camera frame, not a render of this world
 
             page.locator(f'{ARM} input[data-joint="shoulder_pan"]').evaluate(
                 "el => { el.value = '0.6'; el.dispatchEvent(new Event('change', { bubbles: true })); }"
             )
-            page.wait_for_function("(window.__connect.acts || []).length === 1", timeout=30_000)
+            page.wait_for_function("() => (window.__connect.acts || []).length === 1", timeout=30_000)
             assert asked and "real robot" in asked[0]  # the operator is asked before a remote arm moves
             assert page.evaluate("window.__connect.acts[0].status") == 200
             assert arm.observe(images=False).joints["shoulder_pan"] == pytest.approx(0.6, abs=0.1)
@@ -59,13 +59,13 @@ def test_the_connect_panel_attaches_moves_estops_and_resumes_a_peers_arm() -> No
             n = len(asked)
             page.locator(f'{ARM} [data-estop="far_arm"]').dispatch_event("click")
             page.wait_for_function(
-                "window.__connect.robots.find((r) => r.id === 'far_arm').estop === true", timeout=30_000
+                "() => window.__connect.robots.find((r) => r.id === 'far_arm').estop === true", timeout=30_000
             )
             assert arm.estopped and len(asked) == n  # latched on the device; stopping never asks
 
             page.locator(f'{ARM} [data-resume="far_arm"]').dispatch_event("click")
             page.wait_for_function(
-                "window.__connect.robots.find((r) => r.id === 'far_arm').estop === false", timeout=30_000
+                "() => window.__connect.robots.find((r) => r.id === 'far_arm').estop === false", timeout=30_000
             )
             assert not arm.estopped and "Release the e-stop" in asked[-1]
 
