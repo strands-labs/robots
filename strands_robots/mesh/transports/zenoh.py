@@ -165,7 +165,9 @@ class ZenohTransport:
 
     def query(self, key: str, payload: bytes, timeout: float) -> list[bytes]:
         out, errors = [], []
-        for r in self.session.get(key, payload=payload, timeout=timeout):
+        # every answer, not zenoh's default of one per key: a second, different answer must reach the_reply
+        every = self._zenoh.ConsolidationMode.NONE
+        for r in self.session.get(key, payload=payload, timeout=timeout, consolidation=every):
             if r.ok is not None:
                 out.append(r.ok.payload.to_bytes())
             elif r.err is not None:

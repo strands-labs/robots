@@ -69,3 +69,22 @@ def test_liveliness_appears_and_disappears(pair, tenant):
     assert _wait(lambda: seen.get(key) is True)
     drop()
     assert _wait(lambda: seen.get(key) is False)
+
+
+def test_a_zenoh_query_returns_every_answer(tenant, port):
+    pytest.importorskip("zenoh")
+    a = open_transport(f"zenoh://?listen=tcp/127.0.0.1:{port}")
+    b = open_transport(f"zenoh://?connect=tcp/127.0.0.1:{port}")
+    c = open_transport(f"zenoh://?connect=tcp/127.0.0.1:{port}")
+    try:
+        key = f"strands/{tenant}/arm/rpc/observe"
+        a.queryable(key, lambda k, p: b"one")
+        c.queryable(key, lambda k, p: b"two")
+        end = time.monotonic() + 3.0
+        got: list[bytes] = []
+        while len(got) < 2 and time.monotonic() < end:
+            got = b.query(key, b"", 2.0)
+        assert sorted(got) == [b"one", b"two"], "two answerers on one key: both answers reach the caller"
+    finally:
+        for t in (c, b, a):
+            t.close()

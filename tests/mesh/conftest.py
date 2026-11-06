@@ -15,6 +15,12 @@ def free_port() -> int:
 
 
 @pytest.fixture
+def port() -> int:
+    """A free loopback tcp port for a zenoh listener."""
+    return free_port()
+
+
+@pytest.fixture
 def tenant() -> str:
     return f"t{os.getpid()}-{uuid.uuid4().hex[:8]}"
 
