@@ -28,7 +28,7 @@ class Server:
 
     @property
     def url(self) -> str:
-        return f"http://{self.host}:{self.port}"
+        return f"http://localhost:{self.port}"  # the loopback name passkeys work on (not a raw IP)
 
     def run(self) -> None:
         self._server.run()

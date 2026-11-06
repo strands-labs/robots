@@ -211,6 +211,7 @@ def test_page_events_map_the_agent_stream() -> None:
 def test_page_mic_button_streams_and_logs_the_turn() -> None:
     """Chromium's fake microphone (a tone) through voice.js -> /ws/voice -> the scripted model -> the chat log."""
     sync_api = pytest.importorskip("playwright.sync_api")
+    from .browser import sign_in
     from .test_twin_page import MEDIA
 
     sim = Simulation()
@@ -233,6 +234,7 @@ def test_page_mic_button_streams_and_logs_the_turn() -> None:
             except Exception as exc:  # noqa: BLE001
                 pytest.skip(f"chromium unavailable: {exc}")
             ctx = browser.new_context(viewport={"width": 1400, "height": 860}, permissions=["microphone"])
+            sign_in(ctx, server.url)
             page = ctx.new_page()
             errors: list[str] = []
             page.on("pageerror", lambda e: errors.append(str(e)))

@@ -28,7 +28,7 @@ pytest.importorskip("onnxruntime")
 from strands_robots import Robot, Simulation  # noqa: E402
 from strands_robots.dashboard import Dashboard, standalone  # noqa: E402
 
-from .browser import page_on  # noqa: E402
+from .browser import page_on, sign_in  # noqa: E402
 from .test_twin_page import MEDIA  # noqa: E402
 
 PRESET, FACTS = standalone.browser_preset()
@@ -146,6 +146,7 @@ def test_s6_with_a_server_the_page_never_steps_physics(page: Any) -> None:
     server = Dashboard(sim).start()
     page.goto("about:blank")  # the standalone world stops; one browser, one heavy page at a time
     pg = page.context.browser.new_page(viewport={"width": 1400, "height": 860})
+    sign_in(pg.context, server.url)
     try:
         pg.goto(server.url, wait_until="commit", timeout=60_000)
         pg.wait_for_function("window.__sceneLoaded >= 1 || window.__error", timeout=60_000)

@@ -80,4 +80,4 @@ uv pip install "strands-robots[dashboard,mujoco] @ git+https://github.com/strand
 python -m strands_robots.dashboard
 ```
 
-Open `http://127.0.0.1:8090`. See [Dashboard](dashboard.md) for options.
+Open `http://localhost:8090`. See [Dashboard](dashboard.md) for options.

@@ -1,7 +1,8 @@
-"""Routes: GET / · /api/scene · /api/assets/{path} · /api/policies · /api/mesh · /api/voice · WS /ws/state · /ws/chat ·
-/ws/voice · POST /api/robots · POST|GET /api/robots/{id}/run · POST /api/robots/{id}/{act,stop,estop,resume} · POST
-/api/mesh/{id}/estop · GET /api/cameras[/{name}.png] · POST /api/world · GET /api/panels · POST
-/api/record/{start,stop,episode/save,episode/discard} · GET /api/record/{status,options} · GET /vendor/*.wasm."""
+"""Routes: GET / · /auth/* (dashboard/auth/) · /api/scene · /api/assets/{path} · /api/policies · /api/mesh · /api/voice
+· /api/passkeys · WS /ws/state · /ws/chat · /ws/voice · POST /api/robots · POST|GET /api/robots/{id}/run · POST
+/api/robots/{id}/{act,stop,estop,resume} · POST /api/mesh/{id}/estop · GET /api/cameras[/{name}.png] · POST /api/world ·
+GET /api/panels · POST /api/record/{start,stop,episode/save,episode/discard} · GET /api/record/{status,options} · GET
+/vendor/*.wasm. Every /api and /ws route needs a signed-in session."""
 
 from __future__ import annotations
 
@@ -16,6 +17,7 @@ from fastapi.staticfiles import StaticFiles
 
 from . import cameras, connect_routes, record_routes, runs, voice_routes
 from . import vendor as _vendor
+from .auth import routes as auth_routes
 from .guard import SameOrigin
 
 if TYPE_CHECKING:
@@ -44,11 +46,8 @@ def http_error(exc: Exception) -> HTTPException:
 
 def build_app(dash: Dashboard) -> FastAPI:
     app = FastAPI(title="strands-robots dashboard", docs_url=None, redoc_url=None)
-    app.add_middleware(SameOrigin)
-
-    @app.get("/")
-    async def index() -> FileResponse:
-        return FileResponse(STATIC / "index.html")
+    auth_routes.install(app, dash.auth)  # RequireSession on /api/* and /ws/*, then the /auth/* ceremony routes
+    app.add_middleware(SameOrigin)  # added last, so it runs first
 
     @app.get("/api/scene")
     async def scene() -> JSONResponse:
@@ -236,7 +235,7 @@ def build_app(dash: Dashboard) -> FastAPI:
 
     for name in _vendor.FILES:  # the 20 MB engines live in the user cache, not the package (vendor.py)
         app.add_api_route(f"/vendor/{name}", _engine(name), methods=["GET"], include_in_schema=False)
-    app.mount("/", StaticFiles(directory=STATIC), name="static")
+    app.mount("/", StaticFiles(directory=STATIC, html=True), name="static")  # / is index.html
     return app
 
 

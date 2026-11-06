@@ -74,7 +74,7 @@ The default model runs on Amazon Bedrock, so you need AWS credentials. See [Agen
 ```python
 from strands_robots.dashboard import Dashboard
 
-Dashboard(arm.sim).serve(port=8090)  # http://127.0.0.1:8090
+Dashboard(arm.sim).serve(port=8090)  # http://localhost:8090
 ```
 
 See [Dashboard](dashboard.md).

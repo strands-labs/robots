@@ -13,6 +13,8 @@ PKG = Path(strands_robots.__file__).parent
 WEB = {"fastapi", "starlette", "uvicorn"}
 WEB_FILES = {
     "dashboard/app.py",
+    "dashboard/auth/guard.py",
+    "dashboard/auth/routes.py",
     "dashboard/connect_routes.py",
     "dashboard/guard.py",
     "dashboard/record_routes.py",
