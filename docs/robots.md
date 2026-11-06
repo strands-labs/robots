@@ -20,12 +20,15 @@ d.describe()        # a JSON-safe summary
 
 `Description.load` takes a registry name, an alias, a `robot_descriptions` name, or a path to an MJCF or URDF file.
 The registry has 76 robots. Models are downloaded on first use into `$STRANDS_ROBOTS_CACHE`
-(default `~/.cache/strands_robots`).
+(default `~/.cache/strands_robots`). A model hosted on GitHub is fetched at the commit its registry entry pins
+(`asset.source.commit`) and must hash to the entry's `asset.source.sha256` (`description.assets.tree_digest`), or
+nothing is cached. The joint limits come from these files, so they change only with a registry edit.
 
 | Error | Cause |
 |---|---|
 | `KeyError` | The name is not in the registry. |
 | `FileNotFoundError` | The robot is hardware only and has no simulation model. |
+| `AssetMismatch` (an `OSError`) | A GitHub-hosted model is not the commit or content its registry entry pins. |
 
 ## Data types
 

@@ -647,7 +647,9 @@
         "source": {
           "type": "github",
           "repo": "pollen-robotics/reachy_mini",
-          "subdir": "src/reachy_mini/descriptions/reachy_mini"
+          "subdir": "src/reachy_mini/descriptions/reachy_mini",
+          "commit": "25756e7042e453bfd89ed46bebfee3dbc35f39be",
+          "sha256": "b9ae36d521cb290fdaa675ae0e7f4a67db1ac352c1d69d3b8b011744c01fc342"
         }
       },
       "aliases": [
@@ -859,7 +861,9 @@
         "source": {
           "type": "github",
           "repo": "asimovinc/asimov-v0",
-          "subdir": "sim-model"
+          "subdir": "sim-model",
+          "commit": "759204f531b071e65540e8b31d89736a3d09e0dd",
+          "sha256": "cac85ff9814c947fc6d5a612a61897e820e90d30dbf2d7ae7f814651048e3037"
         }
       },
       "aliases": [
@@ -970,7 +974,9 @@
         "source": {
           "type": "github",
           "repo": "pollen-robotics/microduck_rl",
-          "subdir": "src/mjlab_microduck/robot/microduck"
+          "subdir": "src/mjlab_microduck/robot/microduck",
+          "commit": "bae39f5900b318f7e87fc485c30a31213cfa14eb",
+          "sha256": "be0f4bdb3c1cc2707a406d20b58255392076bcd171cd3e65fc8a27da5191346d"
         }
       },
       "aliases": [
@@ -1037,7 +1043,9 @@
         "source": {
           "type": "github",
           "repo": "apirrone/Open_Duck_Mini",
-          "subdir": "mini_bdx/robots/open_duck_mini_v2"
+          "subdir": "mini_bdx/robots/open_duck_mini_v2",
+          "commit": "b23317a485b3cec7d8417f352478778b3475173c",
+          "sha256": "5fefbb3355cf190e0b13c63fc1298f41b20f745b914e6ecf86fa8d69569fc470"
         }
       },
       "aliases": [
@@ -1339,7 +1347,9 @@
         "source": {
           "type": "github",
           "repo": "Ekumen-OS/lekiwi",
-          "subdir": "packages/lekiwi_sim/lekiwi_sim/assets"
+          "subdir": "packages/lekiwi_sim/lekiwi_sim/assets",
+          "commit": "32cf6a69eb320cc22620cdaa529e35f20fc12b1f",
+          "sha256": "65244ffe9c9bcb5beaee43cabba6f2715d2e5c26562df9d6d352bf1d69a2adeb"
         }
       },
       "hardware": {
@@ -1364,7 +1374,9 @@
         "source": {
           "type": "github",
           "repo": "dimwael/yahboom_m3pro_description",
-          "subdir": "mjcf"
+          "subdir": "mjcf",
+          "commit": "bdac682e57a8eeaf7b18eece44bfbfc54de98e8a",
+          "sha256": "d25a30946d706a52af294a62405c03c12cc55a0a2e1d8b12b4ea64931c23efba"
         }
       },
       "gripper": {
