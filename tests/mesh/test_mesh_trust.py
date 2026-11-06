@@ -172,3 +172,37 @@ def test_a_real_robot_on_a_mesh_anyone_may_join_is_reported(tenant, caplog):
     assert any("STRANDS_ZENOH_CONFIG" in r.getMessage() for r in caplog.records)
     mesh.close()
     real.close()
+
+
+def test_a_second_peer_answering_for_a_device_on_zenoh_is_refused(tenant, port):
+    pytest.importorskip("zenoh")
+    from strands_robots.mesh import Mesh
+    from strands_robots.mesh.transports import open_transport
+
+    dev = Mesh(f"zenoh://?listen=tcp/127.0.0.1:{port}", tenant=tenant)
+    op = Mesh(f"zenoh://?connect=tcp/127.0.0.1:{port}", tenant=tenant)
+    other = open_transport(f"zenoh://?connect=tcp/127.0.0.1:{port}")
+    arm = Robot("so101")
+    try:
+        dev.mount(arm, device_id="arm")
+        assert op.discover("arm", min_count=1, timeout=3.0)
+
+        def answer(key: str, payload: bytes) -> bytes:
+            seq = wire.decode_envelope(payload)["seq"]
+            error = {"type": "EStopped", "message": "engaged"}
+            return wire.encode(wire.envelope(tenant, "arm", "error", "lockout", seq=seq, error=error))
+
+        other.queryable(wire.key("rpc", tenant, "arm", "lockout"), answer)
+        time.sleep(0.5)  # the second queryable reaches the operator's session
+        outcomes = set()
+        for _ in range(10):
+            try:
+                outcomes.add(str(op.invoke("arm", "lockout")["engaged"]))
+            except RemoteError as exc:
+                outcomes.add("refused" if "different answers" in str(exc) else str(exc))
+        assert outcomes == {"refused"}, f"a second answerer must never be believed, nor drop the device's: {outcomes}"
+    finally:
+        other.close()
+        op.close()
+        dev.close()
+        arm.close()
