@@ -8,7 +8,9 @@ zenoh peers carry no identity by default: anything that joins the session can pu
 may join, give a zenoh config file (``?config=<path>`` or ``STRANDS_ZENOH_CONFIG``): TLS with client certificates on
 ``tls/`` endpoints, user/password authentication, access control. The file is the session's config; this module only
 adds the lease, any ``?listen=``/``?connect=``, and the strands scouting group and peer mode when the file sets
-neither. ``ZenohTransport.open_peers`` is True when no file was given.
+neither. ``ZenohTransport.open_peers`` is True when no file was given and the network is not vouched for with
+``?trusted=1`` or ``STRANDS_ZENOH_TRUSTED=1`` (a VLAN or WireGuard only the lab reaches): a real robot on such a mesh
+is served observe-only.
 """
 
 from __future__ import annotations
@@ -104,6 +106,12 @@ def config_file(url: str) -> str | None:
     return os.path.expanduser(path) if path else None
 
 
+def trusted(url: str) -> bool:
+    """The operator vouches for the network itself (``?trusted=1`` or ``STRANDS_ZENOH_TRUSTED=1``)."""
+    q = parse_qs(urlparse(url).query)
+    return (q.get("trusted") or [os.environ.get("STRANDS_ZENOH_TRUSTED", "")])[0].lower() in ("1", "true", "yes")
+
+
 def session_config(zenoh: Any, url: str, presence_ttl: float = 3.0) -> Any:
     """The ``zenoh.Config``: :func:`config` alone, or the config file with what :func:`config` decides laid over it."""
     ours, path = config(url, presence_ttl), config_file(url)
@@ -128,7 +136,7 @@ class ZenohTransport:
         zenoh = _zenoh()
         self.url = url
         self._zenoh = zenoh
-        self.open_peers = config_file(url) is None  # no config file: any peer that reaches the session may join
+        self.open_peers = config_file(url) is None and not trusted(url)  # any peer that reaches it may join
         self._pool = ThreadPoolExecutor(max_workers=8, thread_name_prefix="mesh-rpc")
         self.session = zenoh.open(session_config(zenoh, url, presence_ttl))
         _OPEN[id(self.session)] = self.session

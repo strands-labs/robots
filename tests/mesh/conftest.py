@@ -15,6 +15,12 @@ def free_port() -> int:
 
 
 @pytest.fixture
+def port() -> int:
+    """A free loopback tcp port for a zenoh listener."""
+    return free_port()
+
+
+@pytest.fixture
 def tenant() -> str:
     return f"t{os.getpid()}-{uuid.uuid4().hex[:8]}"
 
@@ -51,7 +57,8 @@ def mesh_pair(request, tenant):
     else:
         pytest.importorskip("zenoh")
         port = free_port()
-        ua, ub = f"zenoh://?listen=tcp/127.0.0.1:{port}", f"zenoh://?connect=tcp/127.0.0.1:{port}"
+        # loopback only: the test vouches for this network, so a real body here still takes motion rpcs
+        ua, ub = f"zenoh://?listen=tcp/127.0.0.1:{port}&trusted=1", f"zenoh://?connect=tcp/127.0.0.1:{port}"
     a, b = Mesh(ua, tenant=tenant), Mesh(ub, tenant=tenant)
     yield a, b
     b.close()

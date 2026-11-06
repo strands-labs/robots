@@ -35,7 +35,9 @@ Each robot runs its own safety chain on mesh commands. A remote caller cannot ap
 the caller disappears, the robot does what `on_disconnect` says.
 
 A real robot mounted with `watchdog_ms=None` only answers `observe` and `describe`. Set `watchdog_ms=` to move it
-over the mesh.
+over the mesh. A real robot on a mesh any machine may join is observe-only as well (see "Securing the mesh"): on
+such a mesh the peer id a request carries is only a claim, so any machine could move the robot, or keep its
+watchdog from noticing that the real mover is gone.
 
 The watchdog arms only on a move the robot carried out. A move it refused, for bad arguments or by its safety
 chain, changes nothing, so a request that moved nothing can never make it apply `on_disconnect`. Every
@@ -44,12 +46,15 @@ answers (a second peer answering for the robot), `invoke` raises `RemoteError` i
 
 ## Securing the mesh
 
-A plain `zenoh://` mesh lets any machine that reaches it join. That machine can read state and cameras, answer
-for a robot, and send it commands that its safety chain then checks. Mounting a real robot on such a mesh logs an
-audit warning. To say who may join, give zenoh a config file with `?config=<path>` or `STRANDS_ZENOH_CONFIG`. That
-file can set TLS with client certificates on `tls/` endpoints, user and password authentication, and access
-control. The file is the session's config. The mesh adds only its lease, any `?listen=` or `?connect=`, peer mode if
-the file sets no mode, and its scouting group if the file sets neither `scouting.multicast.enabled` nor its `address`.
+A plain `zenoh://` mesh lets any machine that reaches it join. That machine can read state and cameras, answer for a
+robot, and send it commands that its safety chain then checks. A real robot mounted on such a mesh refuses `act` and
+`hold` (it still answers reads, stops and the e-stop), and an audit warning says so. To move it over the mesh, either
+say who may join with a config file (below), or vouch for the network itself with `zenoh://?trusted=1` or
+`STRANDS_ZENOH_TRUSTED=1`, for a VLAN or WireGuard network that only the lab reaches. To say who may join, give zenoh a
+config file with `?config=<path>` or `STRANDS_ZENOH_CONFIG`. That file can set TLS with client certificates on `tls/`
+endpoints, user and password authentication, and access control. The file is the session's config. The mesh adds only
+its lease, any `?listen=` or `?connect=`, peer mode if the file sets no mode, and its scouting group if the file sets
+neither `scouting.multicast.enabled` nor its `address`.
 
 TLS settings guard only `tls/` links. A peer that scouts the robot can still offer a plain `tcp/` locator, and zenoh
 connects to it. To admit only certificate holders, allow only the `tls` protocol and turn scouting off:
