@@ -16,7 +16,7 @@ from ...types import Observation
 from ..clock import MONOTONIC
 from ..safety import apply_on_disconnect
 from .bind import Bound, bind, install_gains, looks, release
-from .common import announce, approve_run, emit, label, rate
+from .common import announce, approve_run, check_files, emit, files_digest, label, rate
 from .pace import OnMiss, Pacer
 from .result import RunResult, StoppedBy
 from .source import RunPlan, is_agent, is_confirmed
@@ -61,10 +61,13 @@ def run(
         raise ValueError("run needs seconds=, steps= or stop_when=")
     if hz is not None and not 0 < hz < float("inf"):  # at an inf or nan hz no tick sleeps: the bus free-runs
         raise ValueError(f"hz must be a finite number > 0, got {hz}")  # before bind: a bad hz loads no checkpoint
+    plan = None
     if is_agent() and robot.is_real and not is_confirmed():  # a real agent run asks the operator ONCE (K6),
-        approve_run(robot, RunPlan(robot.id, label(policy), instruction, hz, seconds, steps, units))  # before acquire
+        plan = RunPlan(robot.id, label(policy), instruction, hz, seconds, steps, units, files_digest(policy))
+        approve_run(robot, plan)  # before acquire
     bound = bind(robot, policy, units)
     try:
+        check_files(robot, plan, policy)  # read after the yes: refuse files that changed while it was asked
         ep = episode(  # before the start-pose ramp: a run that cannot be recorded never moves the robot
             record,
             description=robot.description,
