@@ -10,7 +10,7 @@ from typing import TYPE_CHECKING, Any
 
 import numpy as np
 
-from ..recording import Episode, is_repo_id
+from ..recording import Episode, is_repo_id, repo_id
 
 if TYPE_CHECKING:
     from ..robot import Robot
@@ -32,6 +32,10 @@ def inside(target: str) -> str:
     :func:`recordings_dir`, an absolute path only inside it. A dataset is created or resumed (and an aborted take
     deleted) at that path, so the page never names one elsewhere (``..`` and symlinks resolved first)."""
     if is_repo_id(target):
+        try:
+            repo_id(target)  # an owner or name of "..", or with "..", would leave lerobot's cache
+        except ValueError as e:
+            raise PermissionError(str(e)) from None
         return target
     base = recordings_dir().resolve()
     path = (base / Path(target).expanduser()).resolve()  # an absolute target replaces base in the join

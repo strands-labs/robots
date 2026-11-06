@@ -29,6 +29,12 @@ def test_a_target_outside_the_recordings_directory_is_refused(dash, tmp_path, ta
         _plan(dash, target)
 
 
+@pytest.mark.parametrize("target", ["hf://../escaped", "hf://x/..", "hf://../..", "hf://me/a..b", "hf://.x/set"])
+def test_a_hub_id_that_would_leave_the_cache_is_refused(dash, target):
+    with pytest.raises(PermissionError, match="hf://owner/name"):
+        _plan(dash, target)
+
+
 def test_a_symlink_out_of_the_recordings_directory_is_refused(dash, tmp_path):
     outside = tmp_path.parent / f"{tmp_path.name}-elsewhere"
     outside.mkdir()
