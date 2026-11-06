@@ -18,6 +18,20 @@ LEROBOT_HINT = (
 )
 
 
+def new_bag(record_dir: str | Path | None) -> Path:
+    """A fresh timestamped path under the developer's ``record_dir``; never an existing bag's."""
+    if record_dir is None:
+        raise ValueError("record is off: the developer passes use_ros(record_dir=...) to say where bags may go")
+    base = Path(record_dir).expanduser()
+    base.mkdir(parents=True, exist_ok=True)
+    stamp = time.strftime("%Y%m%d-%H%M%S")
+    dest, n = base / stamp, 0
+    while dest.exists() or dest.with_suffix(".jsonl").exists():
+        n += 1
+        dest = base / f"{stamp}-{n}"
+    return dest
+
+
 def record(bus: RosBus, topics: dict[str, str], seconds: float, path: str | Path) -> dict[str, Any]:
     """``topics``: {name: type}. Returns per-topic message counts and the file written."""
     seconds = positive(seconds, "seconds")

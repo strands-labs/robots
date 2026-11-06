@@ -58,6 +58,9 @@ the refusal) include velocity and joint command topics, ros2_control's `/<contro
 controller manager's `switch_controller`, `load_controller`, `configure_controller`, `unload_controller` and
 `set_hardware_component_state`. A topic a `Robot` streams is always refused: use that robot's own tool.
 
+`record` writes a timestamped bag under a directory you choose, `use_ros(record_dir="~/bags")`. The model never names
+the path, and without `record_dir` the verb is off.
+
 ## Your own robot
 
 Put a profile in a directory on `STRANDS_ROBOTS_ROS_PROFILES`, or ship it in a package under the

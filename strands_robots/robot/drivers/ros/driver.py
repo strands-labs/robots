@@ -137,7 +137,8 @@ class RosDriver:
 
     def _armed(self, frame: Any) -> tuple[bool, str]:
         ok, why = self.codec.armed(self._latest("status"), frame)
-        if ok and self.profile.need("command").get("requires_release") and not self.released:
+        cmd = self.profile.stream("command") or {}  # an observe-only profile has none: nothing to release
+        if ok and cmd.get("requires_release") and not self.released:
             return False, "not armed: pass released=True once the vendor's motion controller is released"
         return ok, why
 

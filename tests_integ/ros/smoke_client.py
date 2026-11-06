@@ -83,7 +83,7 @@ try:
     check("use_ros fails closed on /cmd_vel with no operator", False)
 except CommandRefused as e:
     check("use_ros fails closed on /cmd_vel with no operator", "STRANDS_ROS_ALLOW" in str(e))
-r = dispatch(bus, gate, "record", {"topics": ["/joint_states"], "seconds": 1.0, "path": "/tmp/smoke_bag"})
+r = dispatch(bus, gate, "record", {"topics": ["/joint_states"], "seconds": 1.0}, record_dir="/tmp/smoke_bags")
 check(
     "use_ros record (rosbag2 mcap or jsonl)", r["counts"]["/joint_states"] > 30, {k: r[k] for k in ("format", "counts")}
 )

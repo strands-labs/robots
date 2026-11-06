@@ -201,6 +201,28 @@ def test_a_decoy_target_key_never_moves_the_gate_off_the_real_target(ros, verb, 
     bus.close()
 
 
+def test_record_writes_only_under_the_developers_directory(ros, tmp_path):
+    from strands_robots.ros.bus import RosBus
+    from strands_robots.ros.gate import CommandGate
+    from strands_robots.ros.verbs import dispatch
+
+    notes = tmp_path / "notes.jsonl"
+    notes.write_text("keep me\n")
+    gate = CommandGate(allow=frozenset(), approve=None)
+    bus = RosBus().start()
+    args = {"topics": {"/chatter": "std_msgs/msg/String"}, "seconds": 0.05}
+    with pytest.raises(ValueError, match="takes no path"):  # a model never chooses where a file goes
+        dispatch(bus, gate, "record", {**args, "path": str(notes)}, record_dir=tmp_path / "bags")
+    with pytest.raises(ValueError, match="record_dir"):
+        dispatch(bus, gate, "record", args)
+    assert notes.read_text() == "keep me\n" and not (tmp_path / "bags").exists()
+    first = dispatch(bus, gate, "record", args, record_dir=tmp_path / "bags")
+    second = dispatch(bus, gate, "record", args, record_dir=tmp_path / "bags")
+    written = sorted(p.name for p in (tmp_path / "bags").iterdir())
+    assert len(written) == 2 and first != second  # a second bag never overwrites the first
+    bus.close()
+
+
 def test_stop_takes_only_an_installed_profile_name_and_a_plain_sender(ros, tmp_path, monkeypatch):
     import json
 

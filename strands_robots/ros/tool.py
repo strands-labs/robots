@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Mapping
+from pathlib import Path
 from typing import Any
 
 from . import profile as _profile
@@ -30,7 +31,7 @@ Args:
     args: JSON object for the verb, e.g. {{"topic": "/joint_states", "count": 1}};
         publish {{"topic","type","fields","count","rate"}}; call {{"service","type","request"}};
         goal {{"action","type","goal","timeout"}}; params {{"node","names"}}; set_param {{"node","name","value"}};
-        tf {{"target","source"}}; record {{"topics": [...], "seconds", "path"}};
+        tf {{"target","source"}}; record {{"topics": [...], "seconds"}} (into the developer's directory);
         stop {{"profile": an installed profile name, never a path, "sender_id"}}.
 """
 
@@ -43,8 +44,15 @@ def _err(e: Exception) -> dict[str, Any]:
     return {"status": "error", "content": [{"text": f"{type(e).__name__}: {e}"}]}
 
 
-def use_ros(bus: RosBus | None = None, *, approve: Approver | None = None, extra_surfaces: tuple[str, ...] = ()) -> Any:
-    """Build the tool. ``bus`` defaults to the process's shared RosBus (made on first use)."""
+def use_ros(
+    bus: RosBus | None = None,
+    *,
+    approve: Approver | None = None,
+    extra_surfaces: tuple[str, ...] = (),
+    record_dir: str | Path | None = None,
+) -> Any:
+    """Build the tool. ``bus`` defaults to the process's shared RosBus (made on first use). ``record`` writes a
+    timestamped bag under ``record_dir`` and is refused without it: a model never decides where a file goes."""
     from strands import tool
     from strands.interrupt import InterruptException
 
@@ -78,7 +86,7 @@ def use_ros(bus: RosBus | None = None, *, approve: Approver | None = None, extra
                 approve=interrupt_approver(tool_context),
                 owners=b.owners,
             )
-            return _ok(dispatch(b, gate, verb, dict(args or {})))
+            return _ok(dispatch(b, gate, verb, dict(args or {}), record_dir=record_dir))
         except InterruptException:  # the human is being asked: the agent must see it
             raise
         except Exception as e:  # noqa: BLE001 - the model reads the refusal and corrects its next call

@@ -204,6 +204,28 @@ def test_any_ros2_control_arm_with_model_from_robot_description(ros):
         arm.close()
 
 
+def test_an_observe_only_profile_observes_and_refuses_to_write(ros, tmp_path, monkeypatch):
+    import json
+    from importlib import resources
+
+    from strands_robots import ros as sros
+
+    prof = json.loads(resources.files("strands_robots.ros.profiles").joinpath("ros2_control.json").read_text())
+    del prof["command"]  # watch /joint_states before writing anything
+    (tmp_path / "watch_arm.json").write_text(json.dumps(prof))
+    monkeypatch.setenv("STRANDS_ROBOTS_ROS_PROFILES", str(tmp_path))
+    arm = FakeArm()
+    try:
+        robot = sros.connect("watch_arm", timeout=1.0)
+        obs = robot.observe(images=False)
+        np.testing.assert_allclose(obs.joints.positions, [0.1, -0.2, 0.3])
+        with pytest.raises(Exception, match="observe-only"):
+            robot.act({"elbow": 0.5})
+        assert not arm.commands
+    finally:
+        arm.close()
+
+
 def test_ros2_control_arm_without_a_controller_joint_order_streams_nothing(ros):
     from strands_robots import ros as sros
 

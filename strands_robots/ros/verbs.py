@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import re
 import time
+from pathlib import Path
 from typing import Any
 
 from . import calls
@@ -50,7 +51,10 @@ def _type_of(bus: RosBus, topic: str, given: str | None) -> str:
     return types[0]
 
 
-def dispatch(bus: RosBus, gate: CommandGate, verb: str, a: dict[str, Any]) -> Any:
+def dispatch(
+    bus: RosBus, gate: CommandGate, verb: str, a: dict[str, Any], *, record_dir: str | Path | None = None
+) -> Any:
+    """Run ``verb``. ``record_dir`` is the developer's: where ``record`` writes (a model never chooses a path)."""
     if verb not in VERBS:
         raise ValueError(f"unknown verb {verb!r}; verbs: {', '.join(VERBS)}")
     if verb in WRITES:
@@ -66,7 +70,7 @@ def dispatch(bus: RosBus, gate: CommandGate, verb: str, a: dict[str, Any]) -> An
         gate.check(
             verb, target, {k: a.get(k) for k in ("type", "fields", "request", "goal", "name", "value") if k in a}
         )
-    return _VERB[verb](bus, a)
+    return _record(bus, a, record_dir) if verb == "record" else _VERB[verb](bus, a)
 
 
 def _required(verb: str, a: dict[str, Any]) -> None:
@@ -178,13 +182,15 @@ def _tf(bus: RosBus, a: dict[str, Any]) -> Any:
             time.sleep(0.05)
 
 
-def _record(bus: RosBus, a: dict[str, Any]) -> Any:
-    from .record import record
+def _record(bus: RosBus, a: dict[str, Any], record_dir: str | Path | None) -> Any:
+    from .record import new_bag, record
 
+    if "path" in a:
+        raise ValueError("record takes no path: it writes under the developer's use_ros(record_dir=...)")
     topics = a.get("topics") or {}
     if isinstance(topics, list):
         topics = {t: _type_of(bus, t, None) for t in topics}
-    return record(bus, topics, float(a.get("seconds", 5.0)), a.get("path", "./strands_ros_bag"))
+    return record(bus, topics, float(a.get("seconds", 5.0)), new_bag(record_dir))
 
 
 def _publish(bus: RosBus, a: dict[str, Any]) -> Any:
@@ -230,7 +236,6 @@ _VERB = {
     "actions": lambda b, a: b.graph()["actions"],
     "params": _params,
     "tf": _tf,
-    "record": _record,
     "profiles": lambda b, a: _profile.available(),
     "stats": lambda b, a: b.stats(),
     "heal": lambda b, a: b.heal(),
