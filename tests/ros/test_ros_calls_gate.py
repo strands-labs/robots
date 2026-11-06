@@ -171,6 +171,36 @@ def test_dispatch_checks_args_before_asking_and_never_gates_reads_or_stop(ros):
     bus.close()
 
 
+@pytest.mark.parametrize(
+    ("verb", "args"),
+    [
+        (
+            "call",
+            {
+                "service": "/controller_manager/switch_controller",
+                "type": "controller_manager_msgs/srv/SwitchController",
+            },
+        ),
+        ("goal", {"action": "/navigate_to_pose", "type": "nav2_msgs/action/NavigateToPose", "goal": {}}),
+        ("set_param", {"node": "/controller_manager", "name": "update_rate", "value": 1}),
+        ("publish", {"topic": "/cmd_vel", "type": "geometry_msgs/msg/Twist", "service": "/rosout"}),
+    ],
+)
+def test_a_decoy_target_key_never_moves_the_gate_off_the_real_target(ros, verb, args):
+    from strands_robots.ros.bus import RosBus
+    from strands_robots.ros.gate import CommandGate
+    from strands_robots.ros.verbs import dispatch
+
+    asked = []
+    decoy = {} if "topic" in args else {"topic": "/r1/cmd_vel"}  # allowlisted, so the gate would wave it through
+    gate = CommandGate(allow=frozenset({"/r1/cmd_vel", "/rosout"}), approve=lambda v, t, p: asked.append(t) or True)
+    bus = RosBus().start()
+    with pytest.raises(ValueError, match="takes no"):
+        dispatch(bus, gate, verb, {**args, **decoy})
+    assert asked == []  # refused before any operator is asked about the wrong name
+    bus.close()
+
+
 def test_stop_takes_only_an_installed_profile_name_and_a_plain_sender(ros, tmp_path, monkeypatch):
     import json
 

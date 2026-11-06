@@ -35,6 +35,8 @@ READS = (
     "heal",
 )
 WRITES = ("publish", "call", "goal", "set_param")
+TARGET_KEY = {"publish": "topic", "call": "service", "goal": "action", "set_param": "node"}
+"""The one key each write runs on; the gate checks that key's name and no other."""
 VERBS = READS + WRITES + ("stop",)
 _TF: dict[int, Any] = {}
 
@@ -52,12 +54,14 @@ def dispatch(bus: RosBus, gate: CommandGate, verb: str, a: dict[str, Any]) -> An
     if verb not in VERBS:
         raise ValueError(f"unknown verb {verb!r}; verbs: {', '.join(VERBS)}")
     if verb in WRITES:
-        target = a.get("topic") or a.get("service") or a.get("action") or a.get("node")
-        if not target:
-            raise ValueError(f"{verb} needs topic=/service=/action=/node=")
-        if verb == "set_param":  # the write lands on the node's set_parameters service: gate that name
-            target = f"{canonical(str(target)).rstrip('/')}/set_parameters"
         _required(verb, a)  # an incomplete call is refused before an operator is asked about it
+        key = TARGET_KEY[verb]
+        other = sorted(k for k in set(TARGET_KEY.values()) - {key} if k in a)
+        if other:  # the name the gate checks must be the name the write lands on
+            raise ValueError(f"{verb} runs on {key}=; it takes no {other}")
+        target = str(a[key])
+        if verb == "set_param":  # the write lands on the node's set_parameters service: gate that name
+            target = f"{canonical(target).rstrip('/')}/set_parameters"
         gate.owners = {**bus.owners, **dict(gate.owners)}  # a Robot's command topic is never a free write
         gate.check(
             verb, target, {k: a.get(k) for k in ("type", "fields", "request", "goal", "name", "value") if k in a}
