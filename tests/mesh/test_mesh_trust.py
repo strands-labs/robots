@@ -7,6 +7,7 @@ import json
 import logging
 import time
 
+import numpy as np
 import pytest
 
 from strands_robots import Robot
@@ -69,6 +70,26 @@ def test_disconnect_actuation_leaves_an_audit_row(device, caplog):
     assert holds and any("on_disconnect" in r.getMessage() for r in caplog.records)
 
 
+def test_overlapping_refused_motions_arm_nothing_and_keep_the_real_mover_watched():
+    from strands_robots.mesh.watchdog import MeshWatchdog
+
+    arm = Robot("so101")
+    dog = MeshWatchdog(arm, 10_000, [], "lab")
+    try:
+        p1, p2 = dog.on_rpc("act", "P1"), dog.on_rpc("act", "P2")  # two refused acts in flight at once
+        p1(False)
+        p2(False)
+        assert not dog._armed.is_set() and dog.peer is None, "requests that moved nothing arm nothing"
+        dog.on_rpc("act", "mover")(True)  # a real move
+        probe, ok = dog.on_rpc("act", "prober"), dog.on_rpc("act", "mover")
+        probe(False)  # refused while the mover's next act is in flight
+        ok(True)
+        assert dog._armed.is_set() and dog.peer == "mover"
+    finally:
+        dog.close()
+        arm.close()
+
+
 def _reply(kind: str, name: str = "observe", **body) -> bytes:
     return wire.encode(wire.envelope("lab", "arm", kind, name, seq=7, **body))
 
@@ -78,6 +99,11 @@ def test_two_different_answers_to_one_request_are_refused():
     with pytest.raises(RemoteError, match="different answers"):
         the_reply([forged, real], "lab", "arm", "observe", 7)
     assert the_reply([real, real], "lab", "arm", "observe", 7)["result"] == {"q": 0.1}  # the same answer twice
+    obs, other = (_reply("result", result={"positions": np.array([0.1, 0.2])}) for _ in range(2))
+    assert the_reply([obs, other], "lab", "arm", "observe", 7)["result"]["positions"].tolist() == [0.1, 0.2]
+    forged_obs = _reply("result", result={"positions": np.array([0.1, 0.9])})
+    with pytest.raises(RemoteError, match="different answers"):  # arrays compare as a whole, never elementwise
+        the_reply([obs, forged_obs], "lab", "arm", "observe", 7)
     stops = [_reply("result", "stop", result={"held": True}), _reply("result", "stop", result={"held": False})]
     assert the_reply(stops, "lab", "arm", "stop", 7)["result"] == {"held": True}  # every holder stops it
 

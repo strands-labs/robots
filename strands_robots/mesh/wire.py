@@ -126,6 +126,10 @@ def _hook(d: dict[str, Any]) -> Any:
     return d
 
 
+jsonable = _default
+"""How ``encode`` writes an ndarray or numpy scalar (for a canonical comparison of decoded values)."""
+
+
 def _no_constant(name: str) -> Any:
     raise ValueError(f"refusing {name} from the mesh (not valid JSON)")
 

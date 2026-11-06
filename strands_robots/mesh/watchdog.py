@@ -39,27 +39,25 @@ class MeshWatchdog:
         self._unwatch = [t.watch_liveliness(wire.key("peer", tenant, "*"), self._on_peer) for t in transports]
 
     def on_rpc(self, name: str, peer: str | None) -> Callable[[bool], None] | None:
-        """Every rpc, before it runs; a motion rpc returns what to call once it ends (that is a beat too)."""
+        """Every rpc, before it runs; a motion rpc returns what to call once it ends (that is a beat too). A motion
+        pauses the quiet clock while it runs; only one the device carried out (``ok``) arms the watchdog for its
+        invoker, so a refused request, or several at once, never touches who is watched."""
         with self._lock:
             if name in MOTION_RPCS and peer is not None:
-                before = (self._armed.is_set(), self.peer)
-                self.peer = peer
                 self.dog.beat()
-                self._armed.set()
                 self._moving += 1
-                return functools.partial(self._moved, peer=peer, before=before)
+                return functools.partial(self._moved, peer=peer)
             if self._armed.is_set() and peer == self.peer:
                 self.dog.beat()
         return None
 
-    def _moved(self, ok: bool = True, peer: str | None = None, before: tuple[bool, str | None] = (True, None)) -> None:
+    def _moved(self, ok: bool = True, peer: str | None = None) -> None:
         with self._lock:
             self._moving -= 1
             self.dog.beat()
-            if not ok and self.peer == peer:  # refused: the device is as it was before this request
-                self.peer = before[1]
-                if not before[0]:
-                    self._armed.clear()
+            if ok and peer is not None:  # the device moved for this peer: it is the one that must stay present
+                self.peer = peer
+                self._armed.set()
 
     def _on_peer(self, key: str, alive: bool) -> None:
         if alive or not self._armed.is_set() or key.rsplit("/", 1)[-1] != self.peer:

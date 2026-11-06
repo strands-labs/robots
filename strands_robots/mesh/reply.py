@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from typing import Any
 
 from . import wire
@@ -36,5 +37,7 @@ def the_reply(replies: list[bytes], tenant: str, device_id: str, rpc: str, seq: 
     return found[0]
 
 
-def _body(r: dict[str, Any]) -> Any:
-    return (r.get("kind"), r.get("result"), r.get("error"))
+def _body(r: dict[str, Any]) -> str:
+    """What a reply says, as canonical JSON (an ndarray compares by its bytes, not elementwise)."""
+    body = [r.get("kind"), r.get("result"), r.get("error")]
+    return json.dumps(body, default=wire.jsonable, sort_keys=True, separators=(",", ":"), allow_nan=False)
