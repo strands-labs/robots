@@ -12,8 +12,8 @@ import { Twin } from "./twin.js";
 
 const $ = (s) => document.querySelector(s);
 const params = new URLSearchParams(location.search);
-// ?scene= must be a file on this page's own origin, and ?cli= a bare host:port: neither may bring markup or another
-// site's scene description into the page (a scene's strings end up in the status chips).
+// ?scene= and ?standalone= must be files on this page's own origin, and ?cli= a bare host:port: none may bring
+// markup or another site's scene description into the page (a scene's strings end up in the status chips).
 const sameOrigin = (raw) => { try { return raw && !/^[a-z][a-z0-9+.-]*:|^[\\/]{2}/i.test(raw) && new URL(raw, location.href).origin === location.origin ? raw : null; } catch { return null; } };
 const STATIC = sameOrigin(params.get("scene"));
 const CLI_RE = /^(localhost|127\.0\.0\.1|\[::1\]):\d{1,5}$/;
@@ -545,7 +545,7 @@ function connectChat() {
 
 /* ---------- standalone ---------- */
 
-const STANDALONE_SCENE = params.get("standalone") || "./scenes/microduck/scene.json";
+const STANDALONE_SCENE = sameOrigin(params.get("standalone")) || "./scenes/microduck/scene.json"; // like ?scene=
 const CMD = { vx: 0.3, back: -0.2, wz: 1.0 };
 
 async function standalone(why) {
@@ -560,8 +560,8 @@ async function standalone(why) {
   window.__standalone = sa; // the browser gates read stats, ready and errors here
   sa.loadMs = performance.now() - t0;
   policyChip(ready);
-  notice(`<b>standalone</b> — physics in your browser (MuJoCo WASM, ${desc.physics.timestep * 1000} ms × ${desc.physics.substeps}; ` +
-    `the ONNX skill on onnxruntime-web at ${desc.standalone.hz} Hz). ${why} <span class="keys">W A S D walk · R reset</span>`);
+  notice(`<b>standalone</b> — physics in your browser (MuJoCo WASM, ${esc(desc.physics.timestep * 1000)} ms × ${esc(desc.physics.substeps)}; ` +
+    `the ONNX skill on onnxruntime-web at ${esc(desc.standalone.hz)} Hz). ${why} <span class="keys">W A S D walk · R reset</span>`);
   const pick = $("#skill");
   pick.innerHTML = sa.skills.map((k) => `<option value="${esc(k)}"${k === sa.skill ? " selected" : ""}>${esc(k)}</option>`).join("");
   pick.addEventListener("change", async () => { pick.disabled = true; try { policyChip(await sa.use(pick.value)); } finally { pick.disabled = false; } });
