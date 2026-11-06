@@ -6,6 +6,7 @@ Writes (gated): publish, call, goal, set_param. Never gated: stop (the profile's
 
 from __future__ import annotations
 
+import re
 import time
 from typing import Any
 
@@ -13,7 +14,7 @@ from . import calls
 from . import profile as _profile
 from .bus import RosBus
 from .convert import field_types, from_dict, message_class, to_data
-from .gate import CommandGate
+from .gate import CommandGate, CommandRefused
 from .names import canonical, positive
 
 READS = (
@@ -198,10 +199,19 @@ def _publish(bus: RosBus, a: dict[str, Any]) -> Any:
 
 
 def _stop(bus: RosBus, a: dict[str, Any]) -> Any:
+    """STOP is never gated, so its payload comes only from a profile the operator installed (a name, never a path)."""
     from ..robot.drivers.ros.stop import send_stop
 
-    prof = _profile.load(a.get("profile") or "ros2_control")
-    return {"stop": send_stop(bus, prof, a.get("sender_id", "strands-use-ros")), "profile": prof.name}
+    name, sender = a.get("profile") or "ros2_control", a.get("sender_id", "strands-use-ros")
+    if not isinstance(name, str) or name not in _profile.available():
+        raise CommandRefused(
+            f"stop takes an installed profile name {_profile.available()}, not {name!r}: a built-in, a directory on "
+            "STRANDS_ROBOTS_ROS_PROFILES or an entry point"
+        )
+    if not isinstance(sender, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,64}", sender):
+        raise ValueError(f"sender_id is letters, digits, '_' and '-' (at most 64), not {sender!r}")
+    prof = _profile.load(name)
+    return {"stop": send_stop(bus, prof, sender), "profile": prof.name}
 
 
 _VERB = {

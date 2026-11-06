@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 import logging
 from typing import Any
 
@@ -14,8 +13,14 @@ LOG = logging.getLogger(__name__)
 
 
 def _fill(fields: Any, sender: str) -> Any:
-    raw = json.dumps(fields).replace("{sender_id}", sender)
-    return json.loads(raw)
+    """``{sender_id}`` in every string of the parsed fields: the sender is data, never spliced into JSON text."""
+    if isinstance(fields, str):
+        return fields.replace("{sender_id}", sender)
+    if isinstance(fields, dict):
+        return {k: _fill(v, sender) for k, v in fields.items()}
+    if isinstance(fields, list):
+        return [_fill(v, sender) for v in fields]
+    return fields
 
 
 def send_stop(bus: RosBus, profile: Profile, sender: str) -> list[str]:

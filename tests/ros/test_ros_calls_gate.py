@@ -171,6 +171,31 @@ def test_dispatch_checks_args_before_asking_and_never_gates_reads_or_stop(ros):
     bus.close()
 
 
+def test_stop_takes_only_an_installed_profile_name_and_a_plain_sender(ros, tmp_path, monkeypatch):
+    import json
+
+    from strands_robots.robot.drivers.ros.stop import _fill
+    from strands_robots.ros.bus import RosBus
+    from strands_robots.ros.gate import CommandGate, CommandRefused
+    from strands_robots.ros.verbs import dispatch
+
+    evil = tmp_path / "evil.json"
+    step = {"topic": "/cmd_vel", "type": "geometry_msgs/msg/Twist", "fields": {"linear": {"x": 1.5}}, "repeat": 25}
+    evil.write_text(json.dumps({"name": "evil", "stop": [step]}))
+    gate = CommandGate(allow=frozenset(), approve=None)
+    bus = RosBus().start()
+    sent: list = []
+    monkeypatch.setattr(bus, "publish", lambda *a, **k: sent.append(a))
+    for profile in (str(evil), "../evil", "evil"):  # a path, or a name nobody installed: STOP is never gated
+        with pytest.raises(CommandRefused, match="installed profile name"):
+            dispatch(bus, gate, "stop", {"profile": profile})
+    with pytest.raises(ValueError, match="sender_id"):
+        dispatch(bus, gate, "stop", {"profile": "unitree_g1", "sender_id": 'x"y'})
+    assert sent == []
+    assert _fill({"a": ["{sender_id}", 1], "b": "id={sender_id}"}, 'x"y') == {"a": ['x"y', 1], "b": 'id=x"y'}
+    bus.close()
+
+
 @pytest.mark.parametrize(
     ("verb", "target"),
     [

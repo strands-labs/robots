@@ -30,7 +30,8 @@ Args:
     args: JSON object for the verb, e.g. {{"topic": "/joint_states", "count": 1}};
         publish {{"topic","type","fields","count","rate"}}; call {{"service","type","request"}};
         goal {{"action","type","goal","timeout"}}; params {{"node","names"}}; set_param {{"node","name","value"}};
-        tf {{"target","source"}}; record {{"topics": [...], "seconds", "path"}}; stop {{"profile"}}.
+        tf {{"target","source"}}; record {{"topics": [...], "seconds", "path"}};
+        stop {{"profile": an installed profile name, never a path, "sender_id"}}.
 """
 
 

@@ -4,7 +4,7 @@ Reads are never gated. Every write needs an exact-name allowlist entry or an ope
 it is refused (fail closed). The only free writes are publishes to the few inert topics in ``INERT_TOPICS``
 (logs, diagnostics, markers). ``MOTION_SURFACES`` names targets known to move a robot, for the refusal text.
 A topic a strands Robot streams is refused outright: that robot's own gate (``robot.act``) is the only way
-to command it. STOP is never gated; it goes through the profile's stop sequence, not an agent-chosen payload.
+to command it. STOP is never gated; it sends the stop sequence of an installed profile, named, never a file path.
 """
 
 from __future__ import annotations
