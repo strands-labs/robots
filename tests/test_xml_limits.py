@@ -82,6 +82,17 @@ def test_includes_are_read_where_they_appear(tmp_path):
     assert _close(introspect_xml(tmp_path / "m.xml", "mjcf")["limits"]["j"], (-math.pi / 4, math.pi / 4))
 
 
+def test_a_nested_include_is_relative_to_the_main_model_as_in_mujoco(tmp_path):
+    (tmp_path / "sub").mkdir()
+    (tmp_path / "sub" / "arm.xml").write_text(
+        '<mujocoinclude><body><include file="sub/joints.xml"/><geom size="0.1"/></body></mujocoinclude>'
+    )
+    (tmp_path / "sub" / "joints.xml").write_text('<mujocoinclude><joint name="j" range="-90 90"/></mujocoinclude>')
+    (tmp_path / "m.xml").write_text('<mujoco><worldbody><include file="sub/arm.xml"/></worldbody></mujoco>')
+    out = introspect_xml(tmp_path / "m.xml", "mjcf")
+    assert out["joints"] == ["j"] and _close(out["limits"]["j"], (-math.pi / 2, math.pi / 2))
+
+
 @pytest.mark.parametrize("name", ["so100", "so101", "unitree_g1", "panda", "shadow_hand", "unitree_go2"])
 def test_the_xml_walk_matches_mujoco_on_registry_models(name):
     pytest.importorskip("mujoco")

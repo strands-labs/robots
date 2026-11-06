@@ -43,7 +43,8 @@ def _introspect_urdf(root: ET.Element) -> dict[str, Any]:
 
 
 def _splice_includes(el: ET.Element, base: Path, depth: int = 0) -> None:
-    """Replace every ``<include file=...>`` below ``el`` with the children of the file it names."""
+    """Replace every ``<include file=...>`` below ``el`` with the children of the file it names. As in MuJoCo, every
+    file, nested or not, is relative to the main model's directory ``base``."""
     for i, child in reversed(list(enumerate(el))):
         if child.tag != "include":
             _splice_includes(child, base, depth)
@@ -53,7 +54,7 @@ def _splice_includes(el: ET.Element, base: Path, depth: int = 0) -> None:
         if not sub.is_file() or depth >= _MAX_INCLUDE_DEPTH:
             continue
         inc = ET.parse(sub).getroot()
-        _splice_includes(inc, sub.parent, depth + 1)
+        _splice_includes(inc, base, depth + 1)
         for k, grand in enumerate(list(inc)):
             el.insert(i + k, grand)
 
