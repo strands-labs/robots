@@ -24,5 +24,6 @@
 - **Disconnect audit rule:** `lifecycle.clear_presence_rule` now needs `things=` and republishes only the tenant's
   own devices' and operators' disconnects.
 
-Re-provision the fleet and operator policies to apply this. A claim approval made with an earlier `allow` has no
+Re-provision the fleet and operator policies to apply this, and run `register` again for robots registered earlier:
+until then they keep presence and replies but send no telemetry. A claim approval made with an earlier `allow` has no
 `telemetry_rule` and is refused: approve that robot again.

@@ -46,7 +46,8 @@ certificate with the controller policy, which commands, can), so a certificate l
 `?peer=1` to the `iot://` URL of a certificate that also carries the controller policy. It sends telemetry only to the
 rule its thing's `telemetry_rule` attribute names. `register` writes that attribute and `tenant` itself; a label never
 overrides them. Fleet provisioning by claim gets it from the operator's approval (`claim_hook.allow` stores it; the
-hook overrides the request's), so a tenant like `lab-a` gets its hashed rule name too.
+hook overrides the request's), so a tenant like `lab-a` gets its hashed rule name too. A robot registered before
+that attribute existed keeps its presence and replies but sends no telemetry until `register` runs for it again.
 
 An operator policy names the tenant's devices: an operator direct-messages only those devices, on their rpc topics,
 and hears only their connect and disconnect events. The disconnect audit rule,

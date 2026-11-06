@@ -127,6 +127,16 @@ def test_a_device_reaches_only_its_own_telemetry_rule():
     assert not any("$aws/rules/*" in r for r in _resources(doc, "iot:Publish"))
 
 
+def test_a_thing_without_a_telemetry_rule_attribute_still_answers():
+    # IoT skips a whole statement when one of its variables does not resolve; a thing registered before the
+    # telemetry_rule attribute existed must keep its presence and reply grants until it is registered again.
+    doc = policy.device_policy(REGION, ACCOUNT)
+    for s in _by_action(doc, "iot:Publish"):
+        res = [s["Resource"]] if isinstance(s["Resource"], str) else s["Resource"]
+        if any("telemetry_rule" in r for r in res):
+            assert len(res) == 1, res
+
+
 def test_the_operator_hears_and_messages_only_its_tenants_devices():
     doc = policy.operator_policy(REGION, ACCOUNT, "lab", things=["arm-1", "arm-2"])
     life = [r for r in _resources(doc, "iot:Receive") if "$aws/events/presence" in r]

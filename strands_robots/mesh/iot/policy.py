@@ -48,8 +48,7 @@ def device_policy(region: str, account: str) -> dict[str, Any]:
     own, tenant, shadow = f"strands/{_TENANT}/{_THING}", f"strands/{_TENANT}", f"$aws/things/{_THING}/shadow"
     attached = {"Bool": {"iot:Connection.Thing.IsAttached": "true"}}
     keep = [f"{arn}:topic/{own}/*", f"{arn}:topic/{shadow}/*"]
-    pub = [f"{arn}:topic/{tenant}/@presence/{_THING}", f"{arn}:topic/{tenant}/@reply/*",
-           f"{arn}:topic/$aws/rules/{_RULE}/{own}/state"]  # fmt: skip
+    pub = [f"{arn}:topic/{tenant}/@presence/{_THING}", f"{arn}:topic/{tenant}/@reply/*"]
     sub = [f"{arn}:topicfilter/{own}/*", f"{arn}:topicfilter/{tenant}/@estop", f"{arn}:topicfilter/{tenant}/@peer/*",
            f"{arn}:topicfilter/{tenant}/@presence/*", f"{arn}:topicfilter/{shadow}/*"]  # fmt: skip
     recv = [f"{arn}:topic/{tenant}/*", f"{arn}:topic/{shadow}/*"]
@@ -59,6 +58,9 @@ def device_policy(region: str, account: str) -> dict[str, Any]:
         # never retained, and a device has no right to publish a command or a liveliness token anywhere.
         {"Effect": "Allow", "Action": ["iot:Publish", "iot:RetainPublish"], "Resource": keep},
         {"Effect": "Allow", "Action": "iot:Publish", "Resource": pub},
+        # alone in its statement: IoT skips a statement whose variable does not resolve, so a thing registered
+        # before it had a telemetry_rule attribute loses only telemetry, not presence and replies
+        {"Effect": "Allow", "Action": "iot:Publish", "Resource": f"{arn}:topic/$aws/rules/{_RULE}/{own}/state"},
         {"Effect": "Allow", "Action": "iot:Subscribe", "Resource": sub},
         # Receive is coarse on purpose: Subscribe is the gate, and every byte here counts against the 2,048 cap.
         {"Effect": "Allow", "Action": "iot:Receive", "Resource": recv},
