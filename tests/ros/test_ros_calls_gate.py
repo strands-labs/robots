@@ -223,6 +223,22 @@ def test_record_writes_only_under_the_developers_directory(ros, tmp_path):
     bus.close()
 
 
+def test_the_operator_sees_how_many_messages_a_publish_sends_and_how_fast(ros):
+    from strands_robots.ros.bus import RosBus
+    from strands_robots.ros.gate import CommandGate
+    from strands_robots.ros.verbs import dispatch
+
+    seen: list[dict] = []
+    gate = CommandGate(allow=frozenset(), approve=lambda v, t, p: seen.append(p) or False)  # look, then say no
+    bus = RosBus().start()
+    twist = {"topic": "/cmd_vel", "type": "geometry_msgs/msg/Twist", "fields": {"linear": {"x": 0.5}}}
+    for extra, want in (({"count": 100, "rate": 10}, (100, 10)), ({}, (1, 10.0))):
+        with pytest.raises(PermissionError):
+            dispatch(bus, gate, "publish", {**twist, **extra})
+        assert (seen[-1]["count"], seen[-1]["rate"]) == want  # ten seconds of driving is what the yes would cover
+    bus.close()
+
+
 def test_stop_takes_only_an_installed_profile_name_and_a_plain_sender(ros, tmp_path, monkeypatch):
     import json
 

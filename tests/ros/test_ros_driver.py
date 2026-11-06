@@ -204,6 +204,35 @@ def test_any_ros2_control_arm_with_model_from_robot_description(ros):
         arm.close()
 
 
+def test_a_publish_error_drops_one_frame_never_the_stream(ros):
+    from strands_robots import ros as sros
+
+    arm = FakeArm()
+    try:
+        robot = sros.connect("ros2_control", timeout=1.0)
+        stream = robot.body.stream
+        real, failed = stream.bus.publish, []
+
+        def flaky(*a, **k):
+            if not failed:
+                failed.append(1)
+                raise RuntimeError("rmw: publish failed")
+            return real(*a, **k)
+
+        stream.bus.publish = flaky
+        assert wait_until(lambda: failed and stream.stats["errors"] >= 1)
+        assert stream._thread.is_alive() and "publish" in stream.stats["last_reason"]
+        robot.act({"elbow": 0.5})
+        assert wait_until(lambda: arm.commands and arm.commands[-1].data[1] == pytest.approx(0.5))  # still on the wire
+        stream.stop()
+        stream._running = True  # the thread is gone but nobody said so: set_target must refuse, not accept silently
+        with pytest.raises(ConnectionError, match="command stream stopped"):
+            stream.set_target(np.zeros(3))
+        stream._running = False
+    finally:
+        arm.close()
+
+
 def test_an_observe_only_profile_observes_and_refuses_to_write(ros, tmp_path, monkeypatch):
     import json
     from importlib import resources

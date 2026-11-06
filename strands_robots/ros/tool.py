@@ -70,7 +70,7 @@ def use_ros(
                     "target": target,
                     "preview": preview,
                     "warning": "this can move a real robot",
-                    "how_to_answer": "reply yes to allow it once",
+                    "how_to_answer": "reply yes to allow this call once, every message the preview counts",
                 },
             )
             return str(answer).strip().lower() in ("y", "yes", "approve", "approved")

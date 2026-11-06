@@ -67,9 +67,10 @@ def dispatch(
         if verb == "set_param":  # the write lands on the node's set_parameters service: gate that name
             target = f"{canonical(target).rstrip('/')}/set_parameters"
         gate.owners = {**bus.owners, **dict(gate.owners)}  # a Robot's command topic is never a free write
-        gate.check(
-            verb, target, {k: a.get(k) for k in ("type", "fields", "request", "goal", "name", "value") if k in a}
-        )
+        preview: dict[str, Any] = {k: a[k] for k in ("type", "fields", "request", "goal", "name", "value") if k in a}
+        if verb == "publish":  # the yes covers every copy it sends, at the rate it sends them
+            preview |= {"count": a.get("count", 1), "rate": a.get("rate", 10.0)}
+        gate.check(verb, target, preview)
     return _record(bus, a, record_dir) if verb == "record" else _VERB[verb](bus, a)
 
 

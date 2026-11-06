@@ -99,6 +99,10 @@ class CommandStream:
             self._thread.start()
 
     def set_target(self, q: np.ndarray) -> None:
+        if self._thread is not None and not self._thread.is_alive():  # a dead stream is never a quiet one
+            raise ConnectionError(
+                f"ros: the {self.topic} command stream stopped ({self.stats['last_reason']}); reconnect"
+            )
         with self._lock:
             self._target, self._t_target, self._freeze, self._hold = (
                 np.array(q, dtype=float),
@@ -115,7 +119,10 @@ class CommandStream:
     def _timer(self, dt: float) -> None:
         nxt = time.monotonic()
         while self._running:
-            self._tick(self.latest_state())
+            try:
+                self._tick(self.latest_state())
+            except Exception as e:  # noqa: BLE001 - the timer is the only writer: it must outlive any one tick
+                self._failed("tick", e)
             nxt += dt
             delay = nxt - time.monotonic()
             if delay > 0:
@@ -148,11 +155,20 @@ class CommandStream:
             except Exception:  # noqa: BLE001 - nothing safe to send; the robot's own timeout takes over
                 LOG.exception("ros command stream: cannot build even a hold frame")
                 return
-        if self.shadow:
-            self._compare(msg)
-            return
-        self.bus.publish(self.topic, self.type, msg, qos=self.qos)
-        self.stats["sent"] += 1
+        try:
+            if self.shadow:
+                self._compare(msg)
+                return
+            self.bus.publish(self.topic, self.type, msg, qos=self.qos)
+            self.stats["sent"] += 1
+        except Exception as e:  # noqa: BLE001 - an rmw error drops this frame, never the stream
+            self._failed("publish", e)
+
+    def _failed(self, what: str, e: Exception) -> None:
+        self.stats["errors"] += 1
+        self.stats["last_reason"] = f"{what}: {type(e).__name__}: {e}"
+        if self.stats["errors"] == 1 or self.stats["errors"] % 500 == 0:  # once, then every 500th: never a log flood
+            LOG.warning("ros command stream on %s: %s failed: %s", self.topic, what, e)
 
     def _choose(self, frame: Any) -> tuple[np.ndarray, Any, Any]:
         now = time.monotonic()
