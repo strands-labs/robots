@@ -53,7 +53,7 @@ def test_an_allowed_hold_writes_and_the_twin_mirrors_it():
     real = Robot("so101", driver=d, confirm=lambda action: asked.append(np.array(action)) or True, twin=True)
     measured = real.observe().joints
     real.confirm_act(measured.positions)
-    assert len(asked) == 1 and len(goal_writes(s)) == 2  # torque on, then one Goal_Position write
+    assert len(asked) == 1 and len(goal_writes(s)) == 3  # Goal := Present, torque on, then one Goal_Position write
     for name in measured.names:  # the hold lands on the bus within one count of where it was read
         goal = int.from_bytes(s.regs[d.ids[measured.names.index(name)]][ft.REG_GOAL_POSITION :][:2], "little")
         assert abs(goal - d.rad_to_counts(name, measured[name])) <= 1
@@ -74,7 +74,7 @@ def test_a_servo_resting_past_its_limit_can_still_hold_and_return():
     assert hold["wrist_flex"] > real.description.limits["wrist_flex"][1]  # genuinely past its hard limit
     s.frames.clear()
     real.confirm_act(hold.positions)  # "hold where you are" is allowed, not refused for where the body is
-    assert len(goal_writes(s)) == 2  # torque on, then one Goal_Position write
+    assert len(goal_writes(s)) == 3  # Goal := Present, torque on, then one Goal_Position write
     s.actual[d.ids[3]] = 3072 + 40  # the write above brought it back in range: put it past the limit again
     real.confirm_act(real.observe().joints.positions, seconds=0.2)  # a timed hold too: ramp points see the raw pose
     toward = {"wrist_flex": real.description.limits["wrist_flex"][1]}  # moving back toward the range: allowed
