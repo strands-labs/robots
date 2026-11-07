@@ -104,6 +104,7 @@ nav:
   - Hardware and fleets:
       - Connecting hardware: hardware.md
       - Safety and e-stop: safety.md
+      - ROS 2 robots: ros.md
       - Mesh networking: mesh.md
       - AWS IoT Core: iot.md
       - GPU simulation: gpu.md

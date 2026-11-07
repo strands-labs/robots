@@ -14,6 +14,8 @@ def introspect(path: Path, fmt: str, scene: Path | None = None) -> dict[str, Any
     from ..._gl import ensure_gl
 
     ensure_gl()
+    if fmt == "urdf":  # a URDF has no actuators: MuJoCo's import gives nu=0 (no action keys), the XML walk is exact
+        return introspect_xml(path, fmt)
     try:
         import mujoco  # noqa: F401
     except ImportError:
