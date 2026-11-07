@@ -18,7 +18,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-mujoco = ["mujoco>=3.3.4"]
+mujoco = ["mujoco>=3.3.4,<4"]
 feetech = ["pyserial>=3.5"]
 # ONNX policies (holosoma, microduck presets): CPU inference, weights fetched from the Hugging Face Hub.
 onnx = ["onnxruntime>=1.18", "huggingface_hub>=0.24"]
