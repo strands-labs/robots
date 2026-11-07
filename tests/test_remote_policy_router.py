@@ -1,4 +1,4 @@
-"""A real robot takes a remote LeRobot policy through a zenoh router only once the operator vouches for its clients."""
+"""A real robot takes a remote LeRobot policy from off its own LAN only once the operator vouches for the link."""
 
 from __future__ import annotations
 
@@ -27,6 +27,16 @@ def test_a_real_robot_refuses_a_server_behind_a_router_nobody_vouched_for(connec
     try:
         with pytest.raises(PermissionError, match="vouch for every client"):
             Policy(f"zenoh://{link}/gpu.example:7447/smolvla").attach(real)
+    finally:
+        real.close()
+
+
+@pytest.mark.parametrize("spec", ["zenoh://gpu.example:7447/smolvla", "zenoh://54.200.10.20:7447/smolvla"])
+def test_a_real_robot_refuses_a_plain_internet_server_nobody_vouched_for(connect, spec):
+    real = Robot("so101", driver="memory")
+    try:
+        with pytest.raises(PermissionError, match="across the network"):
+            Policy(spec).attach(real)
     finally:
         real.close()
 

@@ -44,11 +44,25 @@ def trusted(asked: bool) -> bool:
 
 
 def check_router(who: str, endpoint: str, robot: Any, asked: bool) -> None:
-    """A real robot never takes actions through a router whose clients nobody vouched for (``PermissionError``)."""
-    if getattr(robot, "is_real", False) and routed(endpoint) and not trusted(asked):
+    """A real robot takes actions off its own LAN only once the operator vouches for the link (``PermissionError``).
+
+    Two off-LAN links reach the server without any identity of their own on the wire: a ``tls``/``quic``/``ws``
+    link through a router (every client of which can answer for the server) and a plain link to an internet host
+    (reached across the network, no server authentication, and weaker than the ``tls`` one). Both are refused for
+    a real robot until the operator vouches; a loopback or LAN link, and a simulated robot, are untouched.
+    """
+    if not (getattr(robot, "is_real", False) and not trusted(asked)):
+        return
+    if routed(endpoint):
         raise PermissionError(
             f"{who}: a real robot takes actions from {endpoint} only once you vouch for every client of that zenoh "
             "router, since any of them can answer for the server: Policy(..., trusted=True) or "
+            "STRANDS_ZENOH_TRUSTED=1 (docs/lerobot.md)"
+        )
+    if not is_local(endpoint):
+        raise PermissionError(
+            f"{who}: a real robot takes actions from {endpoint} only once you vouch for it, since it is reached "
+            "across the network from a host with no identity on the wire: Policy(..., trusted=True) or "
             "STRANDS_ZENOH_TRUSTED=1 (docs/lerobot.md)"
         )
 

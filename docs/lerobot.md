@@ -35,11 +35,12 @@ arm.run(Policy("zenoh://gpu-box:7447/smolvla"), instruction="pick up the cube", 
 For a server on another network, name the link: `zenoh://tls/host:7447/smolvla`.
 
 The session's frames and action chunks carry no identity of their own. Through a `tls`, `quic` or `ws` link they pass
-a zenoh router, and any client of that router can read them and answer for the server. A real robot therefore
-refuses such a link with a `PermissionError` until you vouch for every client the router admits (client
-certificates and access control on the router): `Policy("zenoh://tls/host:7447/smolvla", trusted=True)` or
-`STRANDS_ZENOH_TRUSTED=1`. A plain `zenoh://host:7447/...` link goes straight to the server; keep it on a network
-you control, and never point it at a shared `zenohd`.
+a zenoh router, and any client of that router can read them and answer for the server; a plain link to an internet
+host crosses the network with no server authentication at all, which is weaker still. A real robot therefore refuses
+any link off its own LAN with a `PermissionError` until you vouch for it: `Policy("zenoh://tls/host:7447/smolvla",
+trusted=True)` or `STRANDS_ZENOH_TRUSTED=1`. For a router link, vouching means client certificates and access control
+on the router; never point a real robot at a shared `zenohd`. A loopback or LAN link (`zenoh://gpu-box:7447/...`)
+reaches a server on a network you control and is taken as is; a simulated robot is never gated.
 
 If the server stops answering, the robot holds its last target for 1 s. Then the run stops with a fault.
 
@@ -48,7 +49,7 @@ If the server stops answering, the robot holds its last target for 1 s. Then the
 | Option | Does |
 |---|---|
 | `tasks=[...]` | Refuse instructions the policy was not trained on |
-| `trusted=True` | Let a real robot take a server behind a zenoh router (see above) |
+| `trusted=True` | Let a real robot take a server off its own LAN: a router link or a plain internet link (see above) |
 | `start_pose={...}` | Move here before the first step, over `start_seconds` (default 3) |
 | `norm={...}` | Set the units a checkpoint was trained in |
 

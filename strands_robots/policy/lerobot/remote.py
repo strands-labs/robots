@@ -78,8 +78,9 @@ class ZenohPolicy:
         out, the server's descriptor may say (``start_pose``); else the run begins where the body is. ``tasks``: the
         instructions it was trained on — any other ``run(instruction=)`` is refused naming them before a frame goes
         out; left out, the descriptor may say (``tasks``); else any instruction is sent. ``trusted``: a real robot
-        takes a server behind a zenoh router (``tls``/``quic``/``ws``) only once the operator vouches for every
-        client of that router (or ``STRANDS_ZENOH_TRUSTED=1``): any of them can answer for the server."""
+        takes a server off its own LAN — behind a zenoh router (``tls``/``quic``/``ws``), or a plain link to an
+        internet host — only once the operator vouches (or ``STRANDS_ZENOH_TRUSTED=1``): a router's clients can each
+        answer for the server, and a plain internet link carries no identity on the wire."""
         if execution not in EXECUTIONS:
             raise ValueError(f"execution must be one of {', '.join(map(repr, EXECUTIONS))}, got {execution!r}")
         self.endpoint, self.deployment, self.settings, self.trusted = endpoint, deployment, settings, trusted
