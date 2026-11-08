@@ -1,4 +1,5 @@
-# Cloud control plane (DigitalOcean droplet): Caddy (HTTPS) in front of the Strands dashboard.
+# Cloud control plane (DigitalOcean droplet): Caddy (HTTPS) + oauth2-proxy (GitHub login) in front of the
+# Strands dashboard. secrets.env (dashboard token, cookie secret) is made once on the volume by deploy.sh.
 # Lives on the droplet at /opt/strands-cloud next to .env; CI copies this file there and runs deploy.sh.
 #   IMAGE=ghcr.io/jacob-brokloff/strands-xlerobot:<sha> docker compose up -d
 # Mesh (Zenoh) stays on loopback until the mTLS step (plan-cloud.md step 3); 7447 is not opened yet.
@@ -7,6 +8,8 @@ x-strands: &strands
   network_mode: host
   env_file:
     - path: .env
+      required: false
+    - path: secrets.env
       required: false
   volumes:
     - ./strands:/strands
@@ -17,12 +20,37 @@ services:
     image: caddy:2.10
     restart: unless-stopped
     network_mode: host
+    env_file:
+      - path: secrets.env
+        required: false
     environment:
       DASH_DOMAIN: ${DASH_DOMAIN:?set DASH_DOMAIN in .env}
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
       - ./caddy-data:/data
       - ./caddy-config:/config
+
+  # "Sign in with GitHub". Client id/secret: GitHub OAuth app (repo secrets OAUTH_CLIENT_ID / OAUTH_CLIENT_SECRET).
+  oauth2-proxy:
+    image: quay.io/oauth2-proxy/oauth2-proxy:v7.6.0
+    restart: unless-stopped
+    network_mode: host
+    env_file:
+      - path: secrets.env
+        required: false
+    environment:
+      OAUTH2_PROXY_PROVIDER: github
+      OAUTH2_PROXY_CLIENT_ID: ${OAUTH_CLIENT_ID:?set OAUTH_CLIENT_ID}
+      OAUTH2_PROXY_CLIENT_SECRET: ${OAUTH_CLIENT_SECRET:?set OAUTH_CLIENT_SECRET}
+      OAUTH2_PROXY_GITHUB_USERS: ${OAUTH_GITHUB_USERS:-Jacob-Brokloff}
+      OAUTH2_PROXY_EMAIL_DOMAINS: "*"
+      OAUTH2_PROXY_HTTP_ADDRESS: 127.0.0.1:4180
+      OAUTH2_PROXY_REDIRECT_URL: https://${DASH_DOMAIN}/oauth2/callback
+      OAUTH2_PROXY_REVERSE_PROXY: "true"
+      OAUTH2_PROXY_COOKIE_SECURE: "true"
+      OAUTH2_PROXY_COOKIE_EXPIRE: 168h
+      OAUTH2_PROXY_UPSTREAMS: static://202
+      OAUTH2_PROXY_SKIP_PROVIDER_BUTTON: "true"
 
   dashboard:
     <<: *strands

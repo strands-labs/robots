@@ -1,6 +1,28 @@
-# HTTPS (Let's Encrypt) for the dashboard. WebSockets pass through reverse_proxy as-is.
-# No global `email` option: an empty ACME_EMAIL would make it a parse error and Caddy would not start.
+# HTTPS (Let's Encrypt) for the dashboard, behind "Sign in with GitHub" (oauth2-proxy on 127.0.0.1:4180).
+# A signed-in request reaches the dashboard carrying its static bearer token, so the dashboard's own passkey
+# screen never shows. Only the GitHub users in OAUTH_GITHUB_USERS get past oauth2-proxy.
 {$DASH_DOMAIN} {
 	encode zstd gzip
-	reverse_proxy 127.0.0.1:8090
+
+	# Public: CI's post-deploy check. Says only that the process is up and its version.
+	handle /api/health {
+		reverse_proxy 127.0.0.1:8090
+	}
+
+	handle /oauth2/* {
+		reverse_proxy 127.0.0.1:4180
+	}
+
+	handle {
+		forward_auth 127.0.0.1:4180 {
+			uri /oauth2/auth
+			@signin status 401
+			handle_response @signin {
+				redir * /oauth2/sign_in?rd={scheme}://{host}{uri}
+			}
+		}
+		reverse_proxy 127.0.0.1:8090 {
+			header_up Authorization "Bearer {$DASHBOARD_AUTH_TOKEN}"
+		}
+	}
 }

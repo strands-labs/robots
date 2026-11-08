@@ -5,8 +5,9 @@
 #   destroy  down + delete the volume and IP (everything gone, passkeys too)
 # Every push to main builds the image and deploys it if the droplet is up. Nightly auto-down at 06:47 UTC
 # (01:47 ET) unless repo variable AUTO_DOWN=false.
-# Secrets: DIGITALOCEAN_ACCESS_TOKEN, DO_SSH_KEY, DO_HOST_KEY (deploy/cloud/init-secrets.sh sets all three).
-# Variables (optional): DASH_DOMAIN (default <ip>.sslip.io), ACME_EMAIL.
+# Secrets: DIGITALOCEAN_ACCESS_TOKEN, DO_SSH_KEY, DO_HOST_KEY (deploy/cloud/init-secrets.sh sets all three);
+# OAUTH_CLIENT_ID, OAUTH_CLIENT_SECRET (GitHub OAuth app for the login; callback https://<domain>/oauth2/callback).
+# Variables (optional): DASH_DOMAIN (default <ip>.sslip.io), OAUTH_GITHUB_USERS (default Jacob-Brokloff).
 name: Cloud
 
 on:
@@ -115,10 +116,18 @@ jobs:
         env:
           IP: ${{ steps.host.outputs.ip }}
           DASH_DOMAIN: ${{ vars.DASH_DOMAIN }}
-          ACME_EMAIL: ${{ vars.ACME_EMAIL }}
+          OAUTH_GITHUB_USERS: ${{ vars.OAUTH_GITHUB_USERS }}
+          OAUTH_CLIENT_ID: ${{ secrets.OAUTH_CLIENT_ID }}
+          OAUTH_CLIENT_SECRET: ${{ secrets.OAUTH_CLIENT_SECRET }}
         run: |
           domain="${DASH_DOMAIN:-${IP//./-}.sslip.io}"
-          printf 'DASH_DOMAIN=%s\nACME_EMAIL=%s\n' "$domain" "$ACME_EMAIL" > .env.cloud
+          if [ -z "$OAUTH_CLIENT_ID" ] || [ -z "$OAUTH_CLIENT_SECRET" ]; then
+            echo "::error::set repo secrets OAUTH_CLIENT_ID / OAUTH_CLIENT_SECRET (GitHub OAuth app, callback https://$domain/oauth2/callback)"
+            exit 1
+          fi
+          umask 077
+          printf 'DASH_DOMAIN=%s\nOAUTH_GITHUB_USERS=%s\nOAUTH_CLIENT_ID=%s\nOAUTH_CLIENT_SECRET=%s\n' \
+            "$domain" "${OAUTH_GITHUB_USERS:-Jacob-Brokloff}" "$OAUTH_CLIENT_ID" "$OAUTH_CLIENT_SECRET" > .env.cloud
           scp -i ~/.ssh/id_deploy .env.cloud "deploy@$IP:/opt/strands-cloud/.env"
           scp -i ~/.ssh/id_deploy deploy/cloud/docker-compose.yml deploy/cloud/Caddyfile deploy/cloud/deploy.sh \
             "deploy@$IP:/opt/strands-cloud/"
