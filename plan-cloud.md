@@ -89,6 +89,23 @@ Why not AWS: more moving parts and cost for a single-operator dev box. The AWS I
 - Region: DO **NYC3** (closest DO region to Lakewood, OH; TOR1 is the fallback if pings are worse).
   RunPod stays **US-MO-1** (existing volume; inference is per action chunk, so ~30 ms extra is fine).
 
+## Bake-off: DO + RunPod vs Google Cloud
+
+Run both for ~2 weeks, then keep one. ~90% of the work is shared, only the deploy target differs.
+
+- Shared: one image, one compose stack (`deploy/cloud/`), mTLS mesh, one HTTP inference container.
+- Targets: `deploy/targets/do/` (droplet NYC3 + RunPod Serverless) and `deploy/targets/gcp/`
+  (VM us-east5 + Cloud Run GPU us-east4/us-central1).
+- CI deploys every merge to both. The Pi has one host client, so the robot joins one hub per test
+  session (switch = one env var + restart of `xlerobot-control`).
+- Scorecard (logged to `docs/bakeoff.md`):
+  - Simplicity: hours + steps to first login, CI deploy time, things that broke.
+  - Performance: teleop round trip (p50/p95), inference latency per chunk (p50/p95), cold start,
+    fleet-view camera fps.
+  - Cost: actual bill per day idle, per 1 h robot session, per training run.
+- Budget: ~$50-100 total over the trial (GCP $300 credit likely covers its side).
+- Long-lead item: GCP Cloud Run GPU quota request (days), start it first.
+
 ## Open decisions
 
 - Domain to use for `dash.<domain>`.
