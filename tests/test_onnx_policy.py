@@ -96,13 +96,23 @@ def test_a_preset_name_never_resolves_to_a_file_in_cwd(tmp_path, monkeypatch):
     fetched.write_bytes(b"published")
     calls = []
     hub = pytest.importorskip("huggingface_hub")
-    monkeypatch.setattr(hub, "hf_hub_download", lambda repo, name: calls.append((repo, name)) or str(fetched))
+    monkeypatch.setattr(
+        hub, "hf_hub_download", lambda repo, name, revision: calls.append((repo, name, revision)) or str(fetched)
+    )
     good = hashlib.sha256(b"published").hexdigest()
-    assert resolve_weights("w.onnx", repo="o/r", sha256=good) == fetched and calls == [("o/r", "w.onnx")]
+    assert resolve_weights("w.onnx", repo="o/r", sha256=good, revision="c0ffee") == fetched
+    assert calls == [("o/r", "w.onnx", "c0ffee")]
     with pytest.raises(OSError, match="refusing to run unknown weights"):
         resolve_weights("w.onnx", repo="o/r", sha256="0" * 64)
     with pytest.raises(OSError, match="refusing to run unknown weights"):
         resolve_weights(tmp_path / "w.onnx", sha256=good)
+
+
+@pytest.mark.parametrize("preset", ["microduck", "holosoma"])
+def test_a_hashed_preset_fetches_its_weights_at_a_pinned_commit(preset):
+    # a hash with no revision breaks the day the Hub repo publishes new weights under the same file name
+    facts = json.loads((PKG / "policy" / "onnx" / "presets.json").read_text())[preset]
+    assert facts["sha256"] and len(facts["revision"]) == 40 and int(facts["revision"], 16) >= 0
 
 
 def test_a_query_string_is_the_same_as_keywords(monkeypatch):

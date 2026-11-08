@@ -51,7 +51,9 @@ def with_physics(xml: str, gravity: tuple[float, float, float]) -> str:
 def _skills(facts: dict[str, Any], dst: Path) -> list[dict[str, Any]]:
     out = []
     for skill, name in facts["files"].items():
-        weights = resolve_weights(name, repo=facts["repo"], sha256=facts["sha256"].get(name))
+        weights = resolve_weights(
+            name, repo=facts["repo"], revision=facts["revision"], sha256=facts["sha256"].get(name)
+        )
         side = weights.with_name(weights.name + ".json")  # the sidecar write_sidecar keeps next to the graph
         doc = json.loads(side.read_text()) if side.is_file() else None
         if doc is None or "metadata" not in doc:

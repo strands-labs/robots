@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import functools
 import http.server
+import json
 import math
 import socket
 import threading
@@ -164,3 +165,32 @@ def test_s6_with_a_server_the_page_never_steps_physics(page: Any) -> None:
         pg.close()
         server.stop()
         sim.close()
+
+
+def test_the_bundle_fetches_skill_weights_at_the_pinned_revision(tmp_path: Any, monkeypatch: Any) -> None:
+    """Every skill in the browser bundle is fetched at the preset's pinned Hub revision.
+
+    The standalone bundler was the one ``resolve_weights`` caller left on the repo's ``main``,
+    so after the preset pinned a commit the bundle still pulled the moving file and refused it.
+    Deterministic and offline: ``resolve_weights`` is stubbed to record the revision it is asked for.
+    """
+    _, facts = standalone.browser_preset()
+    seen: list[str | None] = []
+
+    def fake_resolve(name: str, *, repo: str, revision: str | None = None, sha256: str | None = None) -> Any:
+        seen.append(revision)
+        weights = tmp_path / name
+        weights.write_bytes(b"onnx")
+        weights.with_name(weights.name + ".json").write_text(
+            json.dumps({"metadata": {"command_names": ["twist"]}}), encoding="utf-8"
+        )
+        return weights
+
+    monkeypatch.setattr(standalone, "resolve_weights", fake_resolve)
+    dst = tmp_path / "out"
+    dst.mkdir()
+    skills = standalone._skills(facts, dst)
+
+    assert seen, "no skills resolved"
+    assert all(rev == facts["revision"] for rev in seen), (seen, facts["revision"])
+    assert {s["name"] for s in skills} == set(facts["files"])
