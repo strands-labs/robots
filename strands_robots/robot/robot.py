@@ -59,7 +59,7 @@ class Robot(DeviceVerbs):
 
         self.description: Description = Description.load(name)
         self.name = self.description.name
-        self.is_real = port is not None or driver is not None
+        self.is_real = port is not None or driver is not None or "host" in driver_options  # host=: a networked body
         hw_only = [n for n, v in (("confirm", confirm), ("approve", approve), ("clock", clock)) if v is not None]
         if hw_only and not self.is_real:  # the operator gates and a bus clock are hardware's; a world owns its time
             raise TypeError(f"{', '.join(hw_only)}= are hardware Robot arguments; a simulated body takes none")
@@ -137,13 +137,15 @@ class Robot(DeviceVerbs):
         self.sim.set_pose(self, position=position, orientation=orientation)
 
     def set_gains(self, kp: Any, kd: Any) -> None:
-        """PD gains of this body's actuators, ``action_keys`` order (sim only; a servo bus keeps its own)."""
-        if self.sim is None:
+        """PD gains of this body's actuators, ``action_keys`` order (sim, or a driver that sends gains per command)."""
+        if self.sim is None and not hasattr(self.body, "set_gains"):
             raise NotImplementedError(f"{self.id} is hardware: its servo gains live in the firmware")
         kp, kd = np.asarray(kp, dtype=float).reshape(-1), np.asarray(kd, dtype=float).reshape(-1)
         n = len(self.description.action_keys)
         if kp.shape != (n,) or kd.shape != (n,):
             raise ValueError(f"{self.id}: kp {kp.shape} / kd {kd.shape} for {n} actuators {list(self.action_keys)}")
+        if self.sim is None:  # a ROS humanoid: kp/kd ride in every command frame
+            return self.body.set_gains(kp, kd)  # type: ignore[attr-defined]
         with self.sim.lock:
             self.sim.backend.set_gains(self.id, kp, kd)
 
@@ -154,11 +156,7 @@ class Robot(DeviceVerbs):
             t = self.clock.now()
             js = body.read()
             obs = Observation(
-                t=t,
-                joints=js,
-                pose=body.pose(),
-                images=body.images() if images else {},
-                extras=body.extras(),
+                t=t, joints=js, pose=body.pose(), images=body.images() if images else {}, extras=body.extras()
             )
         if self.twin is not None:  # the twin shows what the real body measured
             _twin.mirror(self, _targets.clip_to_limits(self.description, js.positions), measured=True)

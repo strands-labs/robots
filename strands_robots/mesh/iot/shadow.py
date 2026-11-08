@@ -71,7 +71,7 @@ class ShadowMirror:
         lockout: Callable[[], Mapping[str, Any]] | None = None,
         clock: Callable[[], float] = time.time,
         control: bool = True,
-        on_rpc: Callable[[str, str | None], Callable[[], None] | None] | None = None,
+        on_rpc: Callable[[str, str | None], Callable[[bool], None] | None] | None = None,
     ) -> None:
         """``link`` publishes/subscribes MQTT topics (``AwsLink`` or ``FakeLink``); ``thing`` defaults to the device
         id (the thing name IS the device id, MAPPING 3.1). ``lockout()`` returns the device's lockout as a dict so the
@@ -217,7 +217,7 @@ class ShadowMirror:
                 clear[key] = None
         reported: dict[str, Any] = {}
         if action:
-            done = (self._on_rpc("act", f"shadow:{self.thing}") if self._on_rpc else None) or (lambda: None)
+            done = (self._on_rpc("act", f"shadow:{self.thing}") if self._on_rpc else None) or (lambda ok: None)
             try:
                 self.robot.confirm_act(action)
                 self.applied.append(action)
@@ -227,7 +227,7 @@ class ShadowMirror:
                     refused[f"{k}.pos"] = str(exc)
                     clear[f"{k}.pos"] = None
             finally:
-                done()  # the quiet clock restarts once the target is written, as for an act rpc
+                done(f"{next(iter(action))}.pos" not in refused)  # as for an act rpc: a refused target arms nothing
         AUDIT.info("%s shadow:control %s keys=%s", self.thing, "refused" if refused else "ok", sorted(desired))
         reported["refused"] = refused or None
         self._write_control(reported, clear)

@@ -26,7 +26,7 @@ def test_chat_produces_a_tool_use_and_the_arm_moves() -> None:
         with page_on(server.url) as page:
             page.fill("#prompt", "turn the base a little")
             page.press("#prompt", "Enter")
-            page.wait_for_function("(window.__chatEvents || []).some(e => e.type === 'done')", timeout=30_000)
+            page.wait_for_function("() => (window.__chatEvents || []).some(e => e.type === 'done')", timeout=30_000)
             events = page.evaluate("window.__chatEvents")
             kinds = [e["type"] for e in events]
             assert "tool_use" in kinds and "tool_result" in kinds, events

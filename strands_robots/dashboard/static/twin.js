@@ -118,7 +118,7 @@ export class Twin {
     this.compileMs = performance.now() - t0;
     this.pluginsStripped = pluginsStripped;
     this.model = model;
-    this.revision = desc.revision ?? null;
+    this.revision = Number.isInteger(desc.revision) ? desc.revision : null; // the server's Simulation.revision
     this.desc = desc;
     this._build();
     // A keyframe inside an attached robot is NOT rebased to its frame, so the compile-time rest pose can
@@ -139,7 +139,7 @@ export class Twin {
   }
 
   _get(url) {
-    return fetch(`${this.base}${url}`).then((r) => { if (!r.ok) throw new Error(`${url}: HTTP ${r.status}`); return r; });
+    return fetch(`${this.base}${url}`).then((r) => { if (!r.ok) throw new Error(`${new URL(url, location.href).href}: HTTP ${r.status}`); return r; });
   }
 
   _clear() {

@@ -51,7 +51,9 @@ def test_the_page_lists_remote_mesh_devices_and_estops_one() -> None:
             row.wait_for(timeout=10_000)
             assert page.locator('#mesh-devices [data-device="so101"]').count() == 0  # local: listed once, above
             row.locator("button.estop").click()
-            page.wait_for_function("window.__safety.notices.some(n => n.includes('over the mesh'))", timeout=15_000)
+            page.wait_for_function(
+                "() => window.__safety.notices.some(n => n.includes('over the mesh'))", timeout=15_000
+            )
             assert mesh.calls == [("dog_1", "estop")]
             assert not page.errors, page.errors
     finally:

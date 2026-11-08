@@ -28,7 +28,9 @@ code can read them.
 
 ## Record from the dashboard
 
-The dashboard's **Record** tab does the same without code. See [Dashboard](dashboard.md) to start one.
+The dashboard's **Record** tab does the same without code. See [Dashboard](dashboard.md) to start one. The tab
+writes only inside `~/strands-robots/recordings` (set `STRANDS_ROBOTS_RECORDINGS` to move it). A target is a
+name in that directory, a path inside it, or `hf://owner/name`.
 
 1. Tick the robots and cameras to record.
 2. Enter the task, a target directory and the fps.

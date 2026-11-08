@@ -37,6 +37,41 @@ the caller disappears, the robot does what `on_disconnect` says.
 A real robot mounted with `watchdog_ms=None` only answers `observe` and `describe`. Set `watchdog_ms=` to move it
 over the mesh.
 
+The watchdog arms only on a move the robot carried out. A move it refused, for bad arguments or by its safety
+chain, changes nothing, so a request that moved nothing can never make it apply `on_disconnect`. Every
+`on_disconnect` the watchdog applies leaves a `strands_robots.audit` warning. If one request gets two different
+answers (a second peer answering for the robot), `invoke` raises `RemoteError` instead of picking one.
+
+## Securing the mesh
+
+A plain `zenoh://` mesh lets any machine that reaches it join. That machine can read state and cameras, answer
+for a robot, and send it commands that its safety chain then checks. Mounting a real robot on such a mesh logs an
+audit warning. To say who may join, give zenoh a config file with `?config=<path>` or `STRANDS_ZENOH_CONFIG`. That
+file can set TLS with client certificates on `tls/` endpoints, user and password authentication, and access
+control. The file is the session's config. The mesh adds only its lease, any `?listen=` or `?connect=`, peer mode if
+the file sets no mode, and its scouting group if the file sets neither `scouting.multicast.enabled` nor its `address`.
+
+TLS settings guard only `tls/` links. A peer that scouts the robot can still offer a plain `tcp/` locator, and zenoh
+connects to it. To admit only certificate holders, allow only the `tls` protocol and turn scouting off:
+
+```json5
+{
+  mode: "peer",
+  listen: { endpoints: ["tls/0.0.0.0:7447"] },
+  scouting: { multicast: { enabled: false }, gossip: { enabled: false } },
+  transport: { link: {
+    protocols: ["tls"],
+    tls: {
+      listen_certificate: "robot.pem", listen_private_key: "robot.key",
+      root_ca_certificate: "lab-ca.pem", enable_mtls: true,
+    },
+  } },
+}
+```
+
+LeRobot remote inference (`Policy("zenoh://host:port/<deployment>")`) uses LeRobot's own zenoh client. Run it over a
+`tls/` endpoint or a network you control, such as a VLAN or WireGuard.
+
 ## Resume after a mesh e-stop
 
 By default, a resume over Zenoh is refused, because any peer can claim a name. Give each operator a key:

@@ -24,12 +24,14 @@ def test_runtime_add_recompiles_the_twin_in_place() -> None:
             page.evaluate("window.__sameDocument = 'yes'")
             loads = page.evaluate("window.__sceneLoaded")
             Robot("unitree_g1", sim=sim, position=[1.0, 0.0, 0.0])  # a script adds a body to THE world
-            page.wait_for_function(f"window.__sceneLoaded > {loads}", timeout=30_000)
-            page.wait_for_function("window.__twin.model.jnt_names.some(n => n.startsWith('unitree_g1/'))")
+            page.wait_for_function(f"() => window.__sceneLoaded > {loads}", timeout=30_000)
+            page.wait_for_function("() => window.__twin.model.jnt_names.some(n => n.startsWith('unitree_g1/'))")
             r = httpx.post(f"{server.url}/api/robots", json={"name": "so100", "position": [0, 1, 0]})
             assert r.status_code == 201, r.text
             assert r.json()["id"] in sim.robots
-            page.wait_for_function("window.__twin.model.jnt_names.some(n => n.startsWith('so100/'))", timeout=30_000)
+            page.wait_for_function(
+                "() => window.__twin.model.jnt_names.some(n => n.startsWith('so100/'))", timeout=30_000
+            )
             assert page.evaluate("window.__sameDocument") == "yes"  # no reload: the same document
             assert page.evaluate("window.__twin.revision") == sim.revision
             page.screenshot(path=str(MEDIA / "row3-runtime-add.png"))

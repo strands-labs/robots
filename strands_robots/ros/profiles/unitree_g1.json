@@ -1,0 +1,137 @@
+{
+ "family": "unitree_hg",
+ "description": "Unitree G1 (29 DoF) over unitree_ros2 (rmw_cyclonedds, domain 0). /lowstate in, /lowcmd out at 500 Hz with CRC.",
+ "discovery": {
+  "rmw": "rmw_cyclonedds_cpp",
+  "domain_id": 0,
+  "iface": "eth0"
+ },
+ "model": {
+  "registry": "unitree_g1"
+ },
+ "joints": {
+  "left_hip_pitch": 0,
+  "left_hip_roll": 1,
+  "left_hip_yaw": 2,
+  "left_knee": 3,
+  "left_ankle_pitch": 4,
+  "left_ankle_roll": 5,
+  "right_hip_pitch": 6,
+  "right_hip_roll": 7,
+  "right_hip_yaw": 8,
+  "right_knee": 9,
+  "right_ankle_pitch": 10,
+  "right_ankle_roll": 11,
+  "waist_yaw": 12,
+  "waist_roll": 13,
+  "waist_pitch": 14,
+  "left_shoulder_pitch": 15,
+  "left_shoulder_roll": 16,
+  "left_shoulder_yaw": 17,
+  "left_elbow": 18,
+  "left_wrist_roll": 19,
+  "left_wrist_pitch": 20,
+  "left_wrist_yaw": 21,
+  "right_shoulder_pitch": 22,
+  "right_shoulder_roll": 23,
+  "right_shoulder_yaw": 24,
+  "right_elbow": 25,
+  "right_wrist_roll": 26,
+  "right_wrist_pitch": 27,
+  "right_wrist_yaw": 28
+ },
+ "state": {
+  "topic": "/lowstate",
+  "type": "unitree_hg/msg/LowState",
+  "qos": "auto",
+  "max_age_ms": 20
+ },
+ "command": {
+  "topic": "/lowcmd",
+  "type": "unitree_hg/msg/LowCmd",
+  "qos": "reliable",
+  "trigger": "timer",
+  "rate_hz": 500,
+  "deadman_ms": 200,
+  "target_max_age_ms": 100,
+  "motors": 35,
+  "mode_pr": 0,
+  "requires_release": true
+ },
+ "odom": {
+  "topic": "/odommodestate",
+  "type": "unitree_go/msg/SportModeState",
+  "qos": "auto",
+  "max_age_ms": 500
+ },
+ "gains": {
+  "kp": {
+   "left_hip_pitch": 60,
+   "left_hip_roll": 60,
+   "left_hip_yaw": 60,
+   "left_knee": 100,
+   "left_ankle_pitch": 40,
+   "left_ankle_roll": 40,
+   "right_hip_pitch": 60,
+   "right_hip_roll": 60,
+   "right_hip_yaw": 60,
+   "right_knee": 100,
+   "right_ankle_pitch": 40,
+   "right_ankle_roll": 40,
+   "waist_yaw": 60,
+   "waist_roll": 40,
+   "waist_pitch": 40,
+   "default": 40
+  },
+  "kd": {
+   "left_hip_pitch": 1,
+   "left_hip_roll": 1,
+   "left_hip_yaw": 1,
+   "left_knee": 2,
+   "left_ankle_pitch": 1,
+   "left_ankle_roll": 1,
+   "right_hip_pitch": 1,
+   "right_hip_roll": 1,
+   "right_hip_yaw": 1,
+   "right_knee": 2,
+   "right_ankle_pitch": 1,
+   "right_ankle_roll": 1,
+   "waist_yaw": 1,
+   "waist_roll": 1,
+   "waist_pitch": 1,
+   "default": 1
+  }
+ },
+ "stop": [
+  {
+   "topic": "/api/sport/request",
+   "type": "unitree_api/msg/Request",
+   "qos": "reliable",
+   "repeat": 1,
+   "fields": {
+    "header": {
+     "identity": {
+      "api_id": 7105
+     }
+    },
+    "parameter": "{\"velocity\": [0, 0, 0], \"duration\": 1.0}"
+   }
+  }
+ ],
+ "surfaces": [
+  "/lowcmd",
+  "/arm_sdk",
+  "/api/sport/request",
+  "/api/arm/request",
+  "/api/motion_switcher/request"
+ ],
+ "on_disconnect": "hold",
+ "notes": [
+  "DDS is only on eth0 (192.168.123.0/24): run this on the robot's Jetson and reach it over the strands mesh.",
+  "Low-level writes need Unitree's motion controller released first (MotionSwitcher ReleaseMode / debug mode). The driver refuses writes until you pass released=True to say you did it.",
+  "Stop: the loco StopMove/SetVelocity(0) request is only meaningful while the motion controller runs; in low-level mode the driver holds pose instead.",
+  "kp/kd defaults are Unitree's SDK example values; tune on a harness.",
+  "/odommodestate, not /sportmodestate or /odom (silent).",
+  "Loco RPCs (SetVelocity 7105 = the stop) go to /api/sport/request: unitree_sdk2py's G1 LocoClient uses service name 'sport'."
+ ]
+}

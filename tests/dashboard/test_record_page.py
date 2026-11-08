@@ -35,18 +35,22 @@ def test_the_record_panel_records_two_episodes_of_the_slider_moves(tmp_path: Pat
     target = tmp_path / "from-the-page"
     try:
         with page_on(server.url) as page:
-            page.wait_for_function("!!document.querySelector('#record .rec-robot input')", timeout=LONG)
+            page.wait_for_function("() => !!document.querySelector('#record .rec-robot input')", timeout=LONG)
             assert "record" in page.evaluate("[...window.SR.panels.keys()]")  # a tab through the slot API
             _tap(page, '#tabs button[data-tab="record"]')
-            page.wait_for_function("document.querySelector('#record').offsetParent !== null", timeout=LONG)
+            page.wait_for_function("() => document.querySelector('#record').offsetParent !== null", timeout=LONG)
             box = page.locator('#record .rec-cam input[data-robot="so101"][value="front"]')
             assert box.is_checked()  # a robot's own camera is ticked for it
             page.fill("#record .rec-task", "sweep the pan")
             page.fill("#record .rec-target", str(target))
             page.fill("#record .rec-fps", "10")
             _tap(page, "#record .rec-go")
-            page.wait_for_function("document.querySelector('#record').dataset.state === 'recording'", timeout=LONG)
-            page.wait_for_function("!document.querySelector('.rec-bar').hidden", timeout=LONG)  # REC in the top bar
+            page.wait_for_function(
+                "() => document.querySelector('#record').dataset.state === 'recording'", timeout=LONG
+            )
+            page.wait_for_function(
+                "() => !document.querySelector('.rec-bar').hidden", timeout=LONG
+            )  # REC in the top bar
             for n, sweep in enumerate(((-0.6, -0.2, 0.2, 0.6), (0.6, 0.2, -0.2, -0.6)), start=1):
                 for v in sweep:
                     page.evaluate(
@@ -56,18 +60,24 @@ def test_the_record_panel_records_two_episodes_of_the_slider_moves(tmp_path: Pat
                         v,
                     )
                     page.wait_for_timeout(250)
-                page.wait_for_function("window.__record.status && window.__record.status.frames >= 10", timeout=LONG)
+                page.wait_for_function(
+                    "() => window.__record.status && window.__record.status.frames >= 10", timeout=LONG
+                )
                 if n == 1:  # the first take is kept with save; stop keeps the second
                     _tap(page, "#record .rec-save")
                     page.wait_for_function(
-                        "document.querySelectorAll('#record .rec-episodes li').length === 1 && !window.__record.busy",
+                        "() => document.querySelectorAll('#record .rec-episodes li').length === 1"
+                        " && !window.__record.busy",
                         timeout=LONG,
                     )
             _tap(page, "#record .rec-stop")
             page.wait_for_function(
-                "document.querySelector('#record').dataset.state === 'idle' && !window.__record.busy", timeout=LONG
+                "() => document.querySelector('#record').dataset.state === 'idle' && !window.__record.busy",
+                timeout=LONG,
             )
-            page.wait_for_function("document.querySelectorAll('#record .rec-episodes li').length === 2", timeout=LONG)
+            page.wait_for_function(
+                "() => document.querySelectorAll('#record .rec-episodes li').length === 2", timeout=LONG
+            )
             listed = page.locator("#record .rec-episodes").inner_text()
             assert "ep 0" in listed and "ep 1" in listed
             assert page.locator(".rec-bar").is_hidden()
