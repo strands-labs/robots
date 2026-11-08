@@ -6,6 +6,8 @@ import json
 import time
 import uuid
 
+import pytest
+
 from strands_robots.mesh.iot import lifecycle
 from strands_robots.mesh.transports.iot_link import FakeIotBroker, FakeLink
 
@@ -63,9 +65,20 @@ def test_watch_filters_to_the_tenants_clients_and_audit_remembers_the_last_event
 
 
 def test_the_lifecycle_rule_only_audits_and_names_the_tenant():
-    r = lifecycle.clear_presence_rule("lab", "arn:aws:iam::123456789012:role/x")
+    r = lifecycle.clear_presence_rule("lab", "arn:aws:iam::123456789012:role/x", things=["arm-1", "arm-2"])
     assert list(r) == ["strands_lifecycle_lab"]
-    assert r["strands_lifecycle_lab"]["sql"].startswith(
-        "SELECT clientId, disconnectReason, timestamp FROM '$aws/events/presence/disconnected/+'"
-    )
+    sql = r["strands_lifecycle_lab"]["sql"]
+    assert sql.startswith("SELECT clientId, disconnectReason, timestamp FROM '$aws/events/presence/disconnected/+'")
     assert r["strands_lifecycle_lab"]["actions"][0]["republish"]["topic"] == "strands/lab/@audit/disconnected"
+
+
+def test_the_lifecycle_rule_republishes_only_this_tenants_clients():
+    # Lifecycle events are account-wide: without a WHERE, every tenant's audit topic would carry everyone's.
+    sql = lifecycle.clear_presence_rule("lab", "arn:aws:iam::1:role/x", things=["arm-1", "arm-2"])[
+        "strands_lifecycle_lab"
+    ]["sql"]
+    assert sql.endswith("WHERE clientId = 'arm-1' OR clientId = 'arm-2' OR startswith(clientId, 'strands-op-lab-')")
+    with pytest.raises(ValueError, match="device ids"):
+        lifecycle.clear_presence_rule("lab", "arn:aws:iam::1:role/x", things=[])
+    with pytest.raises(ValueError):
+        lifecycle.clear_presence_rule("lab", "arn:aws:iam::1:role/x", things=["arm' OR '1'='1"])

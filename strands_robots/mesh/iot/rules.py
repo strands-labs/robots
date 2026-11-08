@@ -40,11 +40,18 @@ def rule_name(kind: str, tenant: str) -> str:
     plain one never has, and two of them are equal only if the two SHA-256 digests begin with the same 48 bits."""
     if kind not in KINDS:
         raise ValueError(f"unknown rule kind {kind!r}; known: {list(KINDS)}")
+    return f"strands_{kind}_{tenant_key(tenant, _ROOM)}"
+
+
+def tenant_key(tenant: str, room: int) -> str:
+    """``tenant`` in at most ``room`` characters of ``[A-Za-z0-9_]``: as it is if it is letters and digits, else its
+    head with ``_`` for ``- . :``, ``_`` and 12 hex of its SHA-256. It never holds a ``-``, so a name built as
+    ``<prefix><key>-...`` ends the tenant at the first ``-``, and no tenant's key is a prefix of another's."""
     t = wire.check_id(tenant, "tenant")
-    if len(t) <= _ROOM and _PLAIN.fullmatch(t):
-        return f"strands_{kind}_{t}"
-    head = _NAME.sub("_", t)[: _ROOM - 13]  # room for "_" and the 12 hex digits
-    return f"strands_{kind}_{head}_{hashlib.sha256(t.encode()).hexdigest()[:12]}"
+    if len(t) <= room and _PLAIN.fullmatch(t):
+        return t
+    head = _NAME.sub("_", t)[: room - 13]  # room for "_" and the 12 hex digits
+    return f"{head}_{hashlib.sha256(t.encode()).hexdigest()[:12]}"
 
 
 def basic_ingest_topic(tenant: str, device_id: str) -> str:
