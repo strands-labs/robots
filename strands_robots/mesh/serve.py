@@ -176,12 +176,13 @@ def serve(
     before it runs (the watchdog) and may return a callable run once the call ends. Returns the undo."""
     handlers = _handlers(robot, device_id, lockout, authority, in_process(transport.url))
     counter = itertools.count(1)
-    # a hardware body with no mesh watchdog (on_rpc is None) is served observe-only: a mover that vanishes
-    # must never leave an arm commanded with nothing to recall it; a simulated body is harmless, unchanged
-    observe_only = on_rpc is None and bool(getattr(robot, "is_real", False))
-    if getattr(robot, "is_real", False) and getattr(transport, "open_peers", False):
-        AUDIT.warning("%s/%s: a real robot on a mesh any peer may join; set STRANDS_ZENOH_CONFIG (docs/mesh.md)",
-                      tenant, device_id)  # fmt: skip
+    # a hardware body is served observe-only with no mesh watchdog (a vanished mover must not leave it commanded), or
+    # on a mesh any peer may join (a peer id there is only a claim); a simulated body is harmless, unchanged
+    real = bool(getattr(robot, "is_real", False))
+    why = "a hardware device with watchdog_ms=None" if on_rpc is None and real else None
+    if real and getattr(transport, "open_peers", False):
+        why = why or "a real robot on a mesh any peer may join: give it STRANDS_ZENOH_CONFIG or ?trusted=1"
+        AUDIT.warning("%s/%s is served observe-only: %s (docs/mesh.md)", tenant, device_id, why)
 
     def answer(key: str, payload: bytes) -> bytes:
         name = key.rsplit("/", 1)[-1]
@@ -193,11 +194,8 @@ def serve(
             env = wire.decode_envelope(payload)
             seq = int(env.get("seq", seq))  # M3: echo the request's seq so the caller can match the reply
             args = env.get("args") or {}
-            if observe_only and name in WRITE_RPCS:
-                raise RequestRefused(
-                    f"{device_id} is mounted observe-only (a hardware device with watchdog_ms=None); "
-                    f"{name} is refused. Mount it with watchdog_ms= so a vanished mover recalls it."
-                )
+            if why is not None and name in WRITE_RPCS:
+                raise RequestRefused(f"{device_id} is mounted observe-only ({why}); {name} is refused (docs/mesh.md)")
             if on_rpc is not None and name in MOTION_RPCS and env.get("peer") is None:
                 raise TypeError(f"{device_id}.{name} needs the caller's peer id: the watchdog arms on whoever moves it")
             extra = sorted(set(args) - set(ARGS[name]))
