@@ -26,7 +26,7 @@ Draft 2026-11-08, nothing built yet. Open decisions at the bottom.
 
 | Piece | Choice | ~Cost |
 |---|---|---|
-| Control plane | DigitalOcean droplet, 4 vCPU / 8 GB, region nearest home | ~$48/mo |
+| Control plane | DigitalOcean droplet, 4 vCPU / 8 GB, **NYC3** (home is Lakewood, OH; ~15 ms) | ~$48/mo |
 | GPU inference | RunPod Serverless (scale to zero, pay per second); same account + volume as today | ~$0 idle, ~$0.0004-0.0007/s busy |
 | GPU training | RunPod on-demand pod on the existing `strands-xlerobot` volume, started by API, auto-stops | $0.59/hr A40 while running |
 | Frontend previews | Cloudflare Pages (already set up, demo mode per PR) | $0 |
@@ -84,8 +84,12 @@ Why not AWS: more moving parts and cost for a single-operator dev box. The AWS I
 - Serverless cold start (model load) 10-60 s: keep one warm worker during a session, 0 otherwise.
 - Pi WiFi upload bandwidth for cameras; JPEG + lower resolution for the fleet view.
 
+## Decided
+
+- Region: DO **NYC3** (closest DO region to Lakewood, OH; TOR1 is the fallback if pings are worse).
+  RunPod stays **US-MO-1** (existing volume; inference is per action chunk, so ~30 ms extra is fine).
+
 ## Open decisions
 
-- Home location / cloud region.
 - Domain to use for `dash.<domain>`.
 - Keep Zenoh as a cloud broker (recommended) vs rewrite the mesh as REST/WebSocket.
