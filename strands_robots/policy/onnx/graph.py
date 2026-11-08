@@ -53,9 +53,11 @@ def base_twist(obs: Observation, who: str) -> tuple[np.ndarray, np.ndarray]:
     return np.asarray(obs.pose.angular_velocity, dtype=float), np.asarray(obs.pose.orientation, dtype=float)
 
 
-def resolve_weights(source: str | Path, *, repo: str | None = None, sha256: str | None = None) -> Path:
-    """A local ``.onnx`` path as is; a bare file name with a ``repo`` always comes from the Hub. ``sha256`` is checked
-    on whichever file is returned."""
+def resolve_weights(
+    source: str | Path, *, repo: str | None = None, sha256: str | None = None, revision: str | None = None
+) -> Path:
+    """A local ``.onnx`` path as is; a bare file name with a ``repo`` always comes from the Hub, at ``revision`` (a
+    commit) when given. ``sha256`` is checked on whichever file is returned."""
     p = Path(source).expanduser()
     if repo is None or "/" in str(source):
         if not p.is_file():
@@ -66,7 +68,7 @@ def resolve_weights(source: str | Path, *, repo: str | None = None, sha256: str 
             from huggingface_hub import hf_hub_download
         except ImportError as exc:
             raise ImportError(f"huggingface_hub is not installed: {hint('onnx')}") from exc
-        path = Path(hf_hub_download(repo, str(source)))
+        path = Path(hf_hub_download(repo, str(source), revision=revision))
     if sha256 is not None:
         got = hashlib.sha256(path.read_bytes()).hexdigest()
         if got != sha256:
@@ -119,11 +121,12 @@ class OnnxPolicy(Policy):
         *,
         repo: str | None = None,
         sha256: str | None = None,
+        revision: str | None = None,
         providers: Sequence[str] = CPU,
     ) -> None:
         if isinstance(providers, str) or not isinstance(providers, Sequence):
             raise TypeError("providers must be a sequence of onnxruntime provider names, e.g. ['CPUExecutionProvider']")
-        self.path = resolve_weights(source, repo=repo, sha256=sha256)
+        self.path = resolve_weights(source, repo=repo, sha256=sha256, revision=revision)
         self.session = _session(self.path, providers)
         inputs, outputs = self.session.get_inputs(), self.session.get_outputs()
         if len(inputs) != 1 or len(outputs) != 1:
