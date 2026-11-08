@@ -7,7 +7,14 @@ cd "$(dirname "$0")"
 new="${1:?usage: deploy.sh <image:tag>}"
 prev="$(cat current_image 2>/dev/null || true)"
 
-up() { IMAGE="$1" docker compose up -d --remove-orphans caddy dashboard && IMAGE="$1" docker compose restart caddy; }
+up() { IMAGE="$1" docker compose up -d --remove-orphans caddy oauth2-proxy dashboard && IMAGE="$1" docker compose restart caddy; }
+
+# Made once and kept on the volume: the dashboard's bearer token (Caddy adds it after GitHub login) and
+# oauth2-proxy's cookie secret. Never leaves the droplet.
+if [ ! -s secrets.env ]; then
+  umask 077
+  printf 'DASHBOARD_AUTH_TOKEN=%s\nOAUTH2_PROXY_COOKIE_SECRET=%s\n' "$(openssl rand -hex 32)" "$(openssl rand -hex 16)" > secrets.env
+fi
 
 healthy() {
   for _ in $(seq 1 60); do

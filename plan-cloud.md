@@ -80,8 +80,10 @@ Why not AWS: more moving parts and cost for a single-operator dev box. The AWS I
    - `docker-compose.yml` + `Caddyfile`: Caddy HTTPS in front of the loopback dashboard, OSMesa sims.
    - `deploy.sh`: pull, up, health check, roll back to the previous image on failure.
    - Dockerfile builds the frontend in a node stage, so UI changes always ship.
-   - URL: `https://<reserved-ip-dashed>.sslip.io` until a domain is chosen (repo variable `DASH_DOMAIN`).
-     Changing the domain later means re-enrolling the passkey.
+   - URL: `https://45-55-122-126.sslip.io` (reserved IP) until a domain is chosen (repo variable `DASH_DOMAIN`).
+   - Login: "Sign in with GitHub" (oauth2-proxy behind Caddy `forward_auth`, only `OAUTH_GITHUB_USERS`).
+     Caddy then adds the dashboard's static bearer token (`secrets.env`, made on the volume by `deploy.sh`), so
+     the Strands passkey screen never shows. No package/frontend change. `/api/health` stays public for CI.
 2. CI/CD. **Written**: `.github/workflows/cloud.yml`.
    - Push to `main`: build + push image; deploy only if the droplet is up.
    - Manual (Actions > Cloud): `up` (create/reuse + deploy), `deploy`, `down`, `destroy`.
