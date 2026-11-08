@@ -31,6 +31,7 @@ duck.run(Policy("microduck?vx=0.3"), seconds=10)  # walks about 1.3 m
 | Policies | Python functions, ONNX skills, LeRobot checkpoints, local or remote |
 | Recording | LeRobot v3 datasets |
 | Safety | A manifest, one safety chain and an e-stop for every robot |
+| ROS 2 | ros2_control robots and the Unitree G1 as a `Robot`, plus the `use_ros` agent tool |
 | Mesh | Robots on other machines, over Zenoh or AWS IoT Core |
 | Agent tools | `robot.tool`, `sim.tool` and `mesh.tool` for Strands agents |
 | Dashboard | A 3D view, controls, cameras, chat, voice and e-stops in the browser |

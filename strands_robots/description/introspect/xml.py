@@ -20,7 +20,7 @@ def _introspect_urdf(root: ET.Element) -> dict[str, Any]:
     joints: list[str] = []
     limits: dict[str, tuple[float, float]] = {}
     floating = False
-    for j in root.iter("joint"):
+    for j in root.findall("joint"):  # direct children only: <ros2_control>/<transmission> name joints too
         jt = j.get("type", "revolute")
         if jt == "fixed":
             continue
@@ -28,6 +28,8 @@ def _introspect_urdf(root: ET.Element) -> dict[str, Any]:
             floating = True
             continue
         name = j.get("name", f"joint{len(joints)}")
+        if name in joints:
+            raise ValueError(f"the URDF names joint {name!r} twice")
         joints.append(name)
         lim = j.find("limit")
         if lim is not None and lim.get("lower") is not None and lim.get("upper") is not None:
