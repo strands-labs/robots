@@ -36,7 +36,9 @@ class MicroduckPolicy(OnnxPolicy):
         if skill not in facts["files"]:
             raise ValueError(f"microduck: unknown skill {skill!r}; known: {', '.join(sorted(facts['files']))}")
         name = facts["files"][skill]
-        super().__init__(name, repo=facts["repo"], sha256=facts["sha256"].get(name), providers=providers)
+        super().__init__(
+            name, repo=facts["repo"], revision=facts["revision"], sha256=facts["sha256"].get(name), providers=providers
+        )
         meta = self.metadata
         if "joint_names" not in meta or "default_joint_pos" not in meta:
             raise ValueError(f"{self.path.name} has no joint_names/default_joint_pos metadata: not a microduck export")
