@@ -1,5 +1,6 @@
 """An agent's run on a real body: the policy files the operator approves are the files the run reads."""
 
+import hashlib
 import json
 
 import numpy as np
@@ -82,3 +83,11 @@ def test_the_digest_reads_through_a_symlinked_folder_and_survives_a_cycle(tmp_pa
     first = files_digest(str(tmp_path / "ck"))
     (tmp_path / "real" / "w.bin").write_bytes(b"two")
     assert files_digest(str(tmp_path / "ck")) != first
+
+
+def test_the_digest_needs_nothing_newer_than_python_3_10(tmp_path, monkeypatch):
+    (tmp_path / "w.bin").write_bytes(b"one")
+    one = hashlib.sha256(b"one").hexdigest()
+    want = hashlib.sha256(f"w.bin\0{one}\n".encode()).hexdigest()
+    monkeypatch.delattr(hashlib, "file_digest", raising=False)  # as on 3.10
+    assert files_digest(str(tmp_path / "w.bin")) == want

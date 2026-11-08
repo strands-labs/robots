@@ -42,9 +42,11 @@ def files_digest(policy: object) -> str | None:
     files = sorted(_files(local, set())) if local.is_dir() else [local]
     total = hashlib.sha256()
     for f in files:
+        one = hashlib.sha256()  # read in chunks, not hashlib.file_digest: that is Python 3.11+, the floor is 3.10
         with f.open("rb") as fh:
-            digest = hashlib.file_digest(fh, "sha256").hexdigest()
-        total.update(f"{f.relative_to(root).as_posix()}\0{digest}\n".encode())
+            while chunk := fh.read(1 << 20):
+                one.update(chunk)
+        total.update(f"{f.relative_to(root).as_posix()}\0{one.hexdigest()}\n".encode())
     return total.hexdigest()
 
 
