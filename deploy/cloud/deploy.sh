@@ -7,7 +7,7 @@ cd "$(dirname "$0")"
 new="${1:?usage: deploy.sh <image:tag>}"
 prev="$(cat current_image 2>/dev/null || true)"
 
-up() { IMAGE="$1" docker compose up -d --remove-orphans caddy dashboard; }
+up() { IMAGE="$1" docker compose up -d --remove-orphans caddy dashboard && IMAGE="$1" docker compose restart caddy; }
 
 healthy() {
   for _ in $(seq 1 60); do
