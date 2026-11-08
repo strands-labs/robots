@@ -28,7 +28,7 @@ runcmd:
   - mount -a
   - curl -fsSL https://get.docker.com | sh
   - usermod -aG docker deploy
-  - ufw allow OpenSSH && ufw allow 80/tcp && ufw allow 443/tcp && ufw allow 443/udp && ufw --force enable
+  - ufw allow OpenSSH && ufw allow 80/tcp && ufw allow 443/tcp && ufw allow 443/udp && ufw allow 7447/tcp && ufw --force enable
   - install -d -o deploy -g deploy /opt/strands-cloud/strands /opt/strands-cloud/hf-cache
   - install -d -m 700 -o deploy -g deploy /opt/strands-cloud/dashboard-auth
   - chown deploy:deploy /opt/strands-cloud
