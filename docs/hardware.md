@@ -74,7 +74,8 @@ Your own code calls `act()`. Agents and the dashboard call `confirm_act()`, whic
 first. If it returns false, nothing is written. A real robot without `confirm=` refuses `confirm_act()`.
 
 An agent's `run()` asks `approve=` once with the whole plan, not every step. Without `approve=`, the run is refused.
-The safety chain still checks every step.
+The safety chain still checks every step. When the policy is a checkpoint or dataset on this machine, the plan's
+`files` is the SHA-256 of its files; if they change between the yes and the load, the run is refused and moves nothing.
 
 {{drawing:d16_one_yes_per_run}}
 
