@@ -1,0 +1,137 @@
+# Fork: disposable cloud stack on DigitalOcean (deploy/cloud/). Actions tab > "Cloud" > Run workflow:
+#   up       create volume + reserved IP + droplet (reused if they exist), then deploy this commit
+#   deploy   deploy this commit to the running droplet
+#   down     destroy the droplet; the volume (datasets, passkeys) and reserved IP stay (~$7/mo idle)
+#   destroy  down + delete the volume and IP (everything gone, passkeys too)
+# Every push to main builds the image and deploys it if the droplet is up. Nightly auto-down at 06:47 UTC
+# (01:47 ET) unless repo variable AUTO_DOWN=false.
+# Secrets: DIGITALOCEAN_ACCESS_TOKEN, DO_SSH_KEY, DO_HOST_KEY (deploy/cloud/init-secrets.sh sets all three).
+# Variables (optional): DASH_DOMAIN (default <ip>.sslip.io), ACME_EMAIL.
+name: Cloud
+
+on:
+  push:
+    branches: [main]
+    paths-ignore: ['**.md', 'docs/**', 'tests/**', 'tests_integ/**', 'changelog.d/**']
+  workflow_dispatch:
+    inputs:
+      action:
+        type: choice
+        options: [up, deploy, down, destroy]
+        default: up
+  schedule:
+    - cron: '47 6 * * *'
+
+concurrency:
+  group: cloud
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  packages: write
+
+env:
+  DIGITALOCEAN_ACCESS_TOKEN: ${{ secrets.DIGITALOCEAN_ACCESS_TOKEN }}
+  ACTION: ${{ github.event_name == 'schedule' && 'down' || inputs.action || 'deploy' }}
+
+jobs:
+  build:
+    if: >-
+      github.repository_owner == 'Jacob-Brokloff' &&
+      (github.event_name == 'push' || inputs.action == 'up' || inputs.action == 'deploy')
+    runs-on: ubuntu-latest
+    outputs:
+      image: ${{ steps.name.outputs.image }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: name
+        run: echo "image=ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/strands-xlerobot:${GITHUB_SHA}" >> "$GITHUB_OUTPUT"
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: deploy/Dockerfile
+          push: true
+          tags: ${{ steps.name.outputs.image }}
+          build-args: STRANDS_VERSION=0.0.0+jacere.${{ github.run_number }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  infra:
+    if: github.repository_owner == 'Jacob-Brokloff' && github.event_name != 'push'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: digitalocean/action-doctl@v2
+        with:
+          token: ${{ secrets.DIGITALOCEAN_ACCESS_TOKEN }}
+      - name: cloud.sh up / down / destroy
+        if: env.ACTION == 'up' || env.ACTION == 'down' || env.ACTION == 'destroy'
+        env:
+          DO_SSH_KEY: ${{ secrets.DO_SSH_KEY }}
+          DO_HOST_KEY: ${{ secrets.DO_HOST_KEY }}
+        run: |
+          if [ "$ACTION" = down ] && [ "${{ github.event_name }}" = schedule ] && [ "${{ vars.AUTO_DOWN }}" = false ]; then
+            echo "AUTO_DOWN=false, skipping"; exit 0
+          fi
+          deploy/cloud/cloud.sh "$ACTION"
+
+  deploy:
+    needs: [build, infra]
+    if: >-
+      always() && needs.build.result == 'success' &&
+      (needs.infra.result == 'success' || needs.infra.result == 'skipped')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: digitalocean/action-doctl@v2
+        with:
+          token: ${{ secrets.DIGITALOCEAN_ACCESS_TOKEN }}
+      - name: Find droplet
+        id: host
+        run: echo "ip=$(deploy/cloud/cloud.sh ip)" >> "$GITHUB_OUTPUT"
+      - name: Skip (droplet is down)
+        if: steps.host.outputs.ip == ''
+        run: echo "::notice::droplet is down; image built but not deployed. Run Cloud > up to start it."
+      - name: SSH setup
+        if: steps.host.outputs.ip != ''
+        env:
+          KEY: ${{ secrets.DO_SSH_KEY }}
+          HOST_KEY: ${{ secrets.DO_HOST_KEY }}
+          IP: ${{ steps.host.outputs.ip }}
+        run: |
+          install -d -m 700 ~/.ssh
+          printf '%s\n' "$KEY" > ~/.ssh/id_deploy && chmod 600 ~/.ssh/id_deploy
+          printf '%s\n' "$HOST_KEY" > /tmp/hk && chmod 600 /tmp/hk
+          echo "$IP $(ssh-keygen -y -f /tmp/hk | cut -d' ' -f1-2)" > ~/.ssh/known_hosts && rm /tmp/hk
+      - name: Write .env and copy stack files
+        if: steps.host.outputs.ip != ''
+        env:
+          IP: ${{ steps.host.outputs.ip }}
+          DASH_DOMAIN: ${{ vars.DASH_DOMAIN }}
+          ACME_EMAIL: ${{ vars.ACME_EMAIL }}
+        run: |
+          domain="${DASH_DOMAIN:-${IP//./-}.sslip.io}"
+          printf 'DASH_DOMAIN=%s\nACME_EMAIL=%s\n' "$domain" "$ACME_EMAIL" > .env.cloud
+          scp -i ~/.ssh/id_deploy .env.cloud "deploy@$IP:/opt/strands-cloud/.env"
+          scp -i ~/.ssh/id_deploy deploy/cloud/docker-compose.yml deploy/cloud/Caddyfile deploy/cloud/deploy.sh \
+            "deploy@$IP:/opt/strands-cloud/"
+          scp -i ~/.ssh/id_deploy deploy/strands/user_robots.json "deploy@$IP:/opt/strands-cloud/strands/"
+          echo "::notice::dashboard: https://$domain"
+      - name: Deploy
+        if: steps.host.outputs.ip != ''
+        env:
+          IP: ${{ steps.host.outputs.ip }}
+          IMAGE: ${{ needs.build.outputs.image }}
+          TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ACTOR: ${{ github.actor }}
+        # The short-lived job token goes over stdin, never on a command line.
+        run: |
+          printf '%s' "$TOKEN" | ssh -i ~/.ssh/id_deploy "deploy@$IP" \
+            "docker login ghcr.io -u '$ACTOR' --password-stdin >/dev/null \
+             && cd /opt/strands-cloud && chmod +x deploy.sh && ./deploy.sh '$IMAGE'; rc=\$?; docker logout ghcr.io >/dev/null; exit \$rc"

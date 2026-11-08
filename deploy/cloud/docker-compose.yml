@@ -1,0 +1,57 @@
+# Cloud control plane (DigitalOcean droplet): Caddy (HTTPS) in front of the Strands dashboard.
+# Lives on the droplet at /opt/strands-cloud next to .env; CI copies this file there and runs deploy.sh.
+#   IMAGE=ghcr.io/jacob-brokloff/strands-xlerobot:<sha> docker compose up -d
+# Mesh (Zenoh) stays on loopback until the mTLS step (plan-cloud.md step 3); 7447 is not opened yet.
+x-strands: &strands
+  image: ${IMAGE:?set IMAGE to the image tag to run}
+  network_mode: host
+  env_file:
+    - path: .env
+      required: false
+  volumes:
+    - ./strands:/strands
+    - ./hf-cache:/root/.cache/huggingface
+
+services:
+  caddy:
+    image: caddy:2.10
+    restart: unless-stopped
+    network_mode: host
+    environment:
+      DASH_DOMAIN: ${DASH_DOMAIN:?set DASH_DOMAIN in .env}
+      ACME_EMAIL: ${ACME_EMAIL:-}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - ./caddy-data:/data
+      - ./caddy-config:/config
+
+  dashboard:
+    <<: *strands
+    restart: unless-stopped
+    environment:
+      STRANDS_BASE_DIR: /strands
+      # Caddy terminates TLS; WebAuthn must see the public origin, not http://127.0.0.1.
+      STRANDS_DASH_AUTH_ORIGIN: https://${DASH_DOMAIN}
+      STRANDS_DASHBOARD_PEER_ID: dashboard-cloud
+      # No GPU on the droplet: sims render on the CPU (OSMesa). Keep twin cameras modest.
+      MUJOCO_GL: osmesa
+      PYOPENGL_PLATFORM: osmesa
+      STRANDS_MESH_CAMERA_HZ: "5"
+      STRANDS_MESH_LOCAL_DEV: "true"
+      ZENOH_CONNECT: ""
+      ZENOH_LISTEN: ""
+    volumes:
+      - ./strands:/strands
+      - ./dashboard-auth:/root/.strands_dashboard
+      - ./hf-cache:/root/.cache/huggingface
+    # Loopback only: Caddy is the one public door.
+    command: ["strands-robots", "dashboard", "--host", "127.0.0.1", "--port", "8090"]
+
+  agent:
+    <<: *strands
+    profiles: ["agent"]
+    stdin_open: true
+    tty: true
+    environment:
+      STRANDS_BASE_DIR: /strands
+    command: ["python", "scripts/agent.py"]
