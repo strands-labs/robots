@@ -1,0 +1,304 @@
+"""Services, params, actions, request triplets, and the command gate."""
+
+from __future__ import annotations
+
+import pytest
+
+from .robots import REL
+
+
+def _server(ros):
+    n = ros.node("server")
+
+    def add(req, res):
+        res.sum = req.a + req.b
+        return res
+
+    n.create_service(type("S", (), {"_type": "example_interfaces/srv/AddTwoInts"}), "/add", add)
+    params = {"volume": 0.5}
+
+    def get(req, res):
+        res.values = [ros.msg("rcl_interfaces/ParameterValue")(type=3, double_value=params[k]) for k in req.names]
+        return res
+
+    def set_(req, res):
+        for p in req.parameters:
+            params[p.name] = p.value.double_value
+        return res
+
+    n.create_service(type("S", (), {"_type": "rcl_interfaces/srv/GetParameters"}), "/audio/get_parameters", get)
+    n.create_service(type("S", (), {"_type": "rcl_interfaces/srv/SetParameters"}), "/audio/set_parameters", set_)
+    return n
+
+
+def test_service_call_and_param_set_with_read_back(ros):
+    from strands_robots.ros import calls
+    from strands_robots.ros.bus import RosBus
+
+    _server(ros)
+    bus = RosBus().start()
+    assert calls.service_call(bus, "/add", "example_interfaces/srv/AddTwoInts", {"a": 2, "b": 3})["response"] == {
+        "sum": 5
+    }
+    assert calls.get_params(bus, "/audio", ["volume"]) == {"volume": 0.5}
+    r = calls.set_param(bus, "/audio", "volume", 0.25)
+    assert r["ok"] and r["read_back"] == 0.25
+    with pytest.raises(TimeoutError):
+        calls.service_call(bus, "/nope", "example_interfaces/srv/AddTwoInts", {}, timeout=0.1)
+    bus.close()
+
+
+def test_action_goal_returns_result_and_caps_feedback(ros):
+    from strands_robots.ros import calls
+    from strands_robots.ros.bus import RosBus
+
+    from . import fake_rclpy
+
+    def server(goal, fb, cls):
+        for i in range(9):
+            fb(type("F", (), {"feedback": cls.Feedback(sequence=list(range(i)))})())
+        res = fake_rclpy.Future()
+        res.set_result(type("R", (), {"status": 4, "result": cls.Result(sequence=[0, 1, 1, 2])})())
+        return type("H", (), {"accepted": True, "get_result_async": lambda self: res})()
+
+    fake_rclpy.GRAPH.actions["/fib"] = ("example_interfaces/action/Fibonacci", server)
+    bus = RosBus().start()
+    out = calls.action_goal(bus, "/fib", "example_interfaces/action/Fibonacci", {"order": 4}, timeout=1.0)
+    assert out["accepted"] and out["result"] == {"sequence": [0, 1, 1, 2]}
+    assert len(out["feedback"]) == 5 and out["feedback"][-1] == {"sequence": list(range(8))}
+    bus.close()
+
+
+def test_request_topic_triplet_matches_by_id(ros):
+    from strands_robots.ros import calls
+    from strands_robots.ros.bus import RosBus
+
+    n = ros.node("hri")
+    S = ros.msg("std_msgs/Header")
+    resp = n.create_publisher(S, "/hri/behavior/response", REL)
+    done = n.create_publisher(S, "/hri/behavior/complete", REL)
+
+    def on_req(m):
+        resp.publish(S(frame_id="other"))  # someone else's reply first
+        resp.publish(S(frame_id=m.frame_id))
+        done.publish(S(frame_id=m.frame_id))
+
+    n.create_subscription(S, "/hri/behavior/request", on_req, REL)
+    import threading
+    import time
+
+    stop = threading.Event()
+
+    def drain():
+        while not stop.is_set():
+            try:
+                cb, msg = n.queue.get(timeout=0.02)
+                cb(msg)
+            except Exception:  # noqa: BLE001
+                pass
+
+    threading.Thread(target=drain, daemon=True).start()
+    bus = RosBus().start()
+    out = calls.request_topic(
+        bus,
+        "/hri/behavior",
+        "std_msgs/msg/Header",
+        {},
+        ack_type="std_msgs/msg/Header",
+        id_field="frame_id",
+        timeout=1.0,
+    )
+    stop.set()
+    time.sleep(0.03)
+    assert out["response"]["frame_id"] == out["id"] and out["complete"]["frame_id"] == out["id"]
+    bus.close()
+
+
+def test_gate_fails_closed_matches_segments_and_allows_exact_names(monkeypatch):
+    from strands_robots.ros.gate import CommandGate, CommandRefused, env_allowlist, matches
+
+    assert matches("/robot1/cmd_vel", ["/cmd_vel"]) == "/cmd_vel"
+    assert matches("/my_cmd_vel", ["/cmd_vel"]) is None
+    assert matches("/arm/joint_trajectory_controller/joint_trajectory", ["/joint_trajectory"])
+    g = CommandGate(allow=frozenset())
+    assert g.check("publish", "/rosout") == "free"  # only the known-inert topics are free
+    for verb, target in [
+        ("publish", "/chatter"),
+        ("goal", "/move_action"),
+        ("goal", "/execute_trajectory"),
+        ("publish", "/servo_node/delta_twist_cmds"),
+        ("goal", "/navigate_through_poses"),
+        ("publish", "/joy"),
+        ("call", "/rosout"),
+    ]:
+        with pytest.raises(CommandRefused, match="STRANDS_ROS_ALLOW="):
+            g.check(verb, target)  # an unlisted write is refused, not let through
+    with pytest.raises(CommandRefused, match="STRANDS_ROS_ALLOW=/r1/cmd_vel"):
+        g.check("publish", "/r1/cmd_vel")
+    monkeypatch.setenv("STRANDS_ROS_ALLOW", "/r1/cmd_vel")
+    g2 = CommandGate(allow=env_allowlist())
+    assert g2.check("publish", "/r1/cmd_vel") == "allowlist"
+    with pytest.raises(CommandRefused):
+        g2.check("publish", "/r2/cmd_vel")  # exact names only: no fail-open across namespaces
+    asked = []
+    g3 = CommandGate(allow=frozenset(), approve=lambda v, t, p: asked.append((v, t)) or False)
+    with pytest.raises(CommandRefused, match="declined"):
+        g3.check("call", "/api/motion_switcher/request")
+    assert asked == [("call", "/api/motion_switcher/request")]
+    g4 = CommandGate(owners={"/lowcmd": "unitree_g1:abc"}, approve=lambda *a: True)
+    with pytest.raises(CommandRefused, match="streamed by robot"):
+        g4.check("publish", "/lowcmd")
+
+
+def test_dispatch_checks_args_before_asking_and_never_gates_reads_or_stop(ros):
+    from strands_robots.ros.bus import RosBus
+    from strands_robots.ros.gate import CommandGate
+    from strands_robots.ros.verbs import dispatch
+
+    asked = []
+    gate = CommandGate(allow=frozenset(), approve=lambda v, t, p: asked.append(t) or True)
+    bus = RosBus().start()
+    with pytest.raises(ValueError, match="needs"):
+        dispatch(bus, gate, "call", {"service": "/robot/set_mode"})  # no type: refused, nobody asked
+    assert asked == []
+    dispatch(bus, gate, "topics", {})
+    dispatch(bus, gate, "stop", {"profile": "unitree_g1"})  # STOP: no operator needed
+    assert asked == []
+    r = dispatch(
+        bus, gate, "publish", {"topic": "/cmd_vel", "type": "geometry_msgs/msg/Twist", "fields": {"linear": {"x": 0.1}}}
+    )
+    assert asked == ["/cmd_vel"] and r["count"] == 1
+    bus.close()
+
+
+@pytest.mark.parametrize(
+    ("verb", "args"),
+    [
+        (
+            "call",
+            {
+                "service": "/controller_manager/switch_controller",
+                "type": "controller_manager_msgs/srv/SwitchController",
+            },
+        ),
+        ("goal", {"action": "/navigate_to_pose", "type": "nav2_msgs/action/NavigateToPose", "goal": {}}),
+        ("set_param", {"node": "/controller_manager", "name": "update_rate", "value": 1}),
+        ("publish", {"topic": "/cmd_vel", "type": "geometry_msgs/msg/Twist", "service": "/rosout"}),
+    ],
+)
+def test_a_decoy_target_key_never_moves_the_gate_off_the_real_target(ros, verb, args):
+    from strands_robots.ros.bus import RosBus
+    from strands_robots.ros.gate import CommandGate
+    from strands_robots.ros.verbs import dispatch
+
+    asked = []
+    decoy = {} if "topic" in args else {"topic": "/r1/cmd_vel"}  # allowlisted, so the gate would wave it through
+    gate = CommandGate(allow=frozenset({"/r1/cmd_vel", "/rosout"}), approve=lambda v, t, p: asked.append(t) or True)
+    bus = RosBus().start()
+    with pytest.raises(ValueError, match="takes no"):
+        dispatch(bus, gate, verb, {**args, **decoy})
+    assert asked == []  # refused before any operator is asked about the wrong name
+    bus.close()
+
+
+def test_record_writes_only_under_the_developers_directory(ros, tmp_path):
+    from strands_robots.ros.bus import RosBus
+    from strands_robots.ros.gate import CommandGate
+    from strands_robots.ros.verbs import dispatch
+
+    notes = tmp_path / "notes.jsonl"
+    notes.write_text("keep me\n")
+    gate = CommandGate(allow=frozenset(), approve=None)
+    bus = RosBus().start()
+    args = {"topics": {"/chatter": "std_msgs/msg/String"}, "seconds": 0.05}
+    with pytest.raises(ValueError, match="takes no path"):  # a model never chooses where a file goes
+        dispatch(bus, gate, "record", {**args, "path": str(notes)}, record_dir=tmp_path / "bags")
+    with pytest.raises(ValueError, match="record_dir"):
+        dispatch(bus, gate, "record", args)
+    assert notes.read_text() == "keep me\n" and not (tmp_path / "bags").exists()
+    first = dispatch(bus, gate, "record", args, record_dir=tmp_path / "bags")
+    second = dispatch(bus, gate, "record", args, record_dir=tmp_path / "bags")
+    written = sorted(p.name for p in (tmp_path / "bags").iterdir())
+    assert len(written) == 2 and first != second  # a second bag never overwrites the first
+    bus.close()
+
+
+def test_the_operator_sees_how_many_messages_a_publish_sends_and_how_fast(ros):
+    from strands_robots.ros.bus import RosBus
+    from strands_robots.ros.gate import CommandGate
+    from strands_robots.ros.verbs import dispatch
+
+    seen: list[dict] = []
+    gate = CommandGate(allow=frozenset(), approve=lambda v, t, p: seen.append(p) or False)  # look, then say no
+    bus = RosBus().start()
+    twist = {"topic": "/cmd_vel", "type": "geometry_msgs/msg/Twist", "fields": {"linear": {"x": 0.5}}}
+    for extra, want in (({"count": 100, "rate": 10}, (100, 10)), ({}, (1, 10.0))):
+        with pytest.raises(PermissionError):
+            dispatch(bus, gate, "publish", {**twist, **extra})
+        assert (seen[-1]["count"], seen[-1]["rate"]) == want  # ten seconds of driving is what the yes would cover
+    bus.close()
+
+
+def test_stop_takes_only_an_installed_profile_name_and_a_plain_sender(ros, tmp_path, monkeypatch):
+    import json
+
+    from strands_robots.robot.drivers.ros.stop import _fill
+    from strands_robots.ros.bus import RosBus
+    from strands_robots.ros.gate import CommandGate, CommandRefused
+    from strands_robots.ros.verbs import dispatch
+
+    evil = tmp_path / "evil.json"
+    step = {"topic": "/cmd_vel", "type": "geometry_msgs/msg/Twist", "fields": {"linear": {"x": 1.5}}, "repeat": 25}
+    evil.write_text(json.dumps({"name": "evil", "stop": [step]}))
+    gate = CommandGate(allow=frozenset(), approve=None)
+    bus = RosBus().start()
+    sent: list = []
+    monkeypatch.setattr(bus, "publish", lambda *a, **k: sent.append(a))
+    for profile in (str(evil), "../evil", "evil"):  # a path, or a name nobody installed: STOP is never gated
+        with pytest.raises(CommandRefused, match="installed profile name"):
+            dispatch(bus, gate, "stop", {"profile": profile})
+    with pytest.raises(ValueError, match="sender_id"):
+        dispatch(bus, gate, "stop", {"profile": "unitree_g1", "sender_id": 'x"y'})
+    assert sent == []
+    assert _fill({"a": ["{sender_id}", 1], "b": "id={sender_id}"}, 'x"y') == {"a": ['x"y', 1], "b": 'id=x"y'}
+    bus.close()
+
+
+@pytest.mark.parametrize(
+    ("verb", "target"),
+    [
+        ("publish", "/forward_position_controller/commands"),
+        ("call", "/velocity_smoother/set_parameters"),
+        ("call", "/velocity_smoother/set_parameters_atomically"),
+        ("call", "/controller_manager/set_parameters"),
+        ("call", "/rosapi/set_param"),
+        ("call", "/controller_manager/switch_controller"),
+        ("call", "/arm/controller_manager/load_controller"),
+        ("call", "/controller_manager/configure_controller"),
+        ("call", "/controller_manager/unload_controller"),
+        ("call", "/controller_manager/set_hardware_component_state"),
+    ],
+)
+def test_ros2_control_commands_parameters_and_the_controller_manager_are_gated(verb, target):
+    from strands_robots.ros.gate import CommandGate, CommandRefused
+
+    with pytest.raises(CommandRefused, match="no operator"):
+        CommandGate(allow=frozenset()).check(verb, target)
+    assert CommandGate(allow=frozenset({target})).check(verb, target) == "allowlist"
+
+
+def test_set_param_is_gated_as_the_nodes_set_parameters_service(ros):
+    from strands_robots.ros.bus import RosBus
+    from strands_robots.ros.gate import CommandGate, CommandRefused
+    from strands_robots.ros.verbs import dispatch
+
+    bus = RosBus().start()
+    args = {"node": "/velocity_smoother", "name": "max_velocity", "value": 10.0}
+    with pytest.raises(CommandRefused, match="/velocity_smoother/set_parameters"):
+        dispatch(bus, CommandGate(allow=frozenset()), "set_param", dict(args))
+    asked = []
+    no = CommandGate(allow=frozenset(), approve=lambda v, t, p: asked.append((v, t, p.get("value"))) or False)
+    with pytest.raises(CommandRefused, match="declined"):
+        dispatch(bus, no, "set_param", dict(args))
+    assert asked == [("set_param", "/velocity_smoother/set_parameters", 10.0)]
+    bus.close()

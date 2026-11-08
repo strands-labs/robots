@@ -6,6 +6,7 @@
    "microduck"
   ],
   "repo": "pollen-robotics/microduck-policies",
+  "revision": "665ae4eb20bfe13bca1ef4ea6d4bb6b4a096e448",
   "files": {
    "alpha_walking": "alpha_walking.onnx",
    "velstand": "velstand.onnx",
@@ -50,6 +51,7 @@
    "unitree_g1"
   ],
   "repo": "nepyope/holosoma_locomotion",
+  "revision": "a5eaedd54270ef2d457bd395af0e15574f281e57",
   "files": {
    "fastsac": "fastsac_g1_29dof.onnx",
    "ppo": "ppo_g1_29dof.onnx"

@@ -6,7 +6,7 @@ from pathlib import Path
 
 
 def test_the_package_imports_with_nothing_heavy() -> None:
-    heavy = ("mujoco", "torch", "lerobot", "zenoh", "isaacsim", "warp", "onnxruntime", "huggingface_hub")
+    heavy = ("mujoco", "torch", "lerobot", "zenoh", "isaacsim", "warp", "onnxruntime", "huggingface_hub", "rclpy")
     for name in [m for m in sys.modules if m.split(".")[0] in heavy]:
         del sys.modules[name]
     pkg = importlib.import_module("strands_robots")

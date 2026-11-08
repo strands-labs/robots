@@ -101,7 +101,7 @@ def _ready(robot: Robot, pol: Any, units: str | None) -> Bound:
             cameras.fit(need.images)
         need.check(robot.observe(), who=repr(pol))
     n = len(robot.action_keys)
-    if robot.sim is None:  # a servo bus keeps its own gains: the policy's are for a body in a world
+    if robot.sim is None and not hasattr(robot.body, "set_gains"):  # a servo bus keeps its own gains
         gains = None
     elif gains is not None and any(np.size(g) != n for g in gains):  # refused here: in lock-step, before any go on
         raise ValueError(f"{robot.id}: {pol!r} carries kp/kd for {[np.size(g) for g in gains]} actuators, not {n}")

@@ -23,6 +23,7 @@ _DRIVERS: dict[str, str] = {
     "unitree": "strands_robots.robot.drivers.unitree:UnitreeDriver",
     "microduck": "strands_robots.robot.drivers.microduck:MicroduckDriver",
     "memory": "strands_robots.robot.drivers.memory:MemoryDriver",  # no wire: docs, notebooks, CI
+    "ros": "strands_robots.robot.drivers.ros:RosDriver",  # any ROS 2 robot, from a ROS profile (strands_robots.ros)
 }
 
 
@@ -96,7 +97,7 @@ def make_driver(
     if kind is None:
         raise ValueError(
             f"no driver known for {description.name!r}; "
-            "pass driver='feetech'|'unitree'|'microduck'|'memory' or a Driver instance"
+            "pass driver='feetech'|'unitree'|'microduck'|'memory'|'ros' or a Driver instance"
         )
     if kind not in _DRIVERS:
         raise ValueError(f"unknown driver {kind!r}; known drivers: {sorted(_DRIVERS)}")
