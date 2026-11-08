@@ -72,13 +72,23 @@ Why not AWS: more moving parts and cost for a single-operator dev box. The AWS I
 
 ## Steps (each ends in something that runs)
 
-1. Droplet + Caddy + dashboard from GHCR image, passkey login on `https://dash.<domain>`.
-   **Written** (`deploy/cloud/`): compose (caddy + dashboard on loopback, OSMesa sims), Caddyfile,
-   `setup-droplet.sh` (Docker, ufw 22/80/443, `deploy` user, swap), `deploy.sh` (pull, up, health check,
-   rollback). Dockerfile now builds the frontend in a node stage, so UI changes always ship.
-2. CI/CD to that droplet on merge to `main`. **Written**: `.github/workflows/cloud-deploy.yml`
-   (GHCR push, scp stack files, SSH `deploy.sh`). Secrets: `DO_HOST`, `DO_SSH_KEY`, `DO_KNOWN_HOSTS`.
-   Not run yet (no droplet). Image build untested locally (no Docker daemon here).
+1. Disposable droplet + Caddy + dashboard from a GHCR image. **Written** (`deploy/cloud/`):
+   - `cloud.sh up|down|destroy|ip` (doctl): droplet `strands-control` (NYC3, s-4vcpu-8gb) is throwaway;
+     volume `strands-data` (20 GB, mounted at `/opt/strands-cloud`: datasets, assets, passkeys, HF cache)
+     and a reserved IP survive `down`, so the URL and logins stay the same across rebuilds.
+   - `cloud-init.yaml`: Docker, ufw 22/80/443, `deploy` user, swap, volume mount, fixed SSH host key.
+   - `docker-compose.yml` + `Caddyfile`: Caddy HTTPS in front of the loopback dashboard, OSMesa sims.
+   - `deploy.sh`: pull, up, health check, roll back to the previous image on failure.
+   - Dockerfile builds the frontend in a node stage, so UI changes always ship.
+   - URL: `https://<reserved-ip-dashed>.sslip.io` until a domain is chosen (repo variable `DASH_DOMAIN`).
+     Changing the domain later means re-enrolling the passkey.
+2. CI/CD. **Written**: `.github/workflows/cloud.yml`.
+   - Push to `main`: build + push image; deploy only if the droplet is up.
+   - Manual (Actions > Cloud): `up` (create/reuse + deploy), `deploy`, `down`, `destroy`.
+   - Nightly auto-`down` 06:47 UTC (repo variable `AUTO_DOWN=false` disables).
+   - Secrets via `deploy/cloud/init-secrets.sh`: `DIGITALOCEAN_ACCESS_TOKEN`, `DO_SSH_KEY`, `DO_HOST_KEY`.
+   - Costs: running ~$0.07/hr; down ~$7/mo (volume $2 + unassigned reserved IP ~$5); destroy $0.
+   - Not run yet. Image build untested locally (no Docker daemon in the session).
 3. zenohd with TLS; Pi and desktop peers connect over the internet with mTLS; teleop works via cloud.
 4. GPU inference API on RunPod Serverless; one ACT rollout on the real robot.
 5. Training job launcher; retire LAN VM and Tailscale.
