@@ -113,8 +113,9 @@ on Bedrock.
 ## Security
 
 The server listens on loopback only, refuses requests from other web pages, and answers `/api` and the sockets
-only to a signed-in session. The page runs only the server's own script files, `?scene=` must name a file on the
-dashboard's own address, and text from the address or a scene file is shown as text. A command to a real robot also
+only to a signed-in session. The page runs only the server's own script files, also when a plain file server
+hosts a standalone bundle (the page carries the same policy itself). `?scene=` and `?standalone=` must name a file on
+the page's own address, and text from the address or a scene file is shown as text. A command to a real robot also
 needs the operator's `X-Confirm` header, which the page sends after asking. Voice never sends that header, so voice
 cannot move a real robot.
 
