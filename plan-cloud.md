@@ -73,7 +73,12 @@ Why not AWS: more moving parts and cost for a single-operator dev box. The AWS I
 ## Steps (each ends in something that runs)
 
 1. Droplet + Caddy + dashboard from GHCR image, passkey login on `https://dash.<domain>`.
-2. CI/CD to that droplet on merge to `main`.
+   **Written** (`deploy/cloud/`): compose (caddy + dashboard on loopback, OSMesa sims), Caddyfile,
+   `setup-droplet.sh` (Docker, ufw 22/80/443, `deploy` user, swap), `deploy.sh` (pull, up, health check,
+   rollback). Dockerfile now builds the frontend in a node stage, so UI changes always ship.
+2. CI/CD to that droplet on merge to `main`. **Written**: `.github/workflows/cloud-deploy.yml`
+   (GHCR push, scp stack files, SSH `deploy.sh`). Secrets: `DO_HOST`, `DO_SSH_KEY`, `DO_KNOWN_HOSTS`.
+   Not run yet (no droplet). Image build untested locally (no Docker daemon here).
 3. zenohd with TLS; Pi and desktop peers connect over the internet with mTLS; teleop works via cloud.
 4. GPU inference API on RunPod Serverless; one ACT rollout on the real robot.
 5. Training job launcher; retire LAN VM and Tailscale.
@@ -89,22 +94,9 @@ Why not AWS: more moving parts and cost for a single-operator dev box. The AWS I
 - Region: DO **NYC3** (closest DO region to Lakewood, OH; TOR1 is the fallback if pings are worse).
   RunPod stays **US-MO-1** (existing volume; inference is per action chunk, so ~30 ms extra is fine).
 
-## Bake-off: DO + RunPod vs Google Cloud
+## Later option: Google Cloud
 
-Run both for ~2 weeks, then keep one. ~90% of the work is shared, only the deploy target differs.
-
-- Shared: one image, one compose stack (`deploy/cloud/`), mTLS mesh, one HTTP inference container.
-- Targets: `deploy/targets/do/` (droplet NYC3 + RunPod Serverless) and `deploy/targets/gcp/`
-  (VM us-east5 + Cloud Run GPU us-east4/us-central1).
-- CI deploys every merge to both. The Pi has one host client, so the robot joins one hub per test
-  session (switch = one env var + restart of `xlerobot-control`).
-- Scorecard (logged to `docs/bakeoff.md`):
-  - Simplicity: hours + steps to first login, CI deploy time, things that broke.
-  - Performance: teleop round trip (p50/p95), inference latency per chunk (p50/p95), cold start,
-    fleet-view camera fps.
-  - Cost: actual bill per day idle, per 1 h robot session, per training run.
-- Budget: ~$50-100 total over the trial (GCP $300 credit likely covers its side).
-- Long-lead item: GCP Cloud Run GPU quota request (days), start it first.
+Considered (VM us-east5 + Cloud Run GPU, single vendor) and parked 2026-11-08: start with DO + RunPod only.
 
 ## Open decisions
 

@@ -6,3 +6,4 @@ tests
 tests_integ
 deploy/.env
 deploy/strands
+**/node_modules

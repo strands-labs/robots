@@ -1,0 +1,9 @@
+# HTTPS (Let's Encrypt) for the dashboard. WebSockets pass through reverse_proxy as-is.
+{
+	email {$ACME_EMAIL}
+}
+
+{$DASH_DOMAIN} {
+	encode zstd gzip
+	reverse_proxy 127.0.0.1:8090
+}

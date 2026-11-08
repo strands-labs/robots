@@ -1,12 +1,22 @@
 # Strands Robots image for the XLeRobot POC (desktop robot-client and VM agent/dashboard).
 # Build context is the repo root:  docker compose -f deploy/desktop/docker-compose.yml build
+
+# Dashboard UI, built fresh so a frontend change always ships with the image (static/ in git may lag).
+FROM node:22-slim AS frontend
+WORKDIR /src/strands_robots/dashboard/frontend
+COPY strands_robots/dashboard/frontend/package.json strands_robots/dashboard/frontend/package-lock.json ./
+RUN npm ci
+COPY strands_robots/dashboard/frontend/ ./
+COPY strands_robots/dashboard/static/ ../static/
+RUN npm run build
+
 FROM python:3.12-slim
 
 COPY --from=ghcr.io/astral-sh/uv:0.12.11 /uv /uvx /usr/local/bin/
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
         git libgl1 libglib2.0-0 ffmpeg netcat-openbsd \
-        libegl1 libgl1-mesa-dri libegl-mesa0 \
+        libegl1 libgl1-mesa-dri libegl-mesa0 libosmesa6 \
     && rm -rf /var/lib/apt/lists/*
 
 ENV UV_SYSTEM_PYTHON=1 \
@@ -18,6 +28,7 @@ ENV UV_SYSTEM_PYTHON=1 \
 
 WORKDIR /opt/strands
 COPY . /opt/strands
+COPY --from=frontend /src/strands_robots/dashboard/static/ /opt/strands/strands_robots/dashboard/static/
 
 # .git is not in the build context, so hatch-vcs gets the version from here.
 ARG STRANDS_VERSION=0.0.0+jacere
