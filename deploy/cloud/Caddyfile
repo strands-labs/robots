@@ -1,8 +1,5 @@
 # HTTPS (Let's Encrypt) for the dashboard. WebSockets pass through reverse_proxy as-is.
-{
-	email {$ACME_EMAIL}
-}
-
+# No global `email` option: an empty ACME_EMAIL would make it a parse error and Caddy would not start.
 {$DASH_DOMAIN} {
 	encode zstd gzip
 	reverse_proxy 127.0.0.1:8090

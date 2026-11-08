@@ -19,7 +19,6 @@ services:
     network_mode: host
     environment:
       DASH_DOMAIN: ${DASH_DOMAIN:?set DASH_DOMAIN in .env}
-      ACME_EMAIL: ${ACME_EMAIL:-}
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
       - ./caddy-data:/data

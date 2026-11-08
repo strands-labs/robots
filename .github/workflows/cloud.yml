@@ -110,6 +110,7 @@ jobs:
           printf '%s\n' "$HOST_KEY" > /tmp/hk && chmod 600 /tmp/hk
           echo "$IP $(ssh-keygen -y -f /tmp/hk | cut -d' ' -f1-2)" > ~/.ssh/known_hosts && rm /tmp/hk
       - name: Write .env and copy stack files
+        id: files
         if: steps.host.outputs.ip != ''
         env:
           IP: ${{ steps.host.outputs.ip }}
@@ -122,6 +123,7 @@ jobs:
           scp -i ~/.ssh/id_deploy deploy/cloud/docker-compose.yml deploy/cloud/Caddyfile deploy/cloud/deploy.sh \
             "deploy@$IP:/opt/strands-cloud/"
           scp -i ~/.ssh/id_deploy deploy/strands/user_robots.json "deploy@$IP:/opt/strands-cloud/strands/"
+          echo "domain=$domain" >> "$GITHUB_OUTPUT"
           echo "::notice::dashboard: https://$domain"
       - name: Deploy
         if: steps.host.outputs.ip != ''
@@ -135,3 +137,16 @@ jobs:
           printf '%s' "$TOKEN" | ssh -i ~/.ssh/id_deploy "deploy@$IP" \
             "docker login ghcr.io -u '$ACTOR' --password-stdin >/dev/null \
              && cd /opt/strands-cloud && chmod +x deploy.sh && ./deploy.sh '$IMAGE'; rc=\$?; docker logout ghcr.io >/dev/null; exit \$rc"
+      - name: Public HTTPS check
+        if: steps.host.outputs.ip != ''
+        env:
+          IP: ${{ steps.host.outputs.ip }}
+          DOMAIN: ${{ steps.files.outputs.domain }}
+        run: |
+          for _ in $(seq 1 24); do
+            curl -fsS --max-time 5 "https://$DOMAIN/api/health" && exit 0
+            sleep 5
+          done
+          echo "::error::https://$DOMAIN/api/health not reachable; caddy log:"
+          ssh -i ~/.ssh/id_deploy "deploy@$IP" 'docker logs --tail 40 strands-cloud-caddy-1 2>&1; docker ps -a --format "{{.Names}} {{.Status}}"'
+          exit 1
