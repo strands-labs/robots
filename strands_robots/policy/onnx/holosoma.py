@@ -33,7 +33,9 @@ class HolosomaPolicy(OnnxPolicy):
         if algorithm not in f["files"]:
             raise ValueError(f"holosoma: algorithm must be one of {', '.join(sorted(f['files']))}, got {algorithm!r}")
         name = f["files"][algorithm]
-        super().__init__(name, repo=f["repo"], sha256=f["sha256"].get(name), providers=providers)
+        super().__init__(
+            name, repo=f["repo"], revision=f["revision"], sha256=f["sha256"].get(name), providers=providers
+        )
         n = int(f["joints"])
         try:
             self.joint_names: tuple[str, ...] = tuple(json.loads(self.metadata["dof_names"]))
