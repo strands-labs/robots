@@ -4,7 +4,8 @@ A claim certificate is shared by a whole fleet, so whoever holds it must not cho
 operator approves each robot ahead of its first boot with :func:`allow`, which writes one SSM SecureString
 ``/strands-robots/claim/<sha256 of the device id>`` = ``{"device_id", "tenant", "device_type", "telemetry_rule",
 "secret_sha256"}`` and returns a one-time secret to install on that robot. The hook (``HOOK_SOURCE``, a Lambda the user
-deploys) accepts a RegisterThing only when the thing does not exist yet, the certificate's one subject CN is its name,
+deploys) accepts a RegisterThing only when the thing does not exist yet and is not named like an operator or claim
+client id (``policy.RESERVED_CLIENT_PREFIXES``), the certificate's one subject CN is its name,
 an allowlist entry exists for it, the request carries that entry's secret, tenant and device type, and then deletes the
 entry. So a leaked claim certificate names no robot, joins no other tenant, and cannot take a name before its robot
 does. The hook's role needs ``iot:DescribeThing`` and ``ssm:GetParameter`` / ``ssm:DeleteParameter`` on
@@ -20,6 +21,7 @@ from collections.abc import Collection, Mapping
 from typing import Any
 
 from .. import wire
+from .policy import check_device_id
 from .rules import rule_name
 
 ALLOW_PREFIX = "/strands-robots/claim/"
@@ -34,7 +36,7 @@ def allow(ssm: Any, device_id: str, *, tenant: str, device_type: str) -> str:
     """Approve ``device_id`` to claim its first certificate in ``tenant`` as ``device_type``; returns the one-time
     secret to give that robot (``claim(..., secret=)``). Refuses to overwrite a pending approval."""
     secret = secrets.token_urlsafe(24)
-    entry = {"device_id": wire.check_id(device_id, "device_id"), "tenant": wire.check_id(tenant, "tenant"),
+    entry = {"device_id": check_device_id(device_id), "tenant": wire.check_id(tenant, "tenant"),
              "device_type": wire.check_id(device_type, "device_type"),
              "telemetry_rule": rule_name("telemetry", tenant),  # the template cannot compute a hashed name
              "secret_sha256": hashlib.sha256(secret.encode()).hexdigest()}  # fmt: skip
@@ -54,6 +56,7 @@ import hmac
 import json
 
 PREFIX = "/strands-robots/claim/"
+RESERVED = ("strands-op-", "strands-claim-")  # operator and claim client ids, never a thing name
 
 
 def _tlv(der, i):
@@ -119,7 +122,7 @@ def consume(name):
 
 def decide(params, pem):
     thing = str(params.get("device_id") or "")
-    if not thing or subject_cns(pem) != [thing] or thing_exists(thing):
+    if not thing or thing.lower().startswith(RESERVED) or subject_cns(pem) != [thing] or thing_exists(thing):
         return None
     entry = allowed(thing)
     if not isinstance(entry, dict) or entry.get("device_id") != thing:

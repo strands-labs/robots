@@ -54,6 +54,17 @@ and hears only their connect and disconnect events. The disconnect audit rule,
 `lifecycle.clear_presence_rule(tenant, role_arn, things=[...])`, republishes only those devices' and the tenant's
 operators' disconnects.
 
+**Device names.** A robot's MQTT client id is its thing name, and IoT drops the older connection when two clients use
+the same id. So `strands-op-…` (operators) and `strands-claim-…` (a robot while it claims its first certificate) are no
+device names: `register`, `claim_hook.allow`, the claim hook, `claim.claim`, `operator_policy` and
+`clear_presence_rule` all refuse them. A thing created outside the library (console, CLI) is not checked; do not
+give one such a name. To move a robot that already has one, `provision.teardown` it and `register` it under a new name.
+
+**Single-tenant accounts.** `operator_policy(region, account, tenant, all_things=True)` (instead of `things=[...]`)
+grants every thing in the AWS account: shadows, direct messages, connect and disconnect events, describe. In an
+account with more than one tenant that lets one tenant's operators read and move another tenant's robots, so it warns
+(`UserWarning`) every time it is built. Use it only when the account holds one tenant, and never with `things=`.
+
 | Function | Does |
 |---|---|
 | `provision.rotate` | Issue a new certificate while the old one works |
