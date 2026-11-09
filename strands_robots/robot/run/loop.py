@@ -15,8 +15,8 @@ from ...recording import Episode, NotRecording, episode
 from ...types import Observation
 from ..clock import MONOTONIC
 from ..safety import apply_on_disconnect
-from .bind import Bound, bind, install_gains, looks, release
-from .common import announce, approve_run, check_files, emit, files_digest, label, rate
+from .bind import Bound, install_gains, looks, release
+from .common import announce, approve_run, bind_pinned, drop, emit, files_digest, label, rate
 from .pace import OnMiss, Pacer
 from .result import RunResult, StoppedBy
 from .source import RunPlan, is_agent, is_confirmed
@@ -65,9 +65,8 @@ def run(
     if is_agent() and robot.is_real and not is_confirmed():  # a real agent run asks the operator ONCE (K6),
         plan = RunPlan(robot.id, label(policy), instruction, hz, seconds, steps, units, files_digest(policy))
         approve_run(robot, plan)  # before acquire
-    bound = bind(robot, policy, units)
+    bound, copy = bind_pinned(robot, plan, policy, units)  # an approved run loads a private copy of what it approved
     try:
-        check_files(robot, plan, policy)  # read after the yes: refuse files that changed while it was asked
         ep = episode(  # before the start-pose ramp: a run that cannot be recorded never moves the robot
             record,
             description=robot.description,
@@ -85,6 +84,7 @@ def run(
             raise
     finally:
         release(bound)
+        drop(copy)
     announce(robot, result)
     return result
 

@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import hashlib
+import shutil
+import tempfile
 from collections.abc import Iterable
 from os import PathLike
 from pathlib import Path
@@ -61,12 +63,35 @@ def _files(folder: Path, seen: set[Path]) -> list[Path]:
     return found
 
 
-def check_files(robot: Robot, plan: RunPlan | None, policy: object) -> None:
-    """After the policy is loaded: the files the operator approved are the files that were read."""
-    from ..safety import RequestRefused
+def bind_pinned(robot: Robot, plan: RunPlan | None, policy: Any, units: str | None) -> tuple[Bound, Path | None]:
+    """Bind the policy; for an approved run of local files, bind a private copy whose digest is the approved one.
 
-    if plan is not None and plan.files is not None and files_digest(policy) != plan.files:
-        raise RequestRefused(f"{robot.id}: {plan.policy} changed on disk after the operator approved it; run again")
+    The copy is taken and checked before anything is loaded, so a write to the original after the yes (or during the
+    load) never reaches the robot. The caller removes the returned folder with ``drop`` when the run ends.
+    """
+    from ..safety import RequestRefused
+    from .bind import bind
+
+    if plan is None or plan.files is None:
+        return bind(robot, policy, units), None
+    path, sep, query = str(policy).partition("?")
+    src = Path(path).expanduser()
+    tmp = Path(tempfile.mkdtemp(prefix="strands-run-"))
+    try:
+        copy = tmp / (src.name or "policy")
+        shutil.copytree(src, copy) if src.is_dir() else shutil.copy2(src, copy)  # symlinks are copied as content
+        if files_digest(copy) != plan.files:
+            raise RequestRefused(f"{robot.id}: {plan.policy} changed on disk after the operator approved it; run again")
+        return bind(robot, f"{copy}{sep}{query}", units), tmp
+    except BaseException:
+        drop(tmp)
+        raise
+
+
+def drop(folder: Path | None) -> None:
+    """Remove a private policy copy (``bind_pinned``); nothing for a run that loaded no local files."""
+    if folder is not None:
+        shutil.rmtree(folder, ignore_errors=True)
 
 
 def approve_run(robot: Robot, plan: RunPlan) -> None:

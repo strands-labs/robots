@@ -91,3 +91,30 @@ def test_the_digest_needs_nothing_newer_than_python_3_10(tmp_path, monkeypatch):
     want = hashlib.sha256(f"w.bin\0{one}\n".encode()).hexdigest()
     monkeypatch.delattr(hashlib, "file_digest", raising=False)  # as on 3.10
     assert files_digest(str(tmp_path / "w.bin")) == want
+
+
+def test_a_file_swapped_only_while_the_policy_loads_never_reaches_the_robot(recording, monkeypatch):
+    rec, n = recording
+    read = dataset._episode_actions
+
+    def swap_around_the_read(root, ep):  # replaced just before the read, put back just after it
+        (rec / "a.json").write_text(json.dumps([[0.4] * n] * 3))
+        out = read(root, ep)
+        (rec / "a.json").write_text(json.dumps([[0.0] * n] * 3))
+        return out
+
+    monkeypatch.setattr(dataset, "_episode_actions", swap_around_the_read)
+    robot = Robot("so101", driver="memory", approve=lambda p: True)
+    with from_agent():
+        robot.run(str(rec), steps=3)
+    assert np.allclose(_positions(robot), 0.0)
+
+
+def test_the_private_copy_is_removed_when_the_run_ends(recording, monkeypatch, tmp_path):
+    rec, _ = recording
+    monkeypatch.setattr("tempfile.tempdir", str(tmp_path / "t"))
+    (tmp_path / "t").mkdir()
+    robot = Robot("so101", driver="memory", approve=lambda p: True)
+    with from_agent():
+        robot.run(str(rec), steps=3)
+    assert list((tmp_path / "t").iterdir()) == []
