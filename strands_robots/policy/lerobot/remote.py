@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import time
 from collections.abc import Mapping, Sequence
+from contextlib import closing
 from typing import TYPE_CHECKING, Any, Literal
 
 import numpy as np
@@ -23,7 +24,7 @@ from ...units import Units
 from ..base import PolicyFault
 from ..requirements import Requirements
 from .contract import Contract, lerobot
-from .link import check_router, wan_defaults
+from .link import check_channel, wan_defaults, zenoh_config
 from .sequential import Sequential, ledgered
 
 if TYPE_CHECKING:
@@ -71,19 +72,20 @@ class ZenohPolicy:
         start_seconds: float = 3.0,
         tasks: Sequence[str] | None = None,
         trusted: bool = False,
+        zenoh_config: str | None = None,
         **settings: Any,
     ) -> None:
         """``execution``: see the module docstring. ``start_pose`` (the deployment's units; a mapping of joint -> value
         or a full vector) is where its episodes begin: ``robot.run`` ramps there over ``start_seconds`` first. Left
         out, the server's descriptor may say (``start_pose``); else the run begins where the body is. ``tasks``: the
         instructions it was trained on — any other ``run(instruction=)`` is refused naming them before a frame goes
-        out; left out, the descriptor may say (``tasks``); else any instruction is sent. ``trusted``: a real robot
-        takes a server off its own LAN — behind a zenoh router (``tls``/``quic``/``ws``), or a plain link to an
-        internet host — only once the operator vouches (or ``STRANDS_ZENOH_TRUSTED=1``): a router's clients can each
-        answer for the server, and a plain internet link carries no identity on the wire."""
+        out; left out, the descriptor may say (``tasks``); else any instruction is sent. ``zenoh_config`` (or
+        ``STRANDS_ZENOH_CONFIG``): the session's zenoh config file. ``trusted``: see ``link.check_channel``."""
         if execution not in EXECUTIONS:
             raise ValueError(f"execution must be one of {', '.join(map(repr, EXECUTIONS))}, got {execution!r}")
         self.endpoint, self.deployment, self.settings, self.trusted = endpoint, deployment, settings, trusted
+        self.zenoh_config = zenoh_config or settings.pop("zenoh_config_path", None)  # LeRobot's own name, same file
+        self._wire = endpoint  # what the session opens: the endpoint, pinned at attach for a real robot
         self.asked: Execution = execution
         self.execution: str | None = None  # resolved at attach, from the server
         self._start_pose, self.start_seconds = start_pose, float(start_seconds)
@@ -101,20 +103,18 @@ class ZenohPolicy:
 
     def describe(self) -> dict[str, Any]:
         """The server's descriptor (checkpoint identity, features, fps, modes, semantics), without a session."""
-        client = self._connect()
-        try:
+        with closing(self._connect()) as client:
             return dict(client.descriptor)
-        finally:
-            client.close()
 
     def _config(self, semantics: str = "?", descriptor: dict[str, Any] | None = None, **forced: Any) -> Any:
         from lerobot.inference import RemoteInferenceConfig
 
         kw = wan_defaults(self.endpoint, self.settings, descriptor)
+        kw["zenoh_config_path"] = zenoh_config(self.zenoh_config)
         blend = kw.get("blend_components")
         kw["blend_components"] = [f"{k}.pos" if "." not in k else k for k in blend or []]
         kw.update(forced)
-        return RemoteInferenceConfig(endpoint=self.endpoint, deployment=self.deployment, semantics=semantics, **kw)
+        return RemoteInferenceConfig(endpoint=self._wire, deployment=self.deployment, semantics=semantics, **kw)
 
     def _connect(self) -> Any:
         lerobot()
@@ -124,7 +124,7 @@ class ZenohPolicy:
 
     def attach(self, robot: Any) -> None:
         self.detach()
-        check_router(repr(self), self.endpoint, robot, self.trusted)
+        self._wire = check_channel(repr(self), self.endpoint, robot, self.trusted, zenoh_config(self.zenoh_config))
         client = self._connect()
         try:
             caps, sem = client.capabilities, client.descriptor["semantics"]
