@@ -10,6 +10,7 @@ watchdog, run loop, mesh mount and dashboard all apply unchanged.
 
 from __future__ import annotations
 
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -76,7 +77,7 @@ def connect(
     src = model_source(prof, model, host=host, timeout=timeout)
     desc = Description.load(src)
     drv = RosDriver(desc, host=host, profile=str(profile), timeout=timeout, **driver_options)
-    return Robot(
+    robot = Robot(
         str(src),
         driver=drv,
         id=id or prof.name,
@@ -84,3 +85,19 @@ def connect(
         confirm=confirm,
         approve=approve,
     )
+    return with_profile_on_disconnect(robot, prof)
+
+
+def with_profile_on_disconnect(robot: Any, prof: _profile.Profile) -> Any:
+    """Give the robot the profile's ``on_disconnect`` when its model declares none.
+
+    A model read from ``/robot_description`` (or any file outside the registry) has no ``hardware`` block, so its
+    ``on_disconnect`` is ``None``, and a real robot with no proven-safe disconnect behaviour cannot carry a watchdog:
+    the mesh would serve it observe-only, so a ros2_control arm could never be commanded over the mesh. The profile
+    is where a ROS robot's disconnect behaviour is stated (``ros2_control.json``: ``"hold"``). A registry entry's own
+    ``hardware.on_disconnect`` is curated per robot and wins."""
+    declared = prof.data.get("on_disconnect")
+    hw = robot.description.hardware
+    if declared is not None and hw.on_disconnect is None:
+        robot.description = replace(robot.description, hardware=replace(hw, on_disconnect=str(declared)))
+    return robot
