@@ -2,14 +2,16 @@
 
 import hashlib
 import json
+import os
 
 import numpy as np
 import pytest
 
 import strands_robots.policy.dataset as dataset
 from strands_robots import Robot
-from strands_robots.robot.run import from_agent
-from strands_robots.robot.run.common import files_digest
+from strands_robots.policy.factory import local_root
+from strands_robots.robot.run import from_agent, pin
+from strands_robots.robot.run.pin import files_digest
 from strands_robots.robot.safety import RequestRefused
 
 
@@ -60,10 +62,12 @@ def test_a_policy_not_on_disk_has_no_files_to_pin(tmp_path):
     assert files_digest(lambda obs: {}) is None
     assert files_digest("lerobot/act_so101_not_here") is None
     assert files_digest(str(tmp_path / "missing")) is None
+    assert files_digest(str(tmp_path)) is None  # a folder the loader would refuse: nothing it reads to pin
 
 
 def test_the_digest_covers_names_and_bytes_and_ignores_the_query(tmp_path):
     (tmp_path / "ck").mkdir()
+    (tmp_path / "ck" / "config.json").write_text("{}")  # a local checkpoint: a folder the loader reads
     (tmp_path / "ck" / "w.bin").write_bytes(b"one")
     first = files_digest(str(tmp_path / "ck") + "?episode=0")
     (tmp_path / "ck" / "w.bin").write_bytes(b"two")
@@ -78,6 +82,7 @@ def test_the_digest_reads_through_a_symlinked_folder_and_survives_a_cycle(tmp_pa
     (tmp_path / "real").mkdir()
     (tmp_path / "real" / "w.bin").write_bytes(b"one")
     (tmp_path / "ck").mkdir()
+    (tmp_path / "ck" / "config.json").write_text("{}")
     (tmp_path / "ck" / "sub").symlink_to(tmp_path / "real")
     (tmp_path / "real" / "loop").symlink_to(tmp_path / "ck")
     first = files_digest(str(tmp_path / "ck"))
@@ -86,11 +91,11 @@ def test_the_digest_reads_through_a_symlinked_folder_and_survives_a_cycle(tmp_pa
 
 
 def test_the_digest_needs_nothing_newer_than_python_3_10(tmp_path, monkeypatch):
-    (tmp_path / "w.bin").write_bytes(b"one")
+    (tmp_path / "config.json").write_bytes(b"one")
     one = hashlib.sha256(b"one").hexdigest()
-    want = hashlib.sha256(f"w.bin\0{one}\n".encode()).hexdigest()
+    want = hashlib.sha256(f"config.json\0{one}\n".encode()).hexdigest()
     monkeypatch.delattr(hashlib, "file_digest", raising=False)  # as on 3.10
-    assert files_digest(str(tmp_path / "w.bin")) == want
+    assert files_digest(str(tmp_path)) == want
 
 
 def test_a_file_swapped_only_while_the_policy_loads_never_reaches_the_robot(recording, monkeypatch):
@@ -117,4 +122,56 @@ def test_the_private_copy_is_removed_when_the_run_ends(recording, monkeypatch, t
     robot = Robot("so101", driver="memory", approve=lambda p: True)
     with from_agent():
         robot.run(str(rec), steps=3)
+    assert list((tmp_path / "t").iterdir()) == []
+
+
+def test_an_approved_preset_never_runs_a_same_named_folder_in_the_cwd(recording, monkeypatch, tmp_path):
+    rec, n = recording
+    (rec / "a.json").write_text(json.dumps([[0.4] * n] * 3))
+    cwd = tmp_path / "cwd"
+    cwd.mkdir()
+    rec.rename(cwd / "microduck")  # a dataset that happens to share a preset's name
+    monkeypatch.chdir(cwd)
+    assert local_root("microduck") is None and files_digest("microduck") is None
+    robot = Robot("so101", driver="memory", approve=lambda p: True)
+    before = _positions(robot)
+    with from_agent(), pytest.raises(ValueError, match="Microduck"):  # the preset loads (and needs a duck's body)
+        robot.run("microduck", steps=3)
+    assert np.allclose(_positions(robot), before)
+
+
+def test_a_file_swapped_while_the_private_copy_is_taken_is_refused(recording, monkeypatch):
+    rec, n = recording
+    listing = pin._files
+
+    def swap_before_the_copy_reads(folder, seen):
+        (rec / "a.json").write_text(json.dumps([[0.4] * n] * 3))
+        return listing(folder, seen)
+
+    robot = Robot("so101", driver="memory")
+    robot.approve = lambda p: monkeypatch.setattr(pin, "_files", swap_before_the_copy_reads) or True
+    with from_agent(), pytest.raises(RequestRefused, match="changed on disk"):
+        robot.run(str(rec), steps=3)
+    assert np.allclose(_positions(robot), 0.0)
+
+
+def test_a_fifo_and_a_folder_cycle_are_copied_exactly_as_they_are_hashed(recording):
+    rec, _ = recording
+    os.mkfifo(rec / "meta" / "pipe")  # not a policy file: neither hashed nor copied, so nothing blocks on it
+    (rec / "meta" / "loop").symlink_to(rec, target_is_directory=True)
+    robot = Robot("so101", driver="memory", approve=lambda p: True)
+    with from_agent():
+        assert robot.run(str(rec), steps=3).steps == 3
+
+
+@pytest.mark.parametrize("fail", ["ctrl-c in the load", "an error after the load"])
+def test_the_private_copy_is_removed_however_the_run_ends(recording, monkeypatch, tmp_path, fail):
+    rec, _ = recording
+    monkeypatch.setattr("tempfile.tempdir", str(tmp_path / "t"))
+    (tmp_path / "t").mkdir()
+    if fail == "ctrl-c in the load":
+        monkeypatch.setattr(dataset, "_episode_actions", lambda root, ep: (_ for _ in ()).throw(KeyboardInterrupt()))
+    robot = Robot("so101", driver="memory", approve=lambda p: True)
+    with from_agent(), pytest.raises(KeyboardInterrupt if fail == "ctrl-c in the load" else ValueError):
+        robot.run(str(rec), steps=3, hz=10)  # the recording runs at 30 Hz: refused after it is loaded
     assert list((tmp_path / "t").iterdir()) == []

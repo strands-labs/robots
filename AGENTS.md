@@ -129,7 +129,8 @@ A real robot moves only through its operator gate. Keep these invariants when yo
   joint range, the soft `safe` bound, interlocks, validators, then the operator's yes (`confirm=` / `confirm_act`).
 - An agent run on a real body (`with from_agent():`) asks `approve(RunPlan)` once. Every step is still checked, and
   an out-of-range step ends the run instead of being clipped. `RunPlan.files` pins a policy read from disk: the run
-  loads a private copy whose digest must match it (`run/common.py` `bind_pinned`), removed when the run ends.
+  loads a private copy hashed as it is written, which must match it (`run/pin.py` `pinned`, removed when the `with`
+  ends). What a spec reads from disk is `policy/factory.py` `local_root`, the same rule `make()` loads by.
 - The e-stop never takes the world lock or the run lock, and is never queued. It latches first, then stops the body.
   Over the mesh it is published on the tenant's `@estop` key and sent as an rpc. Only a named operator can resume,
   and only the stop they saw (`approved_by`, compare-and-release).
