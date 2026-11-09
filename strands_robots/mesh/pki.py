@@ -45,14 +45,13 @@ def check_serves(patterns: Iterable[str]) -> tuple[str, ...]:
     return out
 
 
-def _write(path: Path, data: bytes, *, private: bool) -> None:
+def _write(path: Path, data: bytes) -> None:
+    """Owner-only (0600), certificates included: an identity dir is one user's, and nothing else needs to read it."""
     path.parent.mkdir(parents=True, exist_ok=True)
-    flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC
-    fd = os.open(path, flags, 0o600 if private else 0o644)
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
     with os.fdopen(fd, "wb") as f:
         f.write(data)
-    if private:
-        os.chmod(path, 0o600)
+    os.chmod(path, 0o600)
 
 
 def _now() -> dt.datetime:
@@ -93,8 +92,8 @@ def make_ca(ca_dir: str | os.PathLike[str] = DEFAULT_CA, *, name: str = "strands
         .add_extension(usage, critical=True)
         .sign(key, hashes.SHA256())
     )
-    _write(out / "ca.key", _key_pem(key), private=True)
-    _write(out / "ca.pem", cert.public_bytes(serialization.Encoding.PEM), private=False)
+    _write(out / "ca.key", _key_pem(key))
+    _write(out / "ca.pem", cert.public_bytes(serialization.Encoding.PEM))
     return out
 
 
@@ -139,7 +138,7 @@ def issue(
         .sign(ca_key, hashes.SHA256())
     )
     out = Path(out_dir).expanduser()
-    _write(out / "key.pem", _key_pem(key), private=True)
-    _write(out / "cert.pem", cert.public_bytes(serialization.Encoding.PEM), private=False)
-    _write(out / "ca.pem", (src / "ca.pem").read_bytes(), private=False)
+    _write(out / "key.pem", _key_pem(key))
+    _write(out / "cert.pem", cert.public_bytes(serialization.Encoding.PEM))
+    _write(out / "ca.pem", (src / "ca.pem").read_bytes())
     return out
