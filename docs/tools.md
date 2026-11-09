@@ -46,6 +46,9 @@ from strands_robots.mesh.tool import use_mesh
 tool = use_mesh(lab, approve=lambda plan: input(f"allow {plan}? [y/N] ") == "y")
 ```
 
+A device that offers skills (`mesh.mount(robot, skills={...})`, see [Mesh networking](mesh.md)) is different: the
+agent's `run` names one of them, `status` reports it, and the policy runs on the device.
+
 ## What an agent cannot do
 
 | Action | Who does it |

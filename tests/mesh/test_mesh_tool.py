@@ -43,6 +43,7 @@ def test_spec_is_generated_from_the_manifests(lab):
         "observe",
         "act",
         "run",
+        "status",
         "stop",
         "estop",
         "resume",

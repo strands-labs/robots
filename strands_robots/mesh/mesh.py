@@ -19,11 +19,12 @@ from .broadcast import broadcast, listen_estop, publish_estop
 from .codec import observation_from_dict
 from .device import Device, Selector
 from .iot.options import attach as _iot_attach
-from .presence import Directory, announce, refuse_shared, refuse_taken
+from .presence import Directory, announce, present, refuse_shared, refuse_taken, transport_of
 from .record import RAISE, check_kill_switch, default_operator, default_tenant, record, state_rate
 from .remote import connect
 from .reply import the_reply
 from .serve import ARGS, act_wait, estop_each, serve
+from .skills import Skills, check_catalogue
 from .stream import listen, publish
 from .transports.base import Transport, Unsubscribe, open_transport
 
@@ -77,13 +78,18 @@ class Mesh:
         state_hz: float | None = None,
         watchdog_ms: float | None = 500.0,
         iot: Any = None,
+        skills: Mapping[str, Any] | None = None,
     ) -> Any:
         """Make ``robot`` a device: announce it, answer its rpcs, publish its state and events; a mover silent past
-        ``watchdog_ms`` gets ``on_disconnect``. ``iot`` adds shadows. A ``Simulation`` mounts each robot in it."""
+        ``watchdog_ms`` gets ``on_disconnect``. ``iot`` adds shadows. A ``Simulation`` mounts each robot in it.
+        ``skills`` (name -> policy) are runs the device does on itself when asked by name (``mesh/skills.py``)."""
         from ..simulation import Simulation
 
         self._open()
+        catalogue = check_catalogue(skills)
         if isinstance(robot, Simulation):
+            if catalogue:
+                raise TypeError("skills= belongs to one robot: mount each robot of a Simulation with its own")
             kw = {"labels": labels, "state_hz": state_hz, "watchdog_ms": watchdog_ms, "iot": iot}
             return [self.mount(r, **kw) for r in robot.robots.values()]  # type: ignore[arg-type]
         did = wire.check_id(device_id or getattr(robot, "id", None) or robot.describe()["name"], "device_id")
@@ -91,14 +97,16 @@ class Mesh:
             if did in self._mounted:
                 raise ValueError(f"device {did!r} is already mounted on this mesh")
             refuse_taken(self._dirs, did, self.tenant)
-            rec = record(robot, did, labels or {}, self.tenant, tuple(ARGS))
+            rec = record(robot, did, labels or {}, self.tenant, tuple(ARGS), tuple(sorted(catalogue)))
             lockout = _authority.Lockout()
             undo: list[Unsubscribe] = []
             stack.callback(lambda: [u() for u in reversed(undo)])
             dog = _watchdog.start(robot, watchdog_ms, self.transports, self.tenant)
             stack.callback(_watchdog.stopper(dog))  # a failed mount stops it first; close is idempotent
-            on_rpc = getattr(dog, "on_rpc", None)
-            undo += [serve(t, self.tenant, robot, did, lockout, self._authority, on_rpc) for t in self.transports]
+            on_rpc, skilled = getattr(dog, "on_rpc", None), Skills(robot, did, catalogue, dog)
+            undo += [
+                serve(t, self.tenant, robot, did, lockout, self._authority, on_rpc, skilled) for t in self.transports
+            ]
             undo.append(_watchdog.stopper(dog))  # the IoT pieces stop first: no shadow target outlives the watchdog
             undo += [] if iot is None else [_iot_attach(self.transports, iot, robot, rec, lockout, on_rpc=on_rpc)]
             if hasattr(robot, "subscribe"):
@@ -139,7 +147,7 @@ class Mesh:
             args.setdefault("by", self.operator)
             args.setdefault("epoch", uuid.uuid4().hex)
             publish_estop(self, f"device(id:{device_id})", dict(args))
-        if rpc in ("act", "hold", "stop"):  # who moved it, for the device's audit record
+        if rpc in ("act", "hold", "stop", "skill"):  # who moved it, for the device's audit record
             args.setdefault("by", self.operator)
         refuse_shared(self._dirs, device_id, rpc, self.tenant)
         transport = self._transport_of(device_id)
@@ -211,20 +219,10 @@ class Mesh:
         return unsubscribe
 
     def _transport_of(self, device_id: str) -> Transport:
-        for t, directory in zip(self.transports, self._dirs, strict=True):
-            if any(d.id == device_id for d in directory.devices()):
-                return t
-        raise LookupError(
-            f"no device {device_id!r} in tenant {self.tenant!r}; present: {[d.id for d in self._present()]}"
-        )
+        return transport_of(self.transports, self._dirs, device_id, self.tenant)
 
     def _present(self) -> list[Device]:
-        seen: dict[str, Device] = {}
-        for directory in self._dirs:
-            for d in directory.devices():
-                if d.id not in seen or d.last_seen > seen[d.id].last_seen:
-                    seen[d.id] = d
-        return sorted(seen.values(), key=lambda d: d.id)
+        return present(self._dirs)
 
     def close(self) -> None:
         """Unmount everything, stop watching, close owned transports. Idempotent; every other verb then refuses."""

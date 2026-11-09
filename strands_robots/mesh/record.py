@@ -30,10 +30,15 @@ _HOST_ONLY = ("model",)
 
 
 def record(
-    robot: Any, device_id: str, labels: Mapping[str, str], tenant: str, served: tuple[str, ...]
+    robot: Any,
+    device_id: str,
+    labels: Mapping[str, str],
+    tenant: str,
+    served: tuple[str, ...],
+    skills: tuple[str, ...] = (),
 ) -> dict[str, Any]:
     """The device's record: identity and manifest only, as the mesh knows it (its id, tenant, labels, the rpcs it
-    answers over the mesh). Live status (estop, task) travels on state and events."""
+    answers over the mesh, the ``skills`` it runs itself). Live status (estop, task) travels on state and events."""
     manifest = dict(robot.manifest.to_dict() if hasattr(robot, "manifest") else robot.describe())
     labels = {str(k): str(v) for k, v in labels.items()}
     bad = [f"{k}:{v}" for k, v in labels.items() if not (_LABEL.match(k) and _LABEL.match(v))]
@@ -49,6 +54,9 @@ def record(
         manifest["description"] = {k: v for k, v in manifest["description"].items() if k not in _HOST_ONLY}
     if "rpcs" in manifest:
         manifest["rpcs"] = [r for r in manifest["rpcs"] if isinstance(r, Mapping) and r.get("name") in served]
+    if skills:  # named policies the device runs on itself (mesh/skills.py): a caller names one, never sends one
+        manifest["skills"] = list(skills)
+        manifest.setdefault("rpcs", []).extend({"name": n} for n in ("skill", "skill_status") if n in served)
     device_type = str(manifest.get("device_type") or manifest.get("name") or type(robot).__name__)
     return {"id": device_id, "device_type": device_type, "tenant": tenant, "labels": labels, "manifest": manifest}
 

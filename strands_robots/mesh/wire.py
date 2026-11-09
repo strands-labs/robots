@@ -168,3 +168,15 @@ def decode_envelope(raw: bytes | bytearray | memoryview | str) -> dict[str, Any]
     if type(env.get("seq")) is not int or not isinstance(env.get("t"), (int, float)) or isinstance(env["t"], bool):
         raise ValueError("mesh envelope seq must be an int and t a number")
     return env
+
+
+def in_process(url: str) -> bool:
+    """True only when no peer outside this process can reach the transport: ``mem://`` and the fake IoT broker.
+
+    A zenoh endpoint is never in-process, even one that only listens on loopback: a listener accepts connections
+    from any other local process (another user, a container, an ``ssh -L`` tunnel), so a name claimed over it is
+    not trusted without operator keys.
+    """
+    from urllib.parse import urlparse
+
+    return url.startswith("mem://") or (url.startswith("iot://") and urlparse(url).netloc == "fake")

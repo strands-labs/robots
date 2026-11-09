@@ -1,8 +1,11 @@
 """``use_mesh``: every device on the mesh as one agent tool, generated from their manifests (strands imported here).
 
-Actions: list · describe · observe · act · run · stop · estop · resume. ``act`` goes through the device's safety
-chain and operator gate on the device itself; ``run`` drives a device through ``connect`` with the device's own
-gate on every write; ``resume`` is listed so a model learns why it cannot: clearing an e-stop is the operator's,
+Actions: list · describe · observe · act · run · status · stop · estop · resume. ``act`` goes through the device's
+safety chain and operator gate on the device itself. ``run`` on a device that offers skills starts one of them ON the
+device (``mesh/skills.py``): the policy runs where the robot is and ``status`` reports it. A real robot on another
+machine that offers none is refused rather than driven one network round trip per control step; anything else is
+driven through ``connect`` with the device's own gate on every write. ``resume`` is listed so a model learns why it
+cannot: clearing an e-stop is the operator's,
 never a model's, even on a mesh that holds the operator's key. The description lists the devices present when the
 tool is built; ``list`` always answers with the devices present now.
 """
@@ -18,11 +21,12 @@ import numpy as np
 from ..types import Observation
 from .device import Device
 from .record import _LABEL
+from .wire import in_process
 
 if TYPE_CHECKING:
     from .mesh import Mesh
 
-ACTIONS = ("list", "describe", "observe", "act", "run", "stop", "estop", "resume")
+ACTIONS = ("list", "describe", "observe", "act", "run", "status", "stop", "estop", "resume")
 
 
 def _json(x: Any) -> Any:
@@ -72,19 +76,22 @@ def spec(mesh: Mesh) -> dict[str, Any]:
         labels = {k: v for k, v in sorted(d.labels.items()) if _token(k) and _token(v)}
         rpcs = [r.get("name") for r in d.manifest.get("rpcs") or () if isinstance(r, Mapping) and _token(r.get("name"))]
         line = {"id": _token(d.id), "type": _token(d.device_type) or "?", "labels": labels, "rpcs": rpcs}
+        skills = [n for n in d.manifest.get("skills") or () if _token(n)]
+        if skills:  # run with policy=<one of these> starts it on the device
+            line["skills"] = skills
         if line["id"]:
             lines.append("- " + json.dumps(line))
     about = f"Every device on the mesh (tenant {mesh.tenant}). Selectors: device(*), device(role:arm,...).\n"
     props: dict[str, Any] = {
         "action": {"type": "string", "enum": list(ACTIONS)},
-        "device_id": {"type": "string", "description": "the device, for describe/observe/act/run/stop/resume"},
+        "device_id": {"type": "string", "description": "the device, for describe/observe/act/run/status/stop/resume"},
         "selector": {"type": "string", "description": "for list and estop; default device(*)"},
         "act": {"type": "object", "properties": joints, "description": "joint targets, radians"},
         "seconds": {"type": "number", "description": "act: reach the targets over this long; without it, one step"},
         "run": {
             "type": "object",
             "properties": {
-                "policy": {"type": "string"},
+                "policy": {"type": "string", "description": "a skill the device lists (it runs on the device)"},
                 "steps": {"type": "integer"},
                 "seconds": {"type": "number"},
                 "hz": {"type": "number"},
@@ -119,11 +126,22 @@ def dispatch(mesh: Mesh, inp: Mapping[str, Any], *, approve: Any = None) -> Any:
     if action == "act":
         reach = {} if inp.get("seconds") is None else {"seconds": inp["seconds"]}
         return mesh.invoke(did, "act", action=dict(inp.get("act") or {}), **reach)
+    if action == "status":
+        return mesh.invoke(did, "skill_status")
     if action == "run":
         args = dict(inp.get("run") or {})
         extra = sorted(set(args) - set(RUN_ARGS))  # record=/push= are the developer's: nothing leaves on a model's say
         if extra:
             raise TypeError(f"use_mesh run takes {list(RUN_ARGS)}, not {extra}")
+        manifest = next((d.manifest for d in mesh.discover(f"device(id:{did})")), None)
+        if manifest is not None and manifest.get("skills"):  # the policy runs on the device, by name
+            return _run_skill(mesh, did, manifest["skills"], args)
+        if manifest is not None and manifest.get("real") and not in_process(mesh._transport_of(did).url):
+            raise PermissionError(
+                f"{did} is a real robot on another machine and offers no skills: its policy would run here and drive "
+                "it one network round trip per control step. Mount it with skills={name: policy} so the policy runs "
+                "on the device, then run one by name"
+            )
         if isinstance(args.get("policy"), str) and "://" in args["policy"]:  # its frames would stream there
             raise PermissionError(
                 f"a policy at a network address is the developer's to pass, not an agent's: {args['policy']}"
@@ -152,6 +170,20 @@ def dispatch(mesh: Mesh, inp: Mapping[str, Any], *, approve: Any = None) -> Any:
             "mesh.invoke(id, 'resume', approved_by=...) or the dashboard"
         )
     return mesh.invoke(did, action)
+
+
+def _run_skill(mesh: Mesh, did: str, offered: Any, args: Mapping[str, Any]) -> Any:
+    """``run`` on a device with skills: ``policy`` names one of them; ``seconds`` bounds it (``steps``/``hz`` are the
+    device's own). The operator's yes, if the robot is real, is asked on the device by its own ``approve=``."""
+    name, seconds = args.get("policy"), args.get("seconds")
+    if not isinstance(name, str) or name not in list(offered):
+        raise LookupError(f"{did} runs only its own skills {list(offered)}; got policy={name!r}")
+    if args.get("steps") is not None or args.get("hz") is not None:
+        raise TypeError(f"{did}: a skill takes seconds= (and instruction=); its rate and steps are the device's own")
+    if seconds is None:
+        raise TypeError(f"{did}: a skill needs seconds= (at most the device's bound)")
+    extra = {} if args.get("instruction") is None else {"instruction": args["instruction"]}
+    return mesh.invoke(did, "skill", name=name, seconds=seconds, **extra)
 
 
 def use_mesh(mesh: Mesh, *, approve: Any = None) -> Any:

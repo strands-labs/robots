@@ -5,7 +5,9 @@ leaves it as it was, so a request that moved nothing can never make the device a
 from that invoker is a heartbeat. If the invoker goes quiet for ``watchdog_ms`` or its Mesh's liveliness token
 vanishes (closed, crashed, network gone), the device applies its ``on_disconnect`` once (an audit warning says so)
 and disarms until the next motion. Reads never arm it. The quiet clock does not run
-while a motion rpc is still moving the device (an ``act(seconds=)`` reach): its invoker is waiting on the reply.
+while a motion rpc is still moving the device (an ``act(seconds=)`` reach): its invoker is waiting on the reply. A
+skill (``mesh/skills.py``) holds the watchdog for its whole run (``busy``): the quiet clock pauses, a vanished
+invoker still ends it (``cuts``) before ``on_disconnect`` is applied.
 """
 
 from __future__ import annotations
@@ -32,6 +34,7 @@ class MeshWatchdog:
         self.peer: str | None = None
         self._lock = threading.Lock()
         self._moving = 0  # motion rpcs in progress: their invoker is waiting, not quiet
+        self.cuts: list[Callable[[], None]] = []  # what must stop before on_disconnect (a running skill)
         self._armed = threading.Event()
         self._stop = threading.Event()
         self._thread = threading.Thread(target=self._loop, daemon=True, name="mesh-watchdog")
@@ -61,6 +64,25 @@ class MeshWatchdog:
                 self.peer = peer
                 self._armed.set()
 
+    def busy(self, peer: str) -> Callable[[], None]:
+        """A skill started for ``peer``: armed for it now, quiet clock paused until the returned release is called."""
+        with self._lock:
+            self._moving += 1
+            self.peer = peer
+            self._armed.set()
+            self.dog.beat()
+        released = threading.Event()
+
+        def release() -> None:
+            if released.is_set():
+                return
+            released.set()
+            with self._lock:
+                self._moving -= 1
+                self.dog.beat()
+
+        return release
+
     def _on_peer(self, key: str, alive: bool) -> None:
         if alive or not self._armed.is_set() or key.rsplit("/", 1)[-1] != self.peer:
             return
@@ -73,6 +95,8 @@ class MeshWatchdog:
             self._armed.clear()
             self.peer = None
         AUDIT.warning("%s on_disconnect: its mover went quiet or vanished", getattr(self.robot, "id", "?"))
+        for cut in self.cuts:  # a skill still running for the vanished mover ends first, then the robot holds
+            cut()
         try:
             apply_on_disconnect(self.robot)
         except Exception:  # a closed robot cannot hold; nothing left to protect
