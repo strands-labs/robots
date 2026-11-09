@@ -192,8 +192,12 @@ def test_a_second_peer_answering_for_a_device_on_zenoh_is_refused(tenant, port):
             error = {"type": "EStopped", "message": "engaged"}
             return wire.encode(wire.envelope(tenant, "arm", "error", "lockout", seq=seq, error=error))
 
-        other.queryable(wire.key("rpc", tenant, "arm", "lockout"), answer)
-        time.sleep(0.5)  # the second queryable reaches the operator's session
+        key = wire.key("rpc", tenant, "arm", "lockout")
+        other.queryable(key, answer)
+        probe = wire.encode(wire.envelope(tenant, "arm", "rpc", "lockout", seq=0, args={}, peer="probe"))
+        end = time.monotonic() + 5.0
+        while len(op.transports[0].query(key, probe, 1.0)) < 2 and time.monotonic() < end:
+            time.sleep(0.05)  # until the second queryable reaches the operator's session
         outcomes = set()
         for _ in range(10):
             try:
