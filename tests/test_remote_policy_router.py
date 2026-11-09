@@ -36,11 +36,16 @@ def real():
     robot.close()
 
 
-def zenoh_file(tmp_path, *, mtls: bool) -> str:
+def zenoh_file(tmp_path, *, mtls: bool, cn: str = "robot-client") -> str:
+    """A zenoh config whose tls section presents a real certificate with common name ``cn`` (when ``mtls``)."""
     pytest.importorskip("zenoh")
+    pytest.importorskip("cryptography")
+    from strands_robots.policy.lerobot.roles import issue
+
     tls = {"root_ca_certificate": str(tmp_path / "ca.pem"), "enable_mtls": mtls}
     if mtls:
-        tls |= {"connect_certificate": str(tmp_path / "cert.pem"), "connect_private_key": str(tmp_path / "key.pem")}
+        cert = issue(tmp_path, cn)
+        tls |= {"connect_certificate": str(cert), "connect_private_key": str(tmp_path / f"{cn}-key.pem")}
     path = tmp_path / "zenoh.json5"
     path.write_text(json.dumps({"transport": {"link": {"tls": tls}}}))
     return str(path)

@@ -117,32 +117,69 @@ def mutual_tls(path: str) -> bool:
     return tls.get("enable_mtls") is True and all(tls.get(k) for k in keys)
 
 
-def check_channel(who: str, endpoint: str, robot: Any, asked: bool, config: str | None) -> str:
+def robot_role(config: str, mode: str | None = None) -> str | None:
+    """Why the zenoh config at ``config`` is not LeRobot's robot role on a router, or None when it is.
+
+    The role: mutual TLS presenting a ``robot-client`` certificate (the router's ACL gives the robot's part to that
+    name only, ``roles.py``), joined as a router client (``zenoh_mode`` client; LeRobot turns discovery off).
+    """
+    from .roles import ROBOT, common_name
+
+    if not mutual_tls(config):
+        return f"{config} does not set transport.link.tls.enable_mtls with a CA, a certificate and a key"
+    cn = common_name(config)
+    if cn != ROBOT:
+        return f"{config} presents the certificate {cn!r}, and the router lets only {ROBOT!r} take the robot's part"
+    if mode not in (None, "client"):
+        return f"zenoh_mode={mode!r}: a robot joins the router as a client, where its ACL applies"
+    return None
+
+
+def check_channel(who: str, endpoint: str, robot: Any, asked: bool, config: str | None, mode: str | None) -> str:
     """The endpoint a session may open for ``robot``, or ``PermissionError``: a real robot needs an authenticated link.
 
-    Allowed for a real robot: a ``tls``/``quic`` link with a mutual-TLS ``config``; a plain link to this machine
-    (returned pinned to its loopback address); anything the operator vouches for. A simulated robot is not gated.
+    ``config``: the session's zenoh config (``zenoh_config``); ``mode``: the ``zenoh_mode`` the caller set, if any.
+
+    Allowed for a real robot: a ``tls``/``quic`` link with a zenoh config in LeRobot's robot role (``robot_role``);
+    a plain link to this machine (returned pinned to its loopback address); anything the operator vouches for. A
+    simulated robot is not gated.
     """
     if not getattr(robot, "is_real", False) or trusted(asked):
         return endpoint
-    link = split(endpoint)[0]
-    if link in AUTHENTICATED and config is not None and mutual_tls(config):
+    config, link = zenoh_config(config), split(endpoint)[0]
+    why = robot_role(config, mode) if link in AUTHENTICATED and config is not None else None
+    if link in AUTHENTICATED and config is not None and why is None:
         return endpoint
     pinned = loopback(endpoint)
     if pinned is not None:
         return pinned
-    if link in AUTHENTICATED and config is not None:
-        why = f"{config} does not set transport.link.tls.enable_mtls with a CA, a certificate and a key"
-    else:
-        why = (
-            "the link carries no identity, so whoever shares it (a zenoh router's clients, anyone answering at "
-            "that address) can read the cameras and answer for the server"
-        )
-    raise PermissionError(
-        f"{who}: a real robot takes actions from {endpoint} only over an authenticated channel; {why}. Use a tls "
-        "link with a mutual-TLS zenoh config on both ends (zenoh://tls/host:port/<deployment> and "
-        "zenoh_config=<file>), or vouch for it: Policy(..., trusted=True) or STRANDS_ZENOH_TRUSTED=1 (docs/lerobot.md)"
+    why = why or (
+        "the link carries no identity, so whoever shares it (a zenoh router's clients, anyone answering at "
+        "that address) can read the cameras and answer for the server"
     )
+    raise PermissionError(
+        f"{who}: a real robot takes actions from {endpoint} only over an authenticated channel; {why}. Make the "
+        "role configs (python -m strands_robots.policy.lerobot zenoh-config --deployment <d> --out <dir>), run "
+        "zenohd -c <dir>/router.json5 and connect with zenoh://tls/<router>:7447/<d> and "
+        "zenoh_config=<dir>/robot.json5, or vouch for it: Policy(..., trusted=True) or STRANDS_ZENOH_TRUSTED=1 "
+        "(docs/lerobot.md)"
+    )
+
+
+def server_zenoh(endpoint: str, config: str | None) -> Any:
+    """LeRobot's ``ZenohConfig`` for a server at ``endpoint`` opened with the zenoh config ``config``.
+
+    A config in LeRobot's ``policy-server`` role (``roles.py``) joins the router at ``endpoint`` as a client, so the
+    router's ACL applies to it; any other config, or none, listens at ``endpoint``.
+    """
+    from lerobot.transport import ZenohConfig
+
+    from .roles import SERVER, common_name
+
+    path = None if config is None else str(Path(config).expanduser())
+    if path is not None and common_name(path) == SERVER:
+        return ZenohConfig(mode="client", connect_endpoints=[endpoint], config_file=path)
+    return ZenohConfig(listen_endpoints=[endpoint], config_file=path)
 
 
 def wan_defaults(endpoint: str, settings: dict[str, Any], descriptor: dict[str, Any] | None = None) -> dict[str, Any]:

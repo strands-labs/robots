@@ -124,7 +124,8 @@ class ZenohPolicy:
 
     def attach(self, robot: Any) -> None:
         self.detach()
-        self._wire = check_channel(repr(self), self.endpoint, robot, self.trusted, zenoh_config(self.zenoh_config))
+        mode = self.settings.get("zenoh_mode")  # the caller's word over wan_defaults' client
+        self._wire = check_channel(repr(self), self.endpoint, robot, self.trusted, self.zenoh_config, mode)
         client = self._connect()
         try:
             caps, sem = client.capabilities, client.descriptor["semantics"]
