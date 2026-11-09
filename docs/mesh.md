@@ -35,9 +35,9 @@ Each robot runs its own safety chain on mesh commands. A remote caller cannot ap
 the caller disappears, the robot does what `on_disconnect` says.
 
 A real robot mounted with `watchdog_ms=None` only answers `observe` and `describe`. Set `watchdog_ms=` to move it
-over the mesh. A real robot on a mesh any machine may join is observe-only as well (see "Securing the mesh"): on
-such a mesh the peer id a request carries is only a claim, so any machine could move the robot, or keep its
-watchdog from noticing that the real mover is gone.
+over the mesh. A real robot on a mesh any machine may join is observe-only as well (see "Securing the mesh"): there
+the peer id a request carries is only a claim, so any machine could move the robot, or keep its watchdog from
+noticing that the real mover is gone.
 
 The watchdog arms only on a move the robot carried out. A move it refused, for bad arguments or by its safety
 chain, changes nothing, so a request that moved nothing can never make it apply `on_disconnect`. Every
@@ -46,36 +46,51 @@ answers (a second peer answering for the robot), `invoke` raises `RemoteError` i
 
 ## Securing the mesh
 
-A plain `zenoh://` mesh lets any machine that reaches it join. That machine can read state and cameras, answer for a
-robot, and send it commands that its safety chain then checks. A real robot mounted on such a mesh refuses `act` and
-`hold` (it still answers reads, stops and the e-stop), and an audit warning says so. To move it over the mesh, either
-say who may join with a config file (below), or vouch for the network itself with `zenoh://?trusted=1` or
-`STRANDS_ZENOH_TRUSTED=1`, for a VLAN or WireGuard network that only the lab reaches. To say who may join, give zenoh a
-config file with `?config=<path>` or `STRANDS_ZENOH_CONFIG`. That file can set TLS with client certificates on `tls/`
-endpoints, user and password authentication, and access control. The file is the session's config. The mesh adds only
-its lease, any `?listen=` or `?connect=`, peer mode if the file sets no mode, and its scouting group if the file sets
-neither `scouting.multicast.enabled` nor its `address`.
+Give every machine a certificate from one lab CA. A machine with one joins the mesh over mutual TLS only, and signs
+everything it sends with the same key:
 
-TLS settings guard only `tls/` links. A peer that scouts the robot can still offer a plain `tcp/` locator, and zenoh
-connects to it. To admit only certificate holders, allow only the `tls` protocol and turn scouting off:
-
-```json5
-{
-  mode: "peer",
-  listen: { endpoints: ["tls/0.0.0.0:7447"] },
-  scouting: { multicast: { enabled: false }, gossip: { enabled: false } },
-  transport: { link: {
-    protocols: ["tls"],
-    tls: {
-      listen_certificate: "robot.pem", listen_private_key: "robot.key",
-      root_ca_certificate: "lab-ca.pem", enable_mtls: true,
-    },
-  } },
-}
+```bash
+python -m strands_robots.mesh ca                                  # once, on an admin machine
+python -m strands_robots.mesh cert lab-pc --serves 'so101,arm-*'  # on the robot's machine
+python -m strands_robots.mesh cert alice --out ./alice            # for an operator; copy ./alice to their machine
 ```
 
-LeRobot remote inference (`Policy("zenoh://host:port/<deployment>")`) uses LeRobot's own zenoh client. Run it over a
-`tls/` endpoint or a network you control, such as a VLAN or WireGuard.
+`cert` writes `~/.strands/mesh/identity` unless told otherwise, and a plain `zenoh://` mesh on that machine uses it.
+`zenoh://?identity=<dir>` or `STRANDS_MESH_IDENTITY=<dir>` names another one, and `none` opts a process out (a
+simulation). On such a mesh:
+
+- A machine without a certificate from the lab CA cannot open a link: it cannot read, answer, publish or query.
+  Machines with certificates still find each other on the LAN with no endpoints.
+- A peer's id is `<name>.<random>`, where `<name>` is the name in its certificate. A robot answers only signed
+  requests whose peer id belongs to the signer, and refuses a request it has already answered or one more than 30 s
+  off its clock. No machine can send heartbeats for another, so a robot's watchdog always notices its mover leave.
+- A reply, a robot's announcement and its state count only when they are signed by a certificate whose `--serves`
+  covers that robot's id. Another machine can neither answer for a robot nor announce one, and its answers never
+  make a request fail. A machine refuses to mount a robot id its own certificate does not serve.
+- An e-stop is never refused for its signature.
+
+A real robot moves over the mesh only on a mesh with identities, or on a network you vouch for with
+`zenoh://?trusted=1` or `STRANDS_ZENOH_TRUSTED=1` (a VLAN or WireGuard network only the lab reaches; peer ids there
+are claims). Every machine on the robot's mesh needs this version. A robot with an identity refuses unsigned
+requests from older peers.
+
+A zenoh config file (`?config=<path>` or `STRANDS_ZENOH_CONFIG`) is the session's config instead of the identity.
+The mesh adds only its lease, any `?listen=` or `?connect=`, peer mode if the file sets no mode, and its scouting
+group if the file sets neither `scouting.multicast.enabled` nor its `address`. A file counts as an identity when it
+turns on `transport.link.tls.enable_mtls`, allows only the `tls` (or `quic`) link protocol, and names PEM certificate,
+key and CA files that this CA issued. A file without them leaves the mesh open. To write one, for a `zenohd` router
+or another zenoh client:
+
+```bash
+python -m strands_robots.mesh config --mode router --listen tls/0.0.0.0:7447 -o zenohd.json5
+```
+
+What signatures don't cover: a machine with a lab certificate can still drop traffic it routes, send stops, and hold
+a copy of another peer's liveliness token. The copy only takes away the watchdog's early alarm when the mover
+disconnects. Its quiet timer still fires after `watchdog_ms`. To revoke a certificate, make a new CA and reissue.
+
+LeRobot remote inference (`Policy("zenoh://host:port/<deployment>")`) uses LeRobot's own zenoh client. Give it a
+config file written by `config --mode client`, as [Running a LeRobot policy](lerobot.md#on-a-policy-server) describes.
 
 ## Resume after a mesh e-stop
 
