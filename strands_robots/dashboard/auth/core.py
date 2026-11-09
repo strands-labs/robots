@@ -72,7 +72,17 @@ class Auth:
         return claims if any(c["id"] == claims["sub"] for c in self.store.credentials()) else None
 
     def signed_in(self, scope: Any) -> dict[str, Any] | None:
-        return {"sub": "sign-in off"} if not self.enabled else self.claims(session.from_scope(scope))
+        """The session of this request. A browser session (it names the Host it was issued on) counts only on that
+        Host and only with the page's proof beside it; the cookie carries nothing else."""
+        if not self.enabled:
+            return {"sub": "sign-in off"}
+        got = session.from_scope(scope)
+        claims = self.claims(got.token)
+        return claims if claims is not None and session.admits(self.store.secret, got, claims) else None
+
+    def proof(self, token: str) -> str:
+        """The half of a browser session the page keeps (``X-Strands-Session``); the cookie holds the other."""
+        return session.proof(self.store.secret, token)
 
     @property
     def setup_required(self) -> bool:
@@ -159,7 +169,7 @@ class Auth:
         self.store.update(add)
         self._setup = None
         log.warning("dashboard: passkey %r enrolled (%s)", extra["label"], self.store.path)
-        return session.mint(self.store.secret, cid, self.ttl)
+        return session.mint(self.store.secret, cid, self.ttl, aud=host)
 
     def begin_login(self, host: str) -> dict[str, Any]:
         rp_id, origin = self._rp(host)
@@ -184,7 +194,7 @@ class Auth:
             )
 
         self.store.update(check)
-        return session.mint(self.store.secret, cid, self.ttl)
+        return session.mint(self.store.secret, cid, self.ttl, aud=host)
 
     def passkeys(self) -> list[dict[str, Any]]:
         return [{"id": c["id"], "name": c["name"], "created": c.get("created")} for c in self.store.credentials()]

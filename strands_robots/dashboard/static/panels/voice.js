@@ -8,6 +8,8 @@
  * PCM16 it receives at the output rate. A barge-in ("interrupt") drops whatever is still queued to play.
  * Registers through window.SR.registerSlot("chat-input") when the shell provides it, else mounts as a row above #chatform.
  */
+import { authed, socket } from "../auth.js";
+
 
 const $ = (s) => document.querySelector(s);
 const events = (window.__voiceEvents = []);
@@ -48,7 +50,7 @@ class Voice {
   async start() {
     this.setState("connecting");
     try {
-      this.ws = new WebSocket(wsUrl("/ws/voice"));
+      this.ws = socket(wsUrl("/ws/voice"));
       this.ws.binaryType = "arraybuffer";
       const ready = await new Promise((resolve, reject) => {
         this.ws.onmessage = (e) => { const ev = JSON.parse(e.data); events.push(ev); ev.type === "ready" ? resolve(ev) : reject(new Error(ev.message || ev.type)); };
@@ -160,7 +162,7 @@ function mount() {
   ui.mic.addEventListener("click", () => (v.state === "live" || v.state === "connecting" ? v.stop() : v.start()));
   ui.mute.addEventListener("click", () => v.toggleMute());
   v.setState("off");
-  fetch("/api/voice").then((r) => (r.ok ? r.json() : null)).then((info) => {
+  authed("/api/voice").then((r) => (r.ok ? r.json() : null)).then((info) => {
     if (!info || !info.enabled) { ui.mic.disabled = true; ui.mic.title = (info && info.hint) || "voice is off on this server"; }
     window.__voiceInfo = info;
   }).catch(() => { ui.mic.disabled = true; ui.mic.title = "no dashboard server: voice needs one"; });

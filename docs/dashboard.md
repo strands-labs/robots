@@ -63,6 +63,12 @@ on `127.0.0.1` sends you to `localhost`.
 one, and sign out. Adding a passkey needs a signed-in session. The last passkey cannot be removed. A session lasts
 12 hours (`Auth(ttl=...)` or `STRANDS_ROBOTS_DASHBOARD_SESSION_TTL`, in seconds). Removing a passkey ends its sessions.
 
+**A session belongs to one dashboard.** A browser sends a `localhost` cookie to every port on the machine, including
+other programs' servers, so the session cookie (`strands_robots_session_<port>`, HttpOnly) is only half of a session.
+The other half is a proof the page keeps in that port's own storage, which the browser sends nowhere by itself; the
+page adds it to every request and socket. A server on another port that is sent the cookie cannot use it, and a
+session signed in on one port is refused on another. Sign in again after an upgrade from a version without this.
+
 **Scripts, notebooks and agents.** Ask the dashboard for a token and send it as a bearer header:
 
 ```python
@@ -123,7 +129,7 @@ cannot move a real robot.
 
 Serve these docs locally and the home page shows a dashboard running on port 8090 or 8091.
 Add `?live=http://127.0.0.1:<port>/` to the home page URL to use another port. The docs page is another site, so the
-session cookie does not reach the embedded dashboard: start that simulated dashboard with `--no-auth`.
+session does not reach the embedded dashboard: start that simulated dashboard with `--no-auth`.
 
 <div class="sr-grid2" markdown>
 <figure><img class="sr-media" src="../assets/media/dashboard.png" alt="so101 and G1 in the browser"><figcaption>An arm and a humanoid in one world</figcaption></figure>

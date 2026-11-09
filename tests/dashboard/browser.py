@@ -8,15 +8,20 @@ from contextlib import contextmanager
 from typing import Any
 
 import pytest
-from conftest import dashboard_token
+from conftest import browser_session
 
-from strands_robots.dashboard.auth.session import COOKIE
+from strands_robots.dashboard.auth.session import cookie_name
 
 
 def sign_in(context: Any, url: str) -> None:
-    """Give a browser context the session cookie a passkey sign-in on ``url``'s dashboard would have set."""
-    origin = "/".join(url.split("/")[:3])
-    context.add_cookies([{"name": COOKIE, "value": dashboard_token(), "url": origin}])
+    """Give a browser context both halves of the session a passkey sign-in on ``url``'s dashboard would have left: the
+    cookie, and the proof in that origin's localStorage (the page serves on ``localhost``, where passkeys work)."""
+    host = f"localhost:{url.split('/')[2].rsplit(':', 1)[1]}"
+    token, proof = browser_session(host)
+    context.add_cookies([{"name": cookie_name(host), "value": token, "url": f"http://{host}"}])
+    context.add_init_script(
+        f"if (location.host === {host!r}) localStorage.setItem('strands-robots-session-proof', {proof!r});"
+    )
 
 
 @contextmanager

@@ -1,6 +1,9 @@
 """Every ``/api/*`` route and every ``/ws/*`` socket needs a signed-in session; the page shell, its assets and the
 ``/auth/*`` ceremony routes do not (they are how one signs in).
 
+A browser session is the cookie plus the page's proof (``session`` says why); a socket offers the proof as its
+subprotocol, which is echoed on accept, as a browser requires of a protocol it offered.
+
 Runs inside the same-origin guard (``dashboard/guard.py``), so a request reaches it only with this server's Host,
 Origin and JSON content type. A refused request is a 401 (a socket closes with 4401 before it is accepted). The page
 shell asked for on ``127.0.0.1`` / ``[::1]`` is redirected to ``localhost``, the one loopback name passkeys work on.
@@ -12,6 +15,8 @@ from collections.abc import Awaitable, Callable, MutableMapping
 from typing import TYPE_CHECKING, Any
 
 from starlette.responses import JSONResponse, RedirectResponse
+
+from . import session
 
 if TYPE_CHECKING:
     from .core import Auth
@@ -50,4 +55,20 @@ class RequireSession:
                 await JSONResponse({"detail": SIGN_IN}, status_code=401)(scope, receive, send)
                 return
             scope.setdefault("state", {})["session"] = claims
+            if scope["type"] == "websocket":
+                send = _echo_protocol(scope, send)
         await self.app(scope, receive, send)
+
+
+def _echo_protocol(scope: MutableMapping[str, Any], send: Any) -> Any:
+    """``send`` that accepts the socket with the ``strands-session.<proof>`` subprotocol the page offered."""
+    offered = next((p for p in scope.get("subprotocols", []) if p.startswith(session.PROTOCOL)), None)
+    if offered is None:
+        return send
+
+    async def accept(message: MutableMapping[str, Any]) -> None:
+        if message["type"] == "websocket.accept":
+            message = {**message, "subprotocol": offered}
+        await send(message)
+
+    return accept

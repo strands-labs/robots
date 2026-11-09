@@ -3,6 +3,8 @@
  * robot or needs X-Confirm. It is a side-column tab (window.SR.registerPanel, loaded through GET /api/panels) and
  * puts a REC dot in the top bar slot while a take is live.
  */
+import { authed, image } from "../auth.js";
+
 let BASE = (window.__state && window.__state.base) || "";
 const esc = (v) => String(v ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
 const JSON_POST = { method: "POST", headers: { "content-type": "application/json" } };
@@ -76,7 +78,7 @@ const shown = () => !!ui.el && ui.el.offsetParent !== null; // its tab is the op
 const q = (s) => ui.el.querySelector(s);
 
 async function api(path, init) {
-  const res = await fetch(`${BASE}${path}`, init);
+  const res = await authed(`${BASE}${path}`, init);
   const body = await res.json().catch(() => ({}));
   if (!res.ok) throw new Error(body.detail || `${res.status} ${res.statusText}`);
   return body;
@@ -105,7 +107,7 @@ function renderOptions(opts) {
 
 function refreshThumbs() {
   if (!shown() || document.hidden) return;
-  for (const img of ui.el.querySelectorAll(".rec-cam img")) img.src = `${img.dataset.src}?t=${Date.now()}`;
+  for (const img of ui.el.querySelectorAll(".rec-cam img")) image(img, `${img.dataset.src}?t=${Date.now()}`);
 }
 
 function chosen() {
@@ -207,7 +209,7 @@ function mountBar(el, ctx) {
 
 async function boot() {
   BASE = (window.__state && window.__state.base) || "";
-  if (!(await fetch(`${BASE}/api/record/status`).then((r) => r.ok, () => false))) return; // static / standalone page
+  if (!(await authed(`${BASE}/api/record/status`).then((r) => r.ok, () => false))) return; // static / standalone page
   const SR = window.SR;
   if (!SR || typeof SR.registerPanel !== "function") return; // a page without the panel slot API has no Record tab
   SR.registerPanel({ id: "record", title: "Record", order: 30, mount: (el, ctx) => { mount(el, ctx); } });

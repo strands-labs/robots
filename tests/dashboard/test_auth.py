@@ -62,13 +62,17 @@ def enrol(c: TestClient, key: Authenticator, *, setup: str | None = None, header
 
 
 def login(c: TestClient, key: Authenticator, **kw) -> tuple[int, str]:
+    """Sign ``c`` in (it keeps the cookie half); returns the status and the proof half a page would keep."""
     begun = c.post("/auth/login/begin", json={}).json()
     r = c.post(
         "/auth/login/finish",
         json={"challenge_id": begun["challenge_id"], "credential": key.get(begun["options"], **kw)},
     )
-    cookie = r.headers.get("set-cookie", "")
-    return r.status_code, cookie.split(";")[0].partition("=")[2]
+    return r.status_code, r.json().get("proof", "")
+
+
+def proved(proof: str) -> dict[str, str]:
+    return {**JSON, session.PROOF_HEADER: proof}
 
 
 def test_every_api_and_socket_route_needs_a_session_and_nothing_else_is_open(world) -> None:
@@ -133,12 +137,13 @@ def test_the_session_cookie_is_httponly_samesite_strict_and_short_lived(world) -
     dash, _, _ = world
     _, out = enrol(client(dash), Authenticator(BASE), setup=dash.auth.setup_code)
     flags = [f.strip() for f in out["set-cookie"].split(";")]
-    assert flags[0].startswith(f"{session.COOKIE}=") and "HttpOnly" in flags and "SameSite=Strict" in flags
+    assert flags[0].startswith(f"{session.COOKIE}_8090=") and "HttpOnly" in flags and "SameSite=Strict" in flags
     assert f"Max-Age={12 * 3600}" in flags
     token = flags[0].partition("=")[2]
     c = client(dash)
-    c.cookies.set(session.COOKIE, token)
-    assert c.get("/api/scene").status_code == 200
+    c.cookies.set(f"{session.COOKIE}_8090", token)
+    assert c.get("/api/scene").status_code == 401  # the cookie alone: what every other localhost port is sent
+    assert c.get("/api/scene", headers=proved(out["proof"])).status_code == 200
     assert "Max-Age=0" in c.post("/auth/logout", headers=JSON).headers["set-cookie"]
 
 
@@ -146,8 +151,8 @@ def test_sign_in_works_and_a_replayed_sign_count_is_refused(world) -> None:
     dash, _, _ = world
     c, key = client(dash), Authenticator(BASE)
     enrol(c, key, setup=dash.auth.setup_code)
-    status, token = login(c, key)
-    assert status == 200 and c.get("/api/scene", headers=bearer(token)).status_code == 200
+    status, proof = login(c, key)
+    assert status == 200 and c.get("/api/scene", headers=proved(proof)).status_code == 200
     assert login(c, key, count=key.count)[0] == 403  # the same count again: a cloned or replayed authenticator
 
 
@@ -167,16 +172,20 @@ def test_more_passkeys_need_a_session_and_the_last_one_cannot_go(world) -> None:
     c, first, second = client(dash), Authenticator(BASE), Authenticator(BASE)
     enrol(client(dash), first, setup=dash.auth.setup_code)
     assert enrol(c, second)[0] == 403
-    _, token = login(c, first)
-    assert enrol(c, second, headers=bearer(token))[0] == 200
-    listed = c.get("/api/passkeys", headers=bearer(token)).json()["passkeys"]
+    _, proof = login(c, first)
+    status, out = enrol(c, second, headers=proved(proof))
+    assert status == 200
+    proof = out["proof"]  # enrolling signs the page in afresh: a new cookie and its new proof
+    listed = c.get("/api/passkeys", headers=proved(proof)).json()["passkeys"]
     assert {p["id"] for p in listed} == {first.id, second.id}
-    r = c.post(f"/api/passkeys/{second.id}", json={"name": "phone"}, headers=bearer(token))
+    r = c.post(f"/api/passkeys/{second.id}", json={"name": "phone"}, headers=proved(proof))
     assert r.json()["name"] == "phone"
-    assert c.delete(f"/api/passkeys/{first.id}", headers=bearer(token)).status_code == 200
-    assert c.get("/api/scene", headers=bearer(token)).status_code == 401  # its sessions ended with it
-    _, token = login(c, second)
-    assert c.delete(f"/api/passkeys/{second.id}", headers=bearer(token)).status_code == 409
+    held = client(dash)
+    _, held_proof = login(held, first)
+    assert c.delete(f"/api/passkeys/{first.id}", headers=proved(proof)).status_code == 200
+    assert held.get("/api/scene", headers=proved(held_proof)).status_code == 401  # its sessions ended with it
+    _, proof = login(c, second)
+    assert c.delete(f"/api/passkeys/{second.id}", headers=proved(proof)).status_code == 409
 
 
 def test_a_token_is_refused_once_expired_or_tampered(tmp_path) -> None:
