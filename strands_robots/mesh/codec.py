@@ -11,14 +11,29 @@ from ..types import JointState, Observation, Pose
 _POSE = ("position", "orientation", "linear_velocity", "angular_velocity")
 
 
+def unmeasured_as_null(values: Any) -> Any:
+    """Velocities or efforts for the wire: the array as is when every joint reports one, else a list with ``None``
+    where a joint has no reading.
+
+    A joint with no velocity or effort interface reports NaN (ros2_control does for every position-only joint), and
+    the wire refuses NaN, so the reply to a move that happened came back as an error and a caller could retry a move
+    that already ran. Absent is a measurement state, not a fault: it travels as JSON ``null`` and decodes back to NaN
+    (``observation_from_dict``). Positions are not passed through here: a joint with no position is a fault, and the
+    wire's refusal of it stands, as does its refusal of a non-finite command."""
+    arr = np.asarray(values, dtype=float)
+    if np.isfinite(arr).all():
+        return arr
+    return [float(v) if np.isfinite(v) else None for v in arr.tolist()]
+
+
 def observation_to_dict(obs: Observation, *, images: bool = False) -> dict[str, Any]:
     js = obs.joints
     out: dict[str, Any] = {
         "t": float(obs.t),
         "names": list(js.names),
         "positions": np.asarray(js.positions, dtype=float),
-        "velocities": np.asarray(js.velocities, dtype=float),
-        "efforts": np.asarray(js.efforts, dtype=float),
+        "velocities": unmeasured_as_null(js.velocities),
+        "efforts": unmeasured_as_null(js.efforts),
         "pose": None if obs.pose is None else {k: getattr(obs.pose, k) for k in _POSE},
     }
     if images:
