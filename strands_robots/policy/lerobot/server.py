@@ -50,7 +50,7 @@ def serve(cfg: Any, *, ready_timeout: float = 120.0) -> Iterator[str]:
     try:
         if not ready.wait(ready_timeout):
             raise TimeoutError(f"deployment {cfg.deployment!r} did not become ready in {ready_timeout:g} s")
-        endpoint = cfg.zenoh.listen_endpoints[0].removeprefix("tcp/")
+        endpoint = (cfg.zenoh.listen_endpoints or cfg.zenoh.connect_endpoints)[0].removeprefix("tcp/")
         yield f"zenoh://{endpoint}/{cfg.deployment}"
     finally:
         server.stop()
