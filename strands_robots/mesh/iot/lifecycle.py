@@ -16,7 +16,7 @@ from collections.abc import Callable, Mapping
 from typing import Any
 
 from .. import wire
-from .policy import operator_client_prefix
+from .policy import check_device_id, operator_client_prefix
 from .rules import rule_name
 
 TOPICS = ("$aws/events/presence/connected/+", "$aws/events/presence/disconnected/+")
@@ -84,7 +84,7 @@ def clear_presence_rule(tenant: str, role_arn: str, *, things: list[str]) -> dic
     without the ``WHERE`` every tenant's audit topic would carry every other tenant's disconnects. An empty
     ``things`` is refused rather than widened."""
     t = wire.check_id(tenant, "tenant")
-    ids = [wire.check_id(i, "device_id") for i in things]
+    ids = [check_device_id(i) for i in things]
     if not ids:
         raise ValueError("clear_presence_rule needs the tenant's device ids (things=[...] from registry.list_things)")
     who = " OR ".join([*(f"clientId = '{i}'" for i in ids), f"startswith(clientId, '{operator_client_prefix(t)}')"])
