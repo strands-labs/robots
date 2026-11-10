@@ -58,13 +58,12 @@ def make(spec: Any, **kw: Any) -> Any:
     if s == "hold":  # a run of it moved nothing, yet an agent read the word as "reach a pose": no such spec
         raise ValueError(f"Policy({s!r}): not a policy; {HOLD_HINT}")
     path, _, query = s.partition("?")
-    if _PRESET.match(s):  # a known preset wins: the spec is a name, never a path in the CWD
-        from .onnx import preset, preset_names
+    if _is_preset(s):  # a known preset wins: the spec is a name, never a path in the CWD
+        from .onnx import preset
 
-        if path in preset_names():
-            return preset(s, **kw)
+        return preset(s, **kw)
     local = Path(path).expanduser()
-    if (local / "meta" / "info.json").is_file():
+    if _is_dataset(local):
         from .dataset import ReplayPolicy
 
         try:  # the query is a grammar, not a hint: one key, ``episode``; anything else is refused by name
@@ -77,7 +76,7 @@ def make(spec: Any, **kw: Any) -> Any:
         if not episode.isdigit():
             raise ValueError(f"Policy({s!r}): episode must be an integer >= 0, got {episode!r}")
         return ReplayPolicy(local, int(episode), **kw)
-    if (local / "config.json").is_file() or _REPO.match(s):
+    if _is_checkpoint(local) or _REPO.match(s):
         from .chunked import ChunkedPolicy
         from .lerobot import LeRobotPolicy
 
@@ -93,6 +92,33 @@ def make(spec: Any, **kw: Any) -> Any:
         known = f"; known presets: {', '.join(preset_names())}"
         raise ValueError(f"Policy({s!r}): unknown form{known}; forms:\n  " + "\n  ".join(FORMS))
     raise ValueError(f"Policy({s!r}): unknown form; forms:\n  " + "\n  ".join(FORMS))
+
+
+def local_root(spec: Any) -> Path | None:
+    """The directory ``make(spec)`` reads from this machine's disk: a dataset or a checkpoint; None for any other form.
+
+    One rule for the loader and for whoever pins what it reads: a preset name wins over a same-named path in the CWD.
+    """
+    if not isinstance(spec, (str, Path)) or _is_preset(s := str(spec)) or s.startswith(("zenoh://", "zenoh+")):
+        return None
+    local = Path(s.partition("?")[0]).expanduser()
+    return local if _is_dataset(local) or _is_checkpoint(local) else None
+
+
+def _is_preset(spec: str) -> bool:
+    if not _PRESET.match(spec):
+        return False
+    from .onnx import preset_names
+
+    return spec.partition("?")[0] in preset_names()
+
+
+def _is_dataset(local: Path) -> bool:
+    return (local / "meta" / "info.json").is_file()
+
+
+def _is_checkpoint(local: Path) -> bool:
+    return (local / "config.json").is_file()
 
 
 def from_spec(spec: str) -> Any:

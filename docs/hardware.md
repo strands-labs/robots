@@ -75,7 +75,10 @@ first. If it returns false, nothing is written. A real robot without `confirm=` 
 
 An agent's `run()` asks `approve=` once with the whole plan, not every step. Without `approve=`, the run is refused.
 The safety chain still checks every step. When the policy is a checkpoint or dataset on this machine, the plan's
-`files` is the SHA-256 of its files; if they change between the yes and the load, the run is refused and moves nothing.
+`files` is the SHA-256 of the files the loader reads (a preset name stays a preset, even next to a same-named folder).
+The run then loads a private copy of those files, hashed while it is written: if they changed after the yes, the run
+is refused and moves nothing, and a later write to the originals never reaches the robot. The copy is removed when
+the run ends. A Hub checkpoint (`owner/repo`) has no `files`: it is fetched at the Hub's current revision.
 
 {{drawing:d16_one_yes_per_run}}
 
