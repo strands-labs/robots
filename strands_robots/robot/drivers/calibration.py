@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
+import math
 import os
 import warnings
 from collections.abc import Mapping
@@ -64,6 +67,29 @@ class Calibration:
                     "this arm. Re-run calibrate() or pass calibration=<path> to a file you trust"
                 )
         return self
+
+    def check_limits(
+        self, limits: Mapping[str, tuple[float, float]], *, resolution: int, source: str, max_scale: float = 1.5
+    ) -> Calibration:
+        """This calibration, if no joint's span covers more than ``max_scale`` times the counts its ``limits`` take
+        on the servo (``resolution`` counts a turn); else ``ValueError`` naming the joint, span and file.
+
+        A driver maps a joint's limits onto its span, so a span wider than the limits put a goal inside them past the
+        joint's end stop, and scaled its speed with it. A narrower span only moves the joint less than commanded."""
+        for name, c in self.joints.items():
+            lo, hi = limits.get(name, (-math.pi, math.pi))
+            scale = (c.range_max - c.range_min) / ((hi - lo) * resolution / (2 * math.pi))
+            if scale > max_scale:
+                raise ValueError(
+                    f"calibration {source}: joint {name!r} spans {c.range_min}..{c.range_max} counts, {scale:.2f}x "
+                    f"what its limits {lo:.3f}..{hi:.3f} rad take on the servo (at most {max_scale}x): this is not "
+                    "a calibration of this joint. Re-run calibrate(), or fix the description's limits"
+                )
+        return self
+
+    def digest(self) -> str:
+        """sha256 of the calibration's values (key order and whitespace do not count): names the calibration in use."""
+        return hashlib.sha256(json.dumps(self.to_json(), sort_keys=True, separators=(",", ":")).encode()).hexdigest()
 
 
 # LeRobot 0.5+ writes every SO-10x arm under one robot name (``so_follower`` / ``so_leader``)

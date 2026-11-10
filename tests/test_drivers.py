@@ -100,6 +100,7 @@ CAL = {
     for i, n in enumerate(("shoulder_pan", "shoulder_lift", "elbow_flex", "wrist_flex", "wrist_roll", "gripper"))
 }
 CAL["wrist_roll"]["drive_mode"] = 1
+CAL["gripper"]["range_max"] = 2400  # a gripper's limits are a third of a turn: 1376 counts, as a real SO-101 sweeps
 
 
 def make_driver(cal=CAL, serial=None, max_speed=None):
