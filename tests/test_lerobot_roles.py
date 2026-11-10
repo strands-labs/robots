@@ -28,7 +28,7 @@ def connect(monkeypatch):
         raise Connected(self._wire)
 
     monkeypatch.setattr(ZenohPolicy, "_connect", record)
-    for var in ("STRANDS_ZENOH_TRUSTED", "STRANDS_ZENOH_CONFIG"):
+    for var in ("STRANDS_ZENOH_TRUSTED", "STRANDS_LEROBOT_ZENOH_CONFIG"):
         monkeypatch.delenv(var, raising=False)
 
 

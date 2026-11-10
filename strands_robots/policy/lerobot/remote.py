@@ -80,7 +80,7 @@ class ZenohPolicy:
         out, the server's descriptor may say (``start_pose``); else the run begins where the body is. ``tasks``: the
         instructions it was trained on — any other ``run(instruction=)`` is refused naming them before a frame goes
         out; left out, the descriptor may say (``tasks``); else any instruction is sent. ``zenoh_config`` (or
-        ``STRANDS_ZENOH_CONFIG``): the session's zenoh config file. ``trusted``: see ``link.check_channel``."""
+        ``STRANDS_LEROBOT_ZENOH_CONFIG``): the session's zenoh config file. ``trusted``: see ``link.check_channel``."""
         if execution not in EXECUTIONS:
             raise ValueError(f"execution must be one of {', '.join(map(repr, EXECUTIONS))}, got {execution!r}")
         self.endpoint, self.deployment, self.settings, self.trusted = endpoint, deployment, settings, trusted

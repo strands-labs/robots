@@ -96,8 +96,8 @@ def trusted(asked: bool) -> bool:
 
 
 def zenoh_config(asked: str | None) -> str | None:
-    """The zenoh config file a session opens with: ``zenoh_config=`` or ``STRANDS_ZENOH_CONFIG``, ``~`` expanded."""
-    path = asked or os.environ.get("STRANDS_ZENOH_CONFIG") or None
+    """The zenoh config a session opens with: ``zenoh_config=`` or ``STRANDS_LEROBOT_ZENOH_CONFIG`` (``~`` expanded)."""
+    path = asked or os.environ.get("STRANDS_LEROBOT_ZENOH_CONFIG") or None
     return None if path is None else str(Path(path).expanduser())
 
 

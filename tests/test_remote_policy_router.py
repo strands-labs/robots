@@ -25,7 +25,7 @@ def connect(monkeypatch):
         raise Connected(self._wire)
 
     monkeypatch.setattr(ZenohPolicy, "_connect", record)
-    for var in ("STRANDS_ZENOH_TRUSTED", "STRANDS_ZENOH_CONFIG"):
+    for var in ("STRANDS_ZENOH_TRUSTED", "STRANDS_LEROBOT_ZENOH_CONFIG"):
         monkeypatch.delenv(var, raising=False)
 
 
@@ -85,7 +85,7 @@ def test_a_mutual_tls_link_is_connected_to_as_given(connect, real, tmp_path, mon
     path = zenoh_file(tmp_path, mtls=True)
     kw = {"kwarg": {"zenoh_config": path}, "lerobot-name": {"zenoh_config_path": path}, "env": {}}[how]
     if how == "env":
-        monkeypatch.setenv("STRANDS_ZENOH_CONFIG", path)
+        monkeypatch.setenv("STRANDS_LEROBOT_ZENOH_CONFIG", path)
     with pytest.raises(Connected) as got:
         Policy(f"zenoh://{link}/gpu.example:7447/smolvla", **kw).attach(real)
     assert got.value.wire == f"{link}/gpu.example:7447"

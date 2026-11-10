@@ -62,7 +62,7 @@ The configs hold absolute paths to `certs/`: a robot needs `ca.pem` and `robot-c
 and `ca-key.pem` stays where you made the certificates. Re-running keeps existing certificates and rewrites the
 configs, so `--deployment` can change. The ACL covers only `lerobot/inference/v1/deployments/<deployment>/**`.
 
-`STRANDS_ZENOH_CONFIG=robot.json5` sets the robot's file for every session. Anything else is refused on a real robot
+`STRANDS_LEROBOT_ZENOH_CONFIG=robot.json5` sets the robot's file for every session. Anything else is refused on a real robot
 with a `PermissionError`: a plain link to another machine (even on your LAN, where a shared `zenohd` or a host
 taking the address would answer), a `tls`, `quic` or `ws` link without mutual TLS, a config whose certificate is not
 named `robot-client`, and `zenoh_mode="peer"`. A server on this machine (`127.0.0.1`, `[::1]`, `localhost`) is
