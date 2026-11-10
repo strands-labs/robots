@@ -3,15 +3,15 @@
 A motion rpc (``act``) arms the watchdog for its invoker; one the device refuses (bad arguments, the safety chain)
 leaves it as it was, so a request that moved nothing can never make the device apply ``on_disconnect``. Any rpc
 from that invoker is a heartbeat. If the invoker goes quiet for ``watchdog_ms`` or its Mesh's liveliness token
-vanishes (closed, crashed, network gone), the device applies its ``on_disconnect`` once (an audit warning says so)
-and disarms until the next motion. Reads never arm it. The quiet clock does not run
-while a motion rpc is still moving the device (an ``act(seconds=)`` reach): its invoker is waiting on the reply.
+vanishes (closed, crashed, network gone), the device applies its ``on_disconnect`` once, with one
+``strands_robots.audit`` record naming that peer and why, and disarms until the next motion. Reads never arm it.
+The quiet clock does not run while a motion rpc is still moving the device (an ``act(seconds=)`` reach): its
+invoker is waiting on the reply.
 """
 
 from __future__ import annotations
 
 import functools
-import logging
 import threading
 import time
 from collections.abc import Callable, Sequence
@@ -22,12 +22,14 @@ from . import wire
 from .transports.base import Transport, Unsubscribe
 
 MOTION_RPCS = ("act",)
-AUDIT = logging.getLogger("strands_robots.audit")
 
 
 class MeshWatchdog:
-    def __init__(self, robot: Any, timeout_ms: float, transports: Sequence[Transport], tenant: str) -> None:
+    def __init__(
+        self, robot: Any, timeout_ms: float, transports: Sequence[Transport], tenant: str, device_id: str | None = None
+    ) -> None:
         self.robot = robot
+        self.tenant, self.device_id = tenant, device_id
         self.dog = Watchdog(robot, timeout_ms, clock=time.monotonic)
         self.peer: str | None = None
         self._lock = threading.Lock()
@@ -64,17 +66,16 @@ class MeshWatchdog:
     def _on_peer(self, key: str, alive: bool) -> None:
         if alive or not self._armed.is_set() or key.rsplit("/", 1)[-1] != self.peer:
             return
-        self._fire()
+        self._fire("its mover vanished")
 
-    def _fire(self) -> None:
+    def _fire(self, reason: str) -> None:
         with self._lock:
             if not self._armed.is_set():
                 return
             self._armed.clear()
-            self.peer = None
-        AUDIT.warning("%s on_disconnect: its mover went quiet or vanished", getattr(self.robot, "id", "?"))
-        try:
-            apply_on_disconnect(self.robot)
+            peer, self.peer = self.peer, None
+        try:  # the apply leaves its own audit record, a failed one too
+            apply_on_disconnect(self.robot, reason=reason, peer=peer, tenant=self.tenant, device_id=self.device_id)
         except Exception:  # a closed robot cannot hold; nothing left to protect
             pass
 
@@ -84,7 +85,7 @@ class MeshWatchdog:
             if not self._armed.wait(0.1):
                 continue
             if not self._moving and time.monotonic() - self.dog.last > self.dog.timeout:
-                self._fire()
+                self._fire(f"its mover was quiet for {self.dog.timeout * 1000:g} ms")
             self._stop.wait(period)
 
     def close(self) -> None:
@@ -94,11 +95,13 @@ class MeshWatchdog:
         self._thread.join(1.0)
 
 
-def start(robot: Any, timeout_ms: float | None, transports: Sequence[Transport], tenant: str) -> MeshWatchdog | None:
+def start(
+    robot: Any, timeout_ms: float | None, transports: Sequence[Transport], tenant: str, device_id: str | None = None
+) -> MeshWatchdog | None:
     """A watchdog for a device with controls (a manifest says what ``on_disconnect`` means); ``None`` otherwise."""
     if timeout_ms is None or not hasattr(robot, "manifest"):
         return None
-    return MeshWatchdog(robot, timeout_ms, transports, tenant)
+    return MeshWatchdog(robot, timeout_ms, transports, tenant, device_id)
 
 
 def stopper(dog: MeshWatchdog | None) -> Unsubscribe:

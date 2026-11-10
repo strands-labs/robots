@@ -95,7 +95,7 @@ class Mesh:
             lockout = _authority.Lockout()
             undo: list[Unsubscribe] = []
             stack.callback(lambda: [u() for u in reversed(undo)])
-            dog = _watchdog.start(robot, watchdog_ms, self.transports, self.tenant)
+            dog = _watchdog.start(robot, watchdog_ms, self.transports, self.tenant, did)
             stack.callback(_watchdog.stopper(dog))  # a failed mount stops it first; close is idempotent
             on_rpc = getattr(dog, "on_rpc", None)
             undo += [serve(t, self.tenant, robot, did, lockout, self._authority, on_rpc) for t in self.transports]
