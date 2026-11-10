@@ -10,7 +10,7 @@ from __future__ import annotations
 from collections.abc import Callable, Sequence
 from typing import Any
 
-from . import wire
+from . import signed, wire
 from .transports.base import Transport, Unsubscribe
 
 EVENTS: tuple[str, ...] = ("state", "fault", "estop", "run.started", "run.stopped")
@@ -22,11 +22,11 @@ def publish(transports: Sequence[Transport], tenant: str, robot: Any, device_id:
 
     def send(slot: str, kind: str, name: str, payload: dict[str, Any]) -> None:
         seq[0] += 1
-        raw = wire.encode(wire.envelope(tenant, device_id, kind, name, seq=seq[0], result=payload))
+        env = wire.envelope(tenant, device_id, kind, name, seq=seq[0], result=payload)
         k = wire.key(slot, tenant, device_id, name if slot == "event" else "")
         for t in transports:
             try:
-                t.publish(k, raw)
+                t.publish(k, signed.encode(t, env))
             except Exception:  # a closing transport must not kill the device's sampling thread
                 pass
 
@@ -52,6 +52,7 @@ def listen(transport: Transport, tenant: str, device_id: str, event: str, cb: Ca
             env = wire.decode_envelope(raw)
         except ValueError:
             return
-        cb(env.get("result"))
+        if signed.from_server(transport, env, device_id):  # on a mesh with identities, only the device's own
+            cb(env.get("result"))
 
     return transport.subscribe(k, on)

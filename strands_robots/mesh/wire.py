@@ -82,8 +82,8 @@ def envelope(
     error: Any = None,
     peer: str | None = None,
 ) -> dict[str, Any]:
-    """A new envelope; only the body fields that are set travel. ``peer`` is the sending Mesh's peer id (rpcs carry
-    it so the device knows whose silence to watch)."""
+    """A new envelope; only the body fields that are set travel. ``peer`` is the calling Mesh's peer id: a request
+    carries it so the device knows whose silence to watch, and its reply names it back."""
     if kind not in KINDS:
         raise ValueError(f"unknown envelope kind {kind!r}; known: {KINDS}")
     env: dict[str, Any] = {"v": VERSION, "tenant": check_id(tenant, "tenant")}

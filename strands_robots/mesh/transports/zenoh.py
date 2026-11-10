@@ -4,13 +4,14 @@
 ``?connect=tcp/host:7447`` give explicit endpoints and switch scouting off. ``?scout=addr:port`` or
 ``STRANDS_ZENOH_SCOUT`` move the group.
 
-zenoh peers carry no identity by default: anything that joins the session can publish, answer and query. To say who
-may join, give a zenoh config file (``?config=<path>`` or ``STRANDS_ZENOH_CONFIG``): TLS with client certificates on
-``tls/`` endpoints, user/password authentication, access control. The file is the session's config; this module only
-adds the lease, any ``?listen=``/``?connect=``, and the strands scouting group and peer mode when the file sets
-neither. ``ZenohTransport.open_peers`` is True when no file was given and the network is not vouched for with
-``?trusted=1`` or ``STRANDS_ZENOH_TRUSTED=1`` (a VLAN or WireGuard only the lab reaches): a real robot on such a mesh
-is served observe-only.
+A machine with a mesh identity (``python -m strands_robots.mesh cert``; see ``zenoh_tls.identity_dir``) joins over
+mutual TLS only: no peer without a certificate from the mesh CA can open a link to it, and ``ZenohTransport.identity``
+signs every envelope it sends. A zenoh config file (``?config=<path>`` or ``STRANDS_ZENOH_CONFIG``) is the session's
+config instead; this module only adds the lease, any ``?listen=``/``?connect=``, and the strands scouting group and
+peer mode when the file sets neither. Such a file carries an identity when it sets mutual TLS on TLS-only links with
+PEM certificate, key and CA files. Without an identity anything that joins can publish, answer and query:
+``ZenohTransport.open_peers`` is True unless the network is vouched for with ``?trusted=1`` or
+``STRANDS_ZENOH_TRUSTED=1`` (a VLAN or WireGuard only the lab reaches), and a real robot on it is served observe-only.
 """
 
 from __future__ import annotations
@@ -24,6 +25,7 @@ from typing import Any
 from urllib.parse import parse_qs, urlparse
 
 from ..._extras import hint
+from . import zenoh_tls
 from .base import OnAlive, OnQuery, OnSample, RemoteError, Unsubscribe
 
 SCOUT_GROUP = "224.0.0.224:7447"
@@ -114,7 +116,14 @@ def trusted(url: str) -> bool:
 
 def session_config(zenoh: Any, url: str, presence_ttl: float = 3.0) -> Any:
     """The ``zenoh.Config``: :func:`config` alone, or the config file with what :func:`config` decides laid over it."""
-    ours, path = config(url, presence_ttl), config_file(url)
+    ours, path, ident = config(url, presence_ttl), config_file(url), zenoh_tls.identity_dir(url)
+    if ident is not None and path is not None:
+        raise ValueError(f"{url!r}: give a mesh identity or a zenoh config file, not both")
+    if ident is not None:
+        ours["transport"]["link"].update(zenoh_tls.tls_section(ident))
+        ours.setdefault("listen", {"endpoints": ["tls/[::]:0"]})  # zenoh's default tcp listener cannot open
+        for key in ("listen", "connect"):
+            zenoh_tls.check_endpoints(ours.get(key, {}).get("endpoints", []))
     if path is None:
         return zenoh.Config.from_json5(json.dumps(ours))
     cfg = zenoh.Config.from_file(path)
@@ -136,9 +145,11 @@ class ZenohTransport:
         zenoh = _zenoh()
         self.url = url
         self._zenoh = zenoh
-        self.open_peers = config_file(url) is None and not trusted(url)  # any peer that reaches it may join
+        cfg = session_config(zenoh, url, presence_ttl)
+        self.identity = zenoh_tls.identity_of(zenoh_tls.link_of(cfg))  # who this peer is, proven by mutual TLS
+        self.open_peers = self.identity is None and not trusted(url)  # any peer that reaches it may join
         self._pool = ThreadPoolExecutor(max_workers=8, thread_name_prefix="mesh-rpc")
-        self.session = zenoh.open(session_config(zenoh, url, presence_ttl))
+        self.session = zenoh.open(cfg)
         _OPEN[id(self.session)] = self.session
 
     def publish(self, key: str, payload: bytes) -> None:
