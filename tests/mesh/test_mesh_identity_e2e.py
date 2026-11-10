@@ -154,3 +154,36 @@ def test_a_real_robot_is_observe_only_without_an_identity_even_with_a_config_fil
             op.invoke("arm", "act", action={"shoulder_pan": 0.1})
     finally:
         op.close(), dev.close(), arm.close()
+
+
+def _as_operator(op, ins, tenant, env_tenant, env_dev, env_name, key_name, seq, **args):
+    """Seal a request as the operator addressed to (env_tenant, env_dev, env_name) and send it, from the insider,
+    onto arm's ``key_name`` queryable: the capture-and-replay an insider can attempt. Returns the decoded replies."""
+    env = wire.envelope(env_tenant, env_dev, "rpc", env_name, seq=seq, args=args, peer=op.peer_id)
+    raw = wire.encode(op.transports[0].identity.seal(env))
+    return [wire.decode_envelope(r) for r in ins.query(wire.key("rpc", tenant, "arm", key_name), raw, 2.0)]
+
+
+@pytest.mark.parametrize(
+    "env_tenant, env_dev, env_name",
+    [
+        ("this", "other", "act"),  # a request for another device, replayed onto arm's act key
+        ("this", "arm", "observe"),  # a request for another rpc, replayed onto arm's act key
+        ("other-tenant", "arm", "act"),  # a request for another tenant, replayed onto arm's act key
+    ],
+)
+def test_a_signed_request_is_answered_only_on_the_key_it_names(world, tenant, env_tenant, env_dev, env_name):
+    _dev, op, ins, arm, holds = world
+    et = tenant if env_tenant == "this" else env_tenant
+    replies = _as_operator(op, ins, tenant, et, env_dev, env_name, "act", 7001, action={"shoulder_pan": 0.3})
+    assert [r["error"]["type"] for r in replies] == ["RequestRefused"]
+    assert arm.observe().joints["shoulder_pan"] == 0.0, "a misaddressed request must move nothing"
+    time.sleep(0.7)  # longer than watchdog_ms=500: a refused request must not arm the watchdog on the operator
+    assert holds == [], "a request that names another key must not arm arm's watchdog on the operator"
+
+
+def test_a_correctly_addressed_signed_request_still_moves_the_arm(world, tenant):
+    _dev, op, ins, arm, _holds = world
+    replies = _as_operator(op, ins, tenant, tenant, "arm", "act", "act", 7100, action={"shoulder_pan": 0.25})
+    assert [r["kind"] for r in replies] == ["result"]
+    assert arm.observe().joints["shoulder_pan"] == pytest.approx(0.25)

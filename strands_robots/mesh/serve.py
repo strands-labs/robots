@@ -200,6 +200,10 @@ def serve(
             env = wire.decode_envelope(payload)
             seq = int(env.get("seq", seq))  # M3: echo the request's seq so the caller can match the reply
             args = env.get("args") or {}
+            named = (env.get("tenant"), env.get("device_id"), env.get("name"))
+            here = (tenant, device_id, name)
+            if named != here and name != "estop":  # estop exempt: a stop only halts, so it always lands
+                raise RequestRefused(f"a request naming {named} arrived on {here}: answered only on the key it names")
             cert = signed.check_request(transport, env, fresh, name)  # before anything else hears of the call
             if why is not None and name in WRITE_RPCS:
                 raise RequestRefused(f"{device_id} is mounted observe-only ({why}); {name} is refused (docs/mesh.md)")

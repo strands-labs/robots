@@ -8,7 +8,7 @@
 - **Bound to the certificate:** every envelope is signed with the certificate's key. Peer ids are
   `<certificate name>.<random>`. A robot refuses unsigned requests, requests for a peer id that is not the
   signer's, repeats and requests more than 30 s off its clock, before its watchdog hears of them, so no machine can
-  send heartbeats for another. Replies, announcements and state count only when signed by a certificate whose
+  send heartbeats for another. A request is answered only on the key it names (tenant, device and rpc), so a captured request for one device cannot be replayed onto another. Replies, announcements and state count only when signed by a certificate whose
   `--serves` covers that robot. Another machine can't answer for a robot, announce a robot, or make a request
   fail by answering. The audit record names the signing certificate. An e-stop is never refused for its signature.
 - **Real robots:** a real robot moves over zenoh only on a mesh with identities, or with `?trusted=1` /

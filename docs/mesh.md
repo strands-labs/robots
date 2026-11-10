@@ -64,6 +64,7 @@ simulation). On such a mesh:
 - A peer's id is `<name>.<random>`, where `<name>` is the name in its certificate. A robot answers only signed
   requests whose peer id belongs to the signer, and refuses a request it has already answered or one more than 30 s
   off its clock. No machine can send heartbeats for another, so a robot's watchdog always notices its mover leave.
+- A request is refused unless it names the tenant, device and rpc of the key it arrives on, so a captured request for one device cannot be replayed onto another.
 - A reply, a robot's announcement and its state count only when they are signed by a certificate whose `--serves`
   covers that robot's id. Another machine can neither answer for a robot nor announce one, and its answers never
   make a request fail. A machine refuses to mount a robot id its own certificate does not serve.
