@@ -34,12 +34,17 @@ def pinned(plan: RunPlan | None, policy: Any) -> Iterator[Any]:
     The copy is checked against ``plan.files`` before anything loads (``RequestRefused`` if they differ) and removed
     when the ``with`` ends, however it ends.
     """
-    root = _root(policy) if plan is not None and plan.files is not None else None
-    if plan is None or root is None:
+    if plan is None:
         yield policy
         return
     from ..safety import RequestRefused
 
+    root = _root(policy)
+    if (root is None) != (plan.files is None):  # the yes was for files on disk, or for none: what loads must agree
+        raise RequestRefused(f"{plan.robot}: {plan.policy} changed on disk after the operator approved it; run again")
+    if root is None:
+        yield policy
+        return
     tmp = Path(tempfile.mkdtemp(prefix="strands-run-"))  # 0700: no other user reads or writes it
     try:
         copy = tmp / (root.name or "policy")

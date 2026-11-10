@@ -58,6 +58,33 @@ def test_files_changed_while_the_operator_was_asked_refuse_the_run_and_move_noth
     assert np.allclose(_positions(robot), before)
 
 
+def _unpin(rec, cwd):
+    (rec / "meta" / "info.json").unlink()  # the approved folder is no longer one the loader reads
+
+
+def _appear(rec, cwd):
+    (cwd / "org").mkdir()
+    rec.rename(cwd / "org" / "rec")  # a folder now shadows the Hub id the operator approved
+
+
+@pytest.mark.parametrize(
+    "change", [_unpin, _appear], ids=["folder-stops-being-a-dataset", "folder-appears-for-a-hub-id"]
+)
+def test_a_spec_that_changes_kind_while_the_operator_was_asked_is_refused(recording, monkeypatch, tmp_path, change):
+    rec, n = recording
+    (rec / "a.json").write_text(json.dumps([[0.4] * n] * 3))
+    cwd = tmp_path / "cwd"
+    cwd.mkdir()
+    monkeypatch.chdir(cwd)
+    spec = str(rec) if change is _unpin else "org/rec"
+    robot = Robot("so101", driver="memory")
+    before = _positions(robot)
+    robot.approve = lambda plan: change(rec, cwd) or True
+    with from_agent(), pytest.raises(RequestRefused, match="changed on disk after the operator approved"):
+        robot.run(spec, steps=3)
+    assert np.allclose(_positions(robot), before)
+
+
 def test_a_policy_not_on_disk_has_no_files_to_pin(tmp_path):
     assert files_digest(lambda obs: {}) is None
     assert files_digest("lerobot/act_so101_not_here") is None
