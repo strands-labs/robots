@@ -13,9 +13,8 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import quote
 
-from .. import wire
 from ..transports.pkcs11 import refuse_pin
-from .policy import POLICY_NAME, controller_policy, device_policy, group_name, policy_text
+from .policy import POLICY_NAME, check_device_id, controller_policy, device_policy, group_name, policy_text
 from .rules import rule_name
 
 
@@ -28,7 +27,7 @@ def csr(device_id: str) -> tuple[str, str]:
     from cryptography.hazmat.primitives.asymmetric import rsa
     from cryptography.x509.oid import NameOID
 
-    wire.check_id(device_id, "device_id")
+    check_device_id(device_id)
     key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
     name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, device_id)])
     req = x509.CertificateSigningRequestBuilder().subject_name(name).sign(key, hashes.SHA256())
@@ -96,7 +95,7 @@ def register(
     register an identity whose private key is never a PEM: only ``cert.pem`` is written and the query's ``key=``
     is the token URI. Returns ids plus the ``iot://`` query to use."""
     _pair(csr_pem, key)
-    did, dtype, tenant = str(record["id"]), str(record["device_type"]), str(record["tenant"])
+    did, dtype, tenant = check_device_id(str(record["id"])), str(record["device_type"]), str(record["tenant"])
     labels = {str(k): str(v)[:800] for k, v in (record.get("labels") or {}).items()}
     # the policy reads tenant and telemetry_rule from these attributes: a label never overrides them
     attrs = {**labels, "tenant": tenant, "device_type": dtype, "telemetry_rule": rule_name("telemetry", tenant)}
