@@ -65,21 +65,29 @@ class MeshWatchdog:
                 self.peer = peer
                 self._armed.set()
 
-    def busy(self, peer: str) -> Callable[[], None]:
-        """A skill started for ``peer``: armed for it now, quiet clock paused until the returned release is called."""
+    def busy(self, peer: str) -> Callable[..., None]:
+        """A skill started for ``peer``: armed for it now (so a vanished caller still ends the run), quiet clock paused
+        until the returned ``release(moved)`` is called. A run that never moved the body (the operator refused it, or
+        it failed before its first step) puts the watchdog back as it was: like a refused ``act``, a request that
+        moved nothing must never make the device apply ``on_disconnect``."""
         with self._lock:
+            before = (self.peer, self._armed.is_set())
             self._moving += 1
             self.peer = peer
             self._armed.set()
             self.dog.beat()
         released = threading.Event()
 
-        def release() -> None:
+        def release(moved: bool = True) -> None:
             if released.is_set():
                 return
             released.set()
             with self._lock:
                 self._moving -= 1
+                if not moved and self.peer == peer and self._armed.is_set():  # unchanged since the skill armed it
+                    self.peer = before[0]
+                    if not before[1]:
+                        self._armed.clear()
                 self.dog.beat()
 
         return release

@@ -263,3 +263,20 @@ def test_a_real_robot_on_another_machine_without_skills_is_not_driven_over_the_n
     b.close()
     a.close()
     arm.close()
+
+
+def test_a_skill_the_operator_refuses_leaves_the_watchdog_disarmed(mesh_pair):
+    """A refused skill moved nothing, so its quiet caller must not make the device apply on_disconnect, the same as a
+    refused act (review on #4938: the run armed the watchdog before the operator was asked, and was never disarmed)."""
+    a, b = mesh_pair
+    arm = Robot("so101", id="arm", driver="memory", confirm=lambda t: True, approve=lambda p: False)
+    holds: list[float] = []
+    real_hold = arm.body.hold
+    arm.body.hold = lambda: (holds.append(time.monotonic()), real_hold())
+    a.mount(arm, skills={"pan": lambda o: {"shoulder_pan": 0.2}}, watchdog_ms=300)
+    assert b.discover("arm", min_count=1, timeout=3.0)
+    b.invoke("arm", "skill", name="pan", seconds=0.3)
+    assert _done(b)["state"] == "refused"
+    time.sleep(0.8)  # the caller goes quiet for well past watchdog_ms
+    assert holds == [], "a skill that moved nothing applied on_disconnect"
+    arm.close()

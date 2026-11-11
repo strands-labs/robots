@@ -115,8 +115,9 @@ class Skills:
         threading.Thread(target=self._finish, args=(task, name, release), daemon=True, name="mesh-skill").start()
         return {"started": name, "device": self.device_id, "seconds": secs}
 
-    def _finish(self, task: Any, name: str, release: Callable[[], None] | None) -> None:
+    def _finish(self, task: Any, name: str, release: Callable[..., None] | None) -> None:
         state: dict[str, Any] = {"name": name, "state": "done"}
+        res = None
         try:
             res = task._wait()
             state.update(steps=getattr(res, "steps", None), stopped_by=getattr(res, "stopped_by", None))
@@ -125,8 +126,11 @@ class Skills:
         except Exception as exc:  # noqa: BLE001 - a refusal or a policy error is the skill's outcome, reported
             state.update(state="refused" if isinstance(exc, PermissionError) else "error", error=f"{exc}")
         finally:
-            if release is not None:
-                release()
+            if release is not None:  # moved: it stepped or held, or faulted mid-run; a refusal before step 1 did not
+                release(
+                    res is not None
+                    and bool(getattr(res, "steps", 0) or getattr(res, "holds", 0) or getattr(res, "fault", None))
+                )
         with self._lock:
             if self._task is task:
                 self._state = {**self._state, **state}
