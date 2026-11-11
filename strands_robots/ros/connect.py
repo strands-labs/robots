@@ -10,6 +10,7 @@ watchdog, run loop, mesh mount and dashboard all apply unchanged.
 
 from __future__ import annotations
 
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -76,11 +77,29 @@ def connect(
     src = model_source(prof, model, host=host, timeout=timeout)
     desc = Description.load(src)
     drv = RosDriver(desc, host=host, profile=str(profile), timeout=timeout, **driver_options)
-    return Robot(
-        str(src),
-        driver=drv,
-        id=id or prof.name,
-        mesh=mesh,
-        confirm=confirm,
-        approve=approve,
-    )
+    robot = Robot(str(src), driver=drv, id=id or prof.name, confirm=confirm, approve=approve)
+    # Mount only after the profile's on_disconnect is in place: Robot(mesh=) mounts inside the constructor, where the
+    # watchdog would see the unpatched description and refuse the body (and a manifest built then would be cached).
+    with_profile_on_disconnect(robot, prof)
+    if mesh is not None:
+        try:
+            mesh.mount(robot)
+        except BaseException:
+            robot.close()  # the driver and command stream are already running
+            raise
+    return robot
+
+
+def with_profile_on_disconnect(robot: Any, prof: _profile.Profile) -> Any:
+    """Give the robot the profile's ``on_disconnect`` when its model declares none.
+
+    A model read from ``/robot_description`` (or any file outside the registry) has no ``hardware`` block, so its
+    ``on_disconnect`` is ``None``, and a real robot with no proven-safe disconnect behaviour cannot carry a watchdog:
+    the mesh would serve it observe-only, so a ros2_control arm could never be commanded over the mesh. The profile
+    is where a ROS robot's disconnect behaviour is stated (``ros2_control.json``: ``"hold"``). A registry entry's own
+    ``hardware.on_disconnect`` is curated per robot and wins."""
+    declared = prof.data.get("on_disconnect")
+    hw = robot.description.hardware
+    if declared is not None and hw.on_disconnect is None:
+        robot.description = replace(robot.description, hardware=replace(hw, on_disconnect=str(declared)))
+    return robot
