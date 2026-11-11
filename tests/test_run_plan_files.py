@@ -202,3 +202,17 @@ def test_the_private_copy_is_removed_however_the_run_ends(recording, monkeypatch
     with from_agent(), pytest.raises(KeyboardInterrupt if fail == "ctrl-c in the load" else ValueError):
         robot.run(str(rec), steps=3, hz=10)  # the recording runs at 30 Hz: refused after it is loaded
     assert list((tmp_path / "t").iterdir()) == []
+
+
+def test_under_umask_002_the_private_copy_is_still_this_users_alone(recording):
+    """The copy an approved run loads is made 0700/0600 whatever the umask, so the trust check on it passes."""
+    rec, _ = recording
+    for path in (rec, *rec.rglob("*")):
+        os.chmod(path, 0o755 if path.is_dir() else 0o644)
+    old = os.umask(0o002)
+    try:
+        robot = Robot("so101", driver="memory", approve=lambda p: True)
+        with from_agent():
+            assert robot.run(str(rec), steps=3).steps == 3
+    finally:
+        os.umask(old)

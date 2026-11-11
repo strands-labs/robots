@@ -73,7 +73,7 @@ def _snapshot(root: Path, into: Path | None) -> str:
     """Hash every file under ``root``, each read once; with ``into``, write the same bytes there as they are hashed."""
     total = hashlib.sha256()
     if into is not None:
-        into.mkdir()
+        into.mkdir(mode=0o700)  # the private copy is this process's own, whatever the umask: 0700 folders, 0600 files
     for f in sorted(walk(root)[0]):
         rel = f.relative_to(root)
         one = hashlib.sha256()
@@ -81,8 +81,9 @@ def _snapshot(root: Path, into: Path | None) -> str:
             refuse_foreign(f, os.fstat(src.fileno()))  # the bytes hashed and copied: on the open file, not its name
             dst = None
             if into is not None:
-                (into / rel).parent.mkdir(parents=True, exist_ok=True)
-                dst = (into / rel).open("xb")
+                for folder in reversed(rel.parents[:-1]):  # one by one: mkdir(parents=True) gives the parents no mode=
+                    (into / folder).mkdir(mode=0o700, exist_ok=True)
+                dst = os.fdopen(os.open(into / rel, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600), "wb")
             try:
                 while chunk := src.read(_CHUNK):  # chunks, not hashlib.file_digest: that is 3.11+, the floor is 3.10
                     one.update(chunk)

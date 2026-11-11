@@ -140,3 +140,24 @@ def test_the_files_an_operator_approves_are_checked_on_the_open_file(tmp_path):
     folder = _ckpt(tmp_path / "ckpt", file_mode=0o666)
     with pytest.raises(PermissionError, match="writable by group or others"):
         files_digest(str(folder))
+
+
+@pytest.mark.parametrize("private", [True, False], ids=["private-group", "shared-group"])
+def test_a_group_write_bit_counts_only_for_a_group_others_are_in(tmp_path, monkeypatch, private):
+    """umask 002 with a private group per user (Debian/Ubuntu) writes 0664/0775: the group is the owner alone."""
+    import grp
+    import pwd
+    from types import SimpleNamespace
+
+    me = pwd.getpwuid(os.getuid())
+    group = SimpleNamespace(gr_gid=me.pw_gid, gr_name=me.pw_name if private else "staff", gr_mem=[])
+    monkeypatch.setattr(grp, "getgrgid", lambda gid: group)
+    folder = _ckpt(tmp_path / "ckpt", mode=0o775, file_mode=0o664)
+    for p in (tmp_path, *tmp_path.parents):
+        if os.stat(p).st_mode & 0o022 and not os.stat(p).st_mode & 0o1000 and os.stat(p).st_uid == os.getuid():
+            pytest.skip(f"{p} is group-writable on this machine")
+    if private:
+        refuse_untrusted_local(str(folder))
+    else:
+        with pytest.raises(PermissionError, match="writable by group or others"):
+            refuse_untrusted_local(str(folder))

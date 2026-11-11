@@ -41,8 +41,21 @@ def refuse_foreign(path: Path, st: os.stat_result, *, sticky_ok: bool = False) -
     """A ``PermissionError`` if another user owns ``path`` or may write it (``st`` is its ``lstat`` or ``fstat``)."""
     if st.st_uid not in (os.geteuid(), 0):
         raise PermissionError(_why(path, f"is owned by uid {st.st_uid}, not this user ({os.geteuid()}) or root"))
-    if st.st_mode & 0o022 and not (sticky_ok and stat.S_ISDIR(st.st_mode) and st.st_mode & stat.S_ISVTX):
+    writers = st.st_mode & (0o002 if _private_group(st) else 0o022)
+    if writers and not (sticky_ok and stat.S_ISDIR(st.st_mode) and st.st_mode & stat.S_ISVTX):
         raise PermissionError(_why(path, f"is writable by group or others (mode {stat.filemode(st.st_mode)})"))
+
+
+def _private_group(st: os.stat_result) -> bool:
+    """The file's group is its owner's own private group (Debian/Ubuntu's default, umask 002): no one else."""
+    import grp
+    import pwd
+
+    try:
+        owner, group = pwd.getpwuid(st.st_uid), grp.getgrgid(st.st_gid)
+    except KeyError:
+        return False
+    return group.gr_gid == owner.pw_gid and group.gr_name == owner.pw_name and not group.gr_mem
 
 
 def refuse_untrusted_local(spec: Any) -> None:
