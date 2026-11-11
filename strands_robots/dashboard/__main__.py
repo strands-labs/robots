@@ -17,9 +17,21 @@ from __future__ import annotations
 import argparse
 from collections.abc import Sequence
 
+ENVIRONMENT = """environment:
+  STRANDS_ROBOTS_DASHBOARD_OBJECTS      folder the page may load object files from (else none)
+  STRANDS_ROBOTS_RECORDINGS             where the Record tab writes (default ~/strands-robots/recordings)
+  STRANDS_ROBOTS_DASHBOARD_AUTH         the passkey file (default ~/.cache/strands_robots/dashboard-auth.json)
+  STRANDS_ROBOTS_DASHBOARD_SESSION_TTL  session length in seconds (default 12 h)
+  STRANDS_POLICY_REPOS                  Hub checkpoints the page's agent may load (owner/repo,owner/*)"""
+
 
 def parse(argv: Sequence[str] | None = None) -> argparse.Namespace:
-    p = argparse.ArgumentParser(prog="python -m strands_robots.dashboard", description=__doc__.split("\n\n")[0])
+    p = argparse.ArgumentParser(
+        prog="python -m strands_robots.dashboard",
+        description=__doc__.split("\n\n")[0],
+        epilog=ENVIRONMENT,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
     p.add_argument("robots", nargs="*", default=[], help="registry names (default: the browser preset's robot)")
     p.add_argument("--port", type=int, default=8090, help="loopback port (default 8090)")
     p.add_argument("--host", default="127.0.0.1", help="127.0.0.1 · localhost · ::1 (loopback only)")

@@ -37,7 +37,10 @@ def check_world_call(call: Any, *, confirmed: bool, objects: Path | None) -> Non
     if verb in WORLD_READS:
         return
     if not confirmed:
-        raise PermissionError(f"world {verb!r} changes the world: sign in and send header X-Confirm: yes")
+        raise PermissionError(
+            f"world {verb!r} changes the world: it needs the operator's yes, header X-Confirm: yes on a signed-in "
+            "request"
+        )
     args = call.get(verb) if isinstance(verb, str) else None
     path = args.get("path") if verb == "add_object" and isinstance(args, dict) else None
     if path is None:
