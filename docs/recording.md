@@ -26,6 +26,12 @@ code can read them.
 | The run is stopped or e-stopped | The frames so far are kept. |
 | `record="hf://you/so101-wave"` | Uses a Hub name. Nothing uploads unless you pass `push=True`. |
 
+A dataset directory must stay where it is while a take writes it. So `record=` and the dashboard refuse a dataset
+whose path goes through a symlink, or through a directory that another account owns or can write to (unless that
+directory has the sticky bit, like `/tmp`). The error names the directory, its owner and its mode. Record into a
+directory only you can change (`chmod go-w`). Missing parent directories are created for you. When a take that
+created its dataset is dropped, only that directory is deleted. If its path now leads somewhere else, it is kept.
+
 ## Record from the dashboard
 
 The dashboard's **Record** tab does the same without code. See [Dashboard](dashboard.md) to start one. The tab
