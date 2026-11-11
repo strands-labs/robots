@@ -11,10 +11,11 @@ pytest.importorskip("webauthn")
 
 from starlette.websockets import WebSocketDisconnect  # noqa: E402
 
-from strands_robots import Simulation  # noqa: E402
+from strands_robots import Robot, Simulation  # noqa: E402
 from strands_robots.dashboard import Dashboard  # noqa: E402
 from strands_robots.dashboard.auth import session  # noqa: E402
 
+from .browser import page_on  # noqa: E402
 from .passkey import Authenticator  # noqa: E402
 from .test_auth import BASE, JSON, client, enrol, proved  # noqa: E402
 
@@ -99,3 +100,30 @@ def test_sign_in_answers_with_the_proof_never_cached_and_logout_clears_this_port
     assert r.headers["cache-control"] == "no-store" and session.proves(dash.auth.store.secret, token, r.json()["proof"])
     out = c.post("/auth/logout", headers=JSON).headers["set-cookie"]
     assert out.startswith(f"{COOKIE}=;") and "Max-Age=0" in out
+
+
+def test_the_page_offers_the_proof_only_to_its_own_host() -> None:
+    sim = Simulation()
+    Robot("so101", sim=sim)
+    server = Dashboard(sim).start()
+    try:
+        with page_on(server.url) as page:
+            offered = page.evaluate(
+                """async () => {
+                  const { socket } = await import(new URL("auth.js", location.href).href);
+                  const seen = [], Real = window.WebSocket;
+                  window.WebSocket = function (url, protocols) { seen.push([url, protocols || []]); return {}; };
+                  try {
+                    socket(`ws://${location.host}/ws/state`);
+                    socket(`ws://localhost:1/ws/state`);
+                  } finally { window.WebSocket = Real; }
+                  return seen;
+                }"""
+            )
+        (own, own_protocols), (other, other_protocols) = offered
+        assert own.endswith("/ws/state") and len(own_protocols) == 1
+        assert own_protocols[0].startswith(session.PROTOCOL)
+        assert other == "ws://localhost:1/ws/state" and other_protocols == []
+    finally:
+        server.stop()
+        sim.close()

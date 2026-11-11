@@ -23,10 +23,12 @@ export function authed(url, init = {}) {
   return fetch(url, { ...init, headers });
 }
 
-/** A WebSocket to this dashboard, offering the proof as its subprotocol (a browser cannot set a socket's headers). */
+/** A WebSocket to this dashboard, offering the proof as its subprotocol (a browser cannot set a socket's headers);
+ * to any other host, a plain socket. Compared by host: a ws: URL's origin never equals the page's http: origin. */
 export function socket(url) {
   const p = proof();
-  return p ? new WebSocket(url, [`strands-session.${p}`]) : new WebSocket(url);
+  if (!p || new URL(url, location.href).host !== location.host) return new WebSocket(url);
+  return new WebSocket(url, [`strands-session.${p}`]);
 }
 
 /** Show a camera frame from ``url`` in ``img`` (an <img src> cannot carry the proof): fetched, then a blob: URL. */
