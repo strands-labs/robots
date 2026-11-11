@@ -99,3 +99,12 @@ def test_the_model_is_told_only_the_allowed_repos(monkeypatch):
     assert "Hugging Face" not in spec_help()
     monkeypatch.setenv("STRANDS_POLICY_REPOS", "lerobot/smolvla_base")
     assert "lerobot/smolvla_base" in spec_help() and "STRANDS_POLICY_REPOS" in spec_help()
+
+
+def test_a_dashboard_run_under_an_agent_is_refused_before_anything_loads(world):
+    from strands_robots.dashboard import runs
+
+    _, arm, loads = world
+    with from_agent(), pytest.raises(PermissionError, match="STRANDS_POLICY_REPOS"):
+        runs.start(arm, "someone/ckpt", instruction=None, seconds=1, hz=None, confirmed=False)
+    assert loads == []

@@ -60,9 +60,11 @@ def _hold(obs: Any) -> dict[str, float]:
 
 def start(robot: Any, spec: Any, *, instruction: Any, seconds: Any, hz: Any, confirmed: bool) -> dict[str, Any]:
     from ..policy.factory import make
+    from ..robot.run.source import refuse_agent_spec
 
     if not isinstance(spec, str) or not spec:
         raise ValueError('body must be {"policy": "<spec>", "seconds": <float|null>, "hz": <float|null>}')
+    refuse_agent_spec(spec)  # the string, before make(): the voice agent's run reaches here under from_agent()
     if seconds is not None and float(seconds) <= 0 or hz is not None and float(hz) <= 0:
         raise ValueError("hz and seconds must be > 0")
     if robot._task is not None and robot._task.running:
