@@ -86,8 +86,8 @@ def admits(secret: bytes, got: Carried, claims: dict[str, Any]) -> bool:
     """A script token only as a bearer; a browser session only on its own Host and with the page's proof beside it."""
     if got.token is None:
         return False
-    if "aud" not in claims:
-        return not got.cookie
+    if "aud" not in claims:  # only a script token is aud-less: a passkey session from before aud is refused
+        return not got.cookie and claims["sub"].startswith("token:")
     return claims["aud"] == got.host and proves(secret, got.token, got.proof)
 
 

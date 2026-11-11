@@ -68,6 +68,13 @@ def _tampered(proof: str) -> str:
     return ("B" if proof[0] == "A" else "A") + proof[1:]
 
 
+def test_a_passkey_session_minted_without_a_host_is_refused_as_a_bearer(signed) -> None:
+    dash, token, _ = signed
+    sub = session.verify(dash.auth.store.secret, token)["sub"]
+    old = session.mint(dash.auth.store.secret, sub, 3600)  # as a browser session was minted before it named a Host
+    assert client(dash).get("/api/scene", headers={"authorization": f"Bearer {old}"}).status_code == 401
+
+
 def test_a_wrong_proof_an_old_cookie_name_or_a_script_token_in_the_cookie_is_refused(signed) -> None:
     dash, token, proof = signed
     assert _cookie(dash, token).get("/api/scene", headers=proved(_tampered(proof))).status_code == 401
