@@ -1,11 +1,44 @@
 /* Passkey sign-in (dashboard/auth/): the first-time setup and sign-in screen, and the two WebAuthn ceremonies.
  *
- * The server keeps the session in an HttpOnly cookie, so this module never sees a token. signIn() resolves true when
+ * A session has two halves (dashboard/auth/session.py): the token, in an HttpOnly cookie this module never sees, and
+ * the proof the sign-in answer returns, kept here in this origin's localStorage. A browser sends a localhost cookie
+ * to every localhost port but keeps localStorage per port, so the cookie alone opens nothing: every request to this
+ * dashboard goes through authed() (the proof as a header), every socket through socket() (the proof as its
+ * subprotocol), and a camera frame through image(). signIn() resolves true when
  * the page may go on (signed in, sign-in off, or no server: standalone); otherwise it shows the screen and the page
  * reloads once a passkey signs in. Server text is only ever set with textContent.
  */
 
 const JSON_POST = (body) => ({ method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body ?? {}) });
+const PROOF = "strands-robots-session-proof";
+const proof = () => { try { return localStorage.getItem(PROOF); } catch { return null; } };
+const keep = (p) => { try { if (p) localStorage.setItem(PROOF, p); else localStorage.removeItem(PROOF); } catch { /* storage off */ } };
+
+/** fetch() that carries this page's half of the session to this dashboard (never to another origin). */
+export function authed(url, init = {}) {
+  const p = proof();
+  if (!p || new URL(url, location.href).origin !== location.origin) return fetch(url, init);
+  const headers = new Headers(init.headers || {});
+  headers.set("x-strands-session", p);
+  return fetch(url, { ...init, headers });
+}
+
+/** A WebSocket to this dashboard, offering the proof as its subprotocol (a browser cannot set a socket's headers);
+ * to any other host, a plain socket. Compared by host: a ws: URL's origin never equals the page's http: origin. */
+export function socket(url) {
+  const p = proof();
+  if (!p || new URL(url, location.href).host !== location.host) return new WebSocket(url);
+  return new WebSocket(url, [`strands-session.${p}`]);
+}
+
+/** Show a camera frame from ``url`` in ``img`` (an <img src> cannot carry the proof): fetched, then a blob: URL. */
+export async function image(img, url) {
+  const res = await authed(url).catch(() => null);
+  if (!res || !res.ok) return;
+  const old = img.src;
+  img.src = URL.createObjectURL(await res.blob());
+  if (old.startsWith("blob:")) URL.revokeObjectURL(old);
+}
 
 const b64 = (buf) => btoa(String.fromCharCode(...new Uint8Array(buf))).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
 const unb64 = (s) => Uint8Array.from(atob(s.replace(/-/g, "+").replace(/_/g, "/") + "=".repeat((4 - (s.length % 4)) % 4)), (c) => c.charCodeAt(0)).buffer;
@@ -27,9 +60,10 @@ function credentialJSON(cred) {
 }
 
 async function post(path, body) {
-  const res = await fetch(path, JSON_POST(body));
+  const res = await authed(path, JSON_POST(body));
   const doc = await res.json().catch(() => ({}));
   if (!res.ok) throw new Error(doc.detail || `HTTP ${res.status}`);
+  if (doc.proof) keep(doc.proof);
   return doc;
 }
 
@@ -48,11 +82,12 @@ export async function login() {
 
 export async function logout() {
   await fetch("/auth/logout", JSON_POST({})).catch(() => null);
+  keep(null);
   location.reload();
 }
 
 export async function status() {
-  const res = await fetch("/auth/status").catch(() => null);
+  const res = await authed("/auth/status").catch(() => null);
   return res && res.ok ? res.json().catch(() => null) : null;
 }
 
@@ -102,6 +137,7 @@ export function showSignIn(state) {
 /** true: go on (signed in, sign-in off, or no dashboard server answering). false: the sign-in screen is up. */
 export async function signIn() {
   const state = await status();
+  if (state && state.enabled === false) keep(null); // sign-in off: a proof left from an earlier server is stale
   if (!state || state.enabled === false || state.signed_in) return true;
   showSignIn(state);
   return false;

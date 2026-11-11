@@ -54,7 +54,8 @@ def test_chat_without_a_model_says_so() -> None:
             assert "--model" in page.inner_text(".msg.sys.off")
             assert page.is_disabled("#chatform button")
             reply = page.evaluate(
-                """() => new Promise((ok) => { const ws = new WebSocket(`ws://${location.host}/ws/chat`);
+                """() => new Promise((ok) => { const proof = localStorage.getItem("strands-robots-session-proof");
+                     const ws = new WebSocket(`ws://${location.host}/ws/chat`, [`strands-session.${proof}`]);
                      ws.onopen = () => ws.send(JSON.stringify({ prompt: "hello" }));
                      ws.onmessage = (e) => { const ev = JSON.parse(e.data);
                        if (ev.type === "error") ok(ev.message); }; })"""
