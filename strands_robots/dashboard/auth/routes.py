@@ -2,9 +2,9 @@
 
 GET  /auth/status                 {enabled, signed_in, setup_required, rp_id}
 POST /auth/enrol/begin            {setup?, label?}  -> {challenge_id, options}  (setup code, or a session)
-POST /auth/enrol/finish           {challenge_id, credential} -> sets the session cookie
+POST /auth/enrol/finish           {challenge_id, credential} -> cookie + {proof} (the page's half)
 POST /auth/login/begin            {} -> {challenge_id, options}
-POST /auth/login/finish           {challenge_id, credential} -> sets the session cookie
+POST /auth/login/finish           {challenge_id, credential} -> cookie + {proof} (the page's half)
 POST /auth/logout                 clears the cookie
 GET  /api/passkeys · POST /api/passkeys/{id} {name} · DELETE /api/passkeys/{id} (never the last one)
 """
@@ -49,9 +49,11 @@ async def _body(request: Request) -> dict[str, Any]:
     return body
 
 
-def _signed_in(auth: Auth, token: str) -> JSONResponse:
-    out = JSONResponse({"signed_in": True})
-    out.headers.append("set-cookie", session.set_cookie(token, auth.ttl))
+def _signed_in(auth: Auth, token: str, host: str) -> JSONResponse:
+    """The cookie half of the session, and the proof half for the page to keep (``session`` explains the split)."""
+    out = JSONResponse({"signed_in": True, "proof": auth.proof(token)})
+    out.headers.append("set-cookie", session.set_cookie(token, auth.ttl, host))
+    out.headers.append("cache-control", "no-store")
     return out
 
 
@@ -77,7 +79,8 @@ def install(app: FastAPI, auth: Auth) -> None:
     @app.post("/auth/enrol/finish")
     async def enrol_finish(request: Request) -> JSONResponse:
         b, host = await _body(request), request.headers.get("host", "")
-        return _signed_in(auth, await _run(lambda: auth.finish_enrol(host, b.get("challenge_id"), b.get("credential"))))
+        token = await _run(lambda: auth.finish_enrol(host, b.get("challenge_id"), b.get("credential")))
+        return _signed_in(auth, token, host)
 
     @app.post("/auth/login/begin")
     async def login_begin(request: Request) -> JSONResponse:
@@ -87,12 +90,13 @@ def install(app: FastAPI, auth: Auth) -> None:
     @app.post("/auth/login/finish")
     async def login_finish(request: Request) -> JSONResponse:
         b, host = await _body(request), request.headers.get("host", "")
-        return _signed_in(auth, await _run(lambda: auth.finish_login(host, b.get("challenge_id"), b.get("credential"))))
+        token = await _run(lambda: auth.finish_login(host, b.get("challenge_id"), b.get("credential")))
+        return _signed_in(auth, token, host)
 
     @app.post("/auth/logout")
-    async def logout() -> JSONResponse:
+    async def logout(request: Request) -> JSONResponse:
         out = JSONResponse({"signed_in": False})
-        out.headers.append("set-cookie", session.clear_cookie())
+        out.headers.append("set-cookie", session.clear_cookie(request.headers.get("host", "")))
         return out
 
     @app.get("/api/passkeys")

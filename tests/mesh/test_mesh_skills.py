@@ -280,3 +280,24 @@ def test_a_skill_the_operator_refuses_leaves_the_watchdog_disarmed(mesh_pair):
     time.sleep(0.8)  # the caller goes quiet for well past watchdog_ms
     assert holds == [], "a skill that moved nothing applied on_disconnect"
     arm.close()
+
+
+def test_a_caller_that_keeps_polling_after_its_skill_keeps_the_watchdog_quiet(mesh_pair):
+    """A skill arms the watchdog for its caller like an act does, so its reply carries the beat key too: where the
+    transport does not prove a peer, the caller's later requests count as its heartbeat only with that key. Without
+    it, a caller still polling skill_status would look quiet and the device would apply on_disconnect after every
+    skill."""
+    a, b = mesh_pair
+    arm = Robot("so101", id="arm")
+    holds: list[float] = []
+    real_hold = arm.body.hold
+    arm.body.hold = lambda: (holds.append(time.monotonic()), real_hold())
+    a.mount(arm, skills={"pan": lambda o: {"shoulder_pan": 0.2}}, watchdog_ms=300)
+    assert b.discover("arm", min_count=1, timeout=3.0)
+    b.invoke("arm", "skill", name="pan", seconds=0.3)
+    end = time.monotonic() + 1.5
+    while time.monotonic() < end:  # well past watchdog_ms after the skill ends, with the caller still talking
+        b.invoke("arm", "skill_status")
+        time.sleep(0.1)
+    assert holds == [], "a caller that kept polling was taken for a quiet one"
+    arm.close()

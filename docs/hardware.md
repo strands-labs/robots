@@ -62,11 +62,15 @@ The dict keys are the image keys the policy sees. A camera that delivers a diffe
 
 ## Calibration
 
+Calibration is a Feetech bus's: the `memory` driver has none and takes no `calibration=`.
 `calibrate(interactive=False)` loads the LeRobot file from `$HF_LEROBOT_CALIBRATION/robots/`, matched by
 `Robot(id=)`. Pass `calibration="my_arm.json"` to use any file. `calibrate()` with no arguments walks you through
 LeRobot's procedure at a terminal and saves the result. A Feetech calibration must fit the servo: `range_min` and
 `range_max` in 0..4095, `homing_offset` in -2047..2047 and `drive_mode` 0 or 1, or connecting raises `ValueError`
-naming the joint and the file.
+naming the joint and the file. Each joint's span must also fit its limits: the driver maps the limits onto
+`range_min..range_max`, so a span covering more than 1.5× the counts the limits take on the servo (4096 a turn) is
+refused too, at connect and by `calibrate()` before it saves. A real SO-101 sits at 1.0–1.25×. `extras()` reports
+`calibration` (the file) and `calibration_sha256` (a hash of its values) for the calibration in use.
 
 ## The operator gate
 
@@ -78,7 +82,12 @@ The safety chain still checks every step. When the policy is a checkpoint or dat
 `files` is the SHA-256 of the files the loader reads (a preset name stays a preset, even next to a same-named folder).
 The run then loads a private copy of those files, hashed while it is written: if they changed after the yes, the run
 is refused and moves nothing, and a later write to the originals never reaches the robot. The copy is removed when
-the run ends. A Hub checkpoint (`owner/repo`) has no `files`: it is fetched at the Hub's current revision.
+the run ends. The same holds for a checkpoint you registered as a policy object (`tool(policies={"pick":
+Policy(dir)})`): it reads its files when it attaches, so it loads the approved copy; your object is not changed.
+For a Hub checkpoint (`owner/repo`, as a spec or a `Policy`), `files` is `owner/repo@<commit>`, the commit its
+revision points to when you are asked, and the run loads exactly that commit even if the branch moves. If the commit
+cannot be looked up (offline), the run is refused before you are asked; pass `revision=` a full 40-character commit
+to need no lookup. A spec no agent may pass (a network address) is refused before you are asked.
 
 {{drawing:d16_one_yes_per_run}}
 

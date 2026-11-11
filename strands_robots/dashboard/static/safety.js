@@ -5,6 +5,8 @@
  *     (a real robot also needs an X-Confirm). app.js renders the slot (.estop-ctl[data-robot]); this file wires it.
  *   - mesh devices (other peers' robots) get a row each with their own E-STOP; resume stays with the device.
  * The latched state comes from the server's state frames (frame.estop), never from a local guess. */
+import { authed } from "./auth.js";
+
 
 const $ = (s) => document.querySelector(s);
 const bar = $("#safety");
@@ -14,7 +16,7 @@ window.__safety = { notices: [] };
 async function post(path, body, confirmed) {
   const headers = { "content-type": "application/json" };
   if (confirmed) headers["X-Confirm"] = "yes";
-  const res = await fetch(`${window.__state?.base || ""}${path}`, { method: "POST", headers, body: JSON.stringify(body || {}) });
+  const res = await authed(`${window.__state?.base || ""}${path}`, { method: "POST", headers, body: JSON.stringify(body || {}) });
   const doc = await res.json().catch(() => ({}));
   return { status: res.status, doc };
 }
@@ -102,7 +104,7 @@ let remote = [];
 const esc = (v) => String(v ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
 
 async function pollMesh() {
-  const doc = await fetch(`${window.__state?.base || ""}/api/mesh`).then((r) => (r.ok ? r.json() : null), () => null);
+  const doc = await authed(`${window.__state?.base || ""}/api/mesh`).then((r) => (r.ok ? r.json() : null), () => null);
   remote = (doc?.devices || []).filter((d) => !d.local);
   window.__mesh = doc;
   meshBox.hidden = remote.length === 0;

@@ -14,7 +14,7 @@ from ...policy import PolicyLike, as_policy
 from ...policy.requirements import Requirements
 from ...types import JointState, Observation
 from ...units import Units, calibrated, resolve_units
-from .source import refuse_remote_spec
+from .source import refuse_agent_spec
 
 if TYPE_CHECKING:
     from ..robot import Robot
@@ -61,7 +61,7 @@ def bind(robot: Robot, policy: PolicyLike | Callable[[Observation], Any], units:
 
     The policy's gains are only carried in the ``Bound``: ``install_gains`` puts them on after the loop's last checks.
     """
-    refuse_remote_spec(policy)  # an agent's run, by any entry point: no policy at a network address
+    refuse_agent_spec(policy)  # an agent's run, by any entry point: no network address, no unlisted Hub repo
     pol = as_policy(policy)
     for name in ("attach", "detach", "requirements", "needs_observation"):
         _hook(pol, name, callable, "a method")

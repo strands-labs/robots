@@ -158,6 +158,20 @@ def test_voice_refuses_a_network_policy_from_the_model() -> None:
         sim.close()
 
 
+def test_voice_refuses_a_hub_checkpoint_the_operator_did_not_list(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("STRANDS_POLICY_REPOS", raising=False)
+    sim = Simulation()
+    Robot("so101", sim=sim)
+    calls = [("dashboard_run", {"robot": "so101", "policy": "someone/ckpt"})]
+    server = Dashboard(sim, voice=lambda: ScriptedBidi(heard="run", calls=calls)).start()
+    try:
+        res = next(e for e in talk(server.url, until="tool_result", n=1) if e["type"] == "tool_result")
+        assert res["status"] == "error" and "STRANDS_POLICY_REPOS" in res["text"], res
+    finally:
+        server.stop()
+        sim.close()
+
+
 def test_voice_off_says_how_to_turn_it_on() -> None:
     import httpx
 

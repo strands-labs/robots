@@ -60,17 +60,16 @@ class _FakeBus:
 
 def test_counts_to_rad_to_lerobot_equals_lerobots_own_normalisation():
     d = Description.load("so101")
-    cmin, cmax = 100, 3900
-    cal = Calibration({k: JointCalibration(i + 1, 0, 0, cmin, cmax) for i, k in enumerate(d.action_keys)})
+    spans = {k: (700, 3400) for k in d.action_keys} | {"gripper": (2000, 3400)}  # each inside what its limits take
+    cal = Calibration({k: JointCalibration(i + 1, 0, 0, *spans[k]) for i, k in enumerate(d.action_keys)})
     drv = FeetechDriver(d, port=None, bus=_FakeBus(), calibration=cal)
     u = Units.for_robot(d, "lerobot")
-    for counts in (cmin, 1000, 2000, cmax):
-        rad = np.array([drv.counts_to_rad(k, counts) for k in d.action_keys])
-        got = u.from_rad(rad)
-        frac = (counts - cmin) / (cmax - cmin)
+    for frac in (0.0, 0.25, 0.6, 1.0):
+        counts = {k: lo + frac * (hi - lo) for k, (lo, hi) in spans.items()}
+        got = u.from_rad(np.array([drv.counts_to_rad(k, counts[k]) for k in d.action_keys]))
         for i, k in enumerate(d.action_keys):
             expected = frac * 100.0 if k in d.gripper.keys else frac * 200.0 - 100.0
-            assert abs(got[i] - expected) < 1e-9, f"{k} at {counts}: {got[i]} vs {expected}"
+            assert abs(got[i] - expected) < 1e-9, f"{k} at {counts[k]}: {got[i]} vs {expected}"
 
 
 def test_range_modes_clamp_outside_the_range_but_degrees_extrapolate():

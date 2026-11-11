@@ -6,7 +6,7 @@
  *                  (?standalone=<scene.json> picks another bundle). The browser never steps physics while a server
  *                  is connected; a server that answers later wins (re-probe backing off 5 s → 60 s, then a reload).
  */
-import { signIn, signedOut } from "./auth.js";
+import { authed, image, signIn, signedOut, socket } from "./auth.js";
 import { Standalone } from "./standalone.js";
 import { Twin } from "./twin.js";
 
@@ -202,7 +202,7 @@ function ctx(panel) {
     api: async (path, { method = "GET", body, confirm: confirmed = false } = {}) => {
       const headers = { "content-type": "application/json" };
       if (confirmed) headers["X-Confirm"] = "yes";
-      const res = await fetch(`${state.base}${path}`, { method, headers, body: body === undefined ? undefined : JSON.stringify(body) });
+      const res = await authed(`${state.base}${path}`, { method, headers, body: body === undefined ? undefined : JSON.stringify(body) });
       const text = await res.text();
       let doc = null; try { doc = text ? JSON.parse(text) : null; } catch { doc = { detail: text }; }
       if (res.status === 401) signedOut(); // the session ended: back to the passkey screen
@@ -213,7 +213,7 @@ function ctx(panel) {
 }
 /** Server mode: import every panel module the server lists (static/panels/*.js). A missing route is a quiet no-op. */
 async function loadPanels() {
-  const doc = await fetch(`${state.base}/api/panels`).then((r) => (r.ok ? r.json() : null), () => null);
+  const doc = await authed(`${state.base}/api/panels`).then((r) => (r.ok ? r.json() : null), () => null);
   for (const name of doc?.panels || []) {
     if (!/^(panels\/)?[a-z][a-z0-9_-]*\.js$/.test(name)) continue;
     try { await import(`${state.base || "."}/${name}`); /* "panels/x.js" or a feature module next to app.js */ } catch (err) { console.error(`panel ${name}`, err); chip(`panel-${name}`, `panel ${esc(name)} failed`, "warn"); }
@@ -289,7 +289,7 @@ function renderCards(desc) {
 
 function refreshCams() {
   if (state.mode !== "server" || document.hidden) return;
-  for (const img of document.querySelectorAll('.card.cam:not([data-collapsed="yes"]) img')) img.src = `${img.dataset.src}?t=${Date.now()}`;
+  for (const img of document.querySelectorAll('.card.cam:not([data-collapsed="yes"]) img')) image(img, `${img.dataset.src}?t=${Date.now()}`);
 }
 
 async function onSlider(e) {
@@ -302,7 +302,7 @@ async function onSlider(e) {
     if (!confirm(`${rid} is a REAL robot. Move ${el.dataset.label} to ${fmt(+el.value)} rad?`)) return;
     headers["X-Confirm"] = "yes";
   }
-  const res = await fetch(`${state.base}/api/robots/${encodeURIComponent(rid)}/act`, { method: "POST", headers, body: JSON.stringify({ targets: { [el.dataset.label]: +el.value } }) });
+  const res = await authed(`${state.base}/api/robots/${encodeURIComponent(rid)}/act`, { method: "POST", headers, body: JSON.stringify({ targets: { [el.dataset.label]: +el.value } }) });
   window.__acts = (window.__acts || []).concat([{ rid, label: el.dataset.label, value: +el.value, status: res.status }]);
   if (!res.ok) log(`act ${rid}: HTTP ${res.status} ${await res.text()}`, "err");
 }
@@ -332,7 +332,7 @@ function applyFrame(frame) {
  */
 async function loadPickers() {
   if (state.mode !== "server") return;
-  const get = (p) => fetch(`${state.base}${p}`).then((r) => (r.ok ? r.json() : null), () => null);
+  const get = (p) => authed(`${state.base}${p}`).then((r) => (r.ok ? r.json() : null), () => null);
   const pol = await get("/api/policies");
   state.policies = pol;
   $("#run").hidden = !pol; $("#add").hidden = !pol; // POST /api/robots landed together with /api/policies
@@ -360,7 +360,7 @@ async function pollTasks() {
   if (state.mode !== "server" || !state.policies || state.lastFrame?.tasks) return;
   const tasks = {};
   await Promise.all((state.desc?.robots || []).map(async (r) => {
-    const st = await fetch(`${state.base}/api/robots/${encodeURIComponent(r.id)}/run`).then((x) => (x.ok ? x.json() : null), () => null);
+    const st = await authed(`${state.base}/api/robots/${encodeURIComponent(r.id)}/run`).then((x) => (x.ok ? x.json() : null), () => null);
     if (st && st.status === "running") tasks[r.id] = { policy: state.runPolicy?.[r.id] || "policy", status: st.status };
     else if (st && st.status === "error") tasks[r.id] = null, state.taskErrors = { ...(state.taskErrors || {}), [r.id]: st.error };
   }));
@@ -382,7 +382,7 @@ async function runOrStop() {
   const running = state.tasks?.[rid];
   const headers = { "content-type": "application/json" };
   if (running) {
-    const res = await fetch(`${state.base}/api/robots/${encodeURIComponent(rid)}/stop`, { method: "POST", headers });
+    const res = await authed(`${state.base}/api/robots/${encodeURIComponent(rid)}/stop`, { method: "POST", headers });
     log(`stop ${rid}: ${res.status} ${res.ok ? JSON.stringify(await res.json()) : await res.text()}`, res.ok ? "tool" : "err");
     pollTasks();
     return;
@@ -398,7 +398,7 @@ async function runOrStop() {
     headers["X-Confirm"] = "yes";
   }
   const body = { policy, instruction, seconds: null, hz: null }; // the server paces to wall-clock and picks the policy's hz
-  const res = await fetch(`${state.base}/api/robots/${encodeURIComponent(rid)}/run`, { method: "POST", headers, body: JSON.stringify(body) });
+  const res = await authed(`${state.base}/api/robots/${encodeURIComponent(rid)}/run`, { method: "POST", headers, body: JSON.stringify(body) });
   window.__runs = (window.__runs || []).concat([{ rid, policy, status: res.status }]);
   if (res.ok) { state.runPolicy = { ...(state.runPolicy || {}), [rid]: policy }; }
   log(`run ${policy} on ${rid}: ${res.status} ${res.ok ? JSON.stringify(await res.json()) : await res.text()}`, res.ok ? "tool" : "err");
@@ -407,7 +407,7 @@ async function runOrStop() {
 async function addRobot() {
   const name = $("#add-robot").value.trim();
   if (!name) return;
-  const res = await fetch(`${state.base}/api/robots`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ name, position: [(state.desc?.robots.length || 0) * 1.0, 0, 0], id: null }) });
+  const res = await authed(`${state.base}/api/robots`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ name, position: [(state.desc?.robots.length || 0) * 1.0, 0, 0], id: null }) });
   window.__adds = (window.__adds || []).concat([{ name, status: res.status }]);
   log(`add ${name}: ${res.status} ${res.ok ? JSON.stringify(await res.json()) : await res.text()}`, res.ok ? "tool" : "err");
   if (res.ok) $("#add-robot").value = "";
@@ -474,7 +474,7 @@ function wsUrl(path) {
 }
 
 function connectState() {
-  const ws = new WebSocket(wsUrl("/ws/state"));
+  const ws = socket(wsUrl("/ws/state"));
   state.ws = ws;
   let frames = 0, bytes = 0;
   const tick = setInterval(() => { state.fps = frames; state.bytes = bytes; frames = 0; bytes = 0; statusLine(); }, 1000);
@@ -508,7 +508,7 @@ function log(text, cls = "") {
 
 function connectChat() {
   let ws = null, current = null;
-  fetch(`${state.base}/api/chat`).then((r) => (r.ok ? r.json() : null), () => null).then((info) => {
+  authed(`${state.base}/api/chat`).then((r) => (r.ok ? r.json() : null), () => null).then((info) => {
     if (!info || info.enabled) return; // an older server without /api/chat: the first send reports it
     $("#chatform").querySelector("button").disabled = true;
     $("#prompt").placeholder = "chat is off · start with --model <bedrock model id>";
@@ -516,7 +516,7 @@ function connectChat() {
     el.innerHTML = `<b>Chat is off.</b> Start the dashboard with a model:<code>python -m strands_robots.dashboard --model &lt;bedrock model id&gt;</code>or pass <code>Dashboard(sim, model=...)</code>`;
   });
   const open = () => new Promise((resolve, reject) => {
-    ws = new WebSocket(wsUrl("/ws/chat"));
+    ws = socket(wsUrl("/ws/chat"));
     ws.onopen = () => resolve(ws);
     ws.onerror = reject;
     ws.onclose = () => { ws = null; };
@@ -613,7 +613,7 @@ function wireCommand(sa) {
  *  (ERR_BLOCKED_BY_LOCAL_NETWORK_ACCESS_CHECKS, measured on the live site): a fetch with
  *  targetAddressSpace:"loopback" is what may raise that prompt; the WebSocket cannot ask, so it goes second. */
 async function probe() {
-  const same = await fetch("/api/scene").then((r) => r.ok, () => false);
+  const same = await authed("/api/scene").then((r) => r.ok, () => false);
   if (same) return { base: "" };
   if (location.host === LOCAL_CLI) return null;
   const base = `http://${LOCAL_CLI}`;

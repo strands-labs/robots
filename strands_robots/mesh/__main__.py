@@ -16,6 +16,7 @@ import argparse
 import json
 import sys
 from collections.abc import Sequence
+from pathlib import Path
 
 from . import pki
 from .transports import zenoh_tls
@@ -48,9 +49,12 @@ def main(argv: Sequence[str] | None = None) -> int:
             print(f"mesh CA in {pki.make_ca(args.ca)}; issue certificates with `cert NAME`")
         elif args.command == "cert":
             serves = [s for s in args.serves.split(",") if s.strip()]
+            replaced = (Path(args.out).expanduser() / "cert.pem").exists()
             out = pki.issue(args.ca, args.name, args.out, serves=serves, days=args.days)
             what = f"answers for {', '.join(serves)}" if serves else "an operator: answers for no device"
             print(f"identity {args.name!r} in {out} ({what})")
+            if replaced:
+                print(f"replaced the identity that was in {out}; its old certificate no longer serves from here")
         else:
             cfg = zenoh_tls.tls_config(args.identity, mode=args.mode, listen=args.listen, connect=args.connect)
             text = json.dumps(cfg, indent=2) + "\n"

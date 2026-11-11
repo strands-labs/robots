@@ -77,6 +77,19 @@ class Skills:
     def start(
         self, peer: str | None, name: Any = None, seconds: Any = None, instruction: Any = None, by: Any = None
     ) -> dict[str, Any]:
+        """``start_for`` with a caller that showed no beat key, for a transport that proved it: the reply only."""
+        return self.start_for(peer, None, True, name=name, seconds=seconds, instruction=instruction, by=by)[0]
+
+    def start_for(
+        self,
+        peer: str | None,
+        beat: str | None,
+        proven: bool,
+        name: Any = None,
+        seconds: Any = None,
+        instruction: Any = None,
+        by: Any = None,
+    ) -> tuple[dict[str, Any], str | None]:
         """Start ``name`` for ``seconds`` on this device and answer at once; ``skill_status`` reports how it went.
 
         Raises:
@@ -110,10 +123,12 @@ class Skills:
                 raise RuntimeError(f"{self.device_id} is already running skill {self._state['name']!r}")
             with from_agent():  # an agent's run: the safety chain on every step, the device's own approve= first
                 self._task = task = self.robot.start(self.catalogue[name], seconds=secs, instruction=instruction)
-            release = self.dog.busy(peer) if self.dog is not None and peer is not None else None
+            release, key = (
+                self.dog.busy(peer, beat, proven) if self.dog is not None and peer is not None else (None, None)
+            )
             self._state = {"name": name, "state": "running", "seconds": secs, "by": by, "started": time.time()}
         threading.Thread(target=self._finish, args=(task, name, release), daemon=True, name="mesh-skill").start()
-        return {"started": name, "device": self.device_id, "seconds": secs}
+        return {"started": name, "device": self.device_id, "seconds": secs}, key
 
     def _finish(self, task: Any, name: str, release: Callable[..., None] | None) -> None:
         state: dict[str, Any] = {"name": name, "state": "done"}

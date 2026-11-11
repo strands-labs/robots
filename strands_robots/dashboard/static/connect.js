@@ -5,6 +5,8 @@
  * A remote or hardware card is a real robot to this page: every move, run and resume asks the operator first and goes
  * out with X-Confirm: yes; its E-STOP is one click, never asked. Registers as a side-column tab through the panel slot API (window.SR.registerPanel);
  * on a page without it, it mounts itself as a collapsible panel on the left. */
+import { authed, image } from "./auth.js";
+
 
 const $ = (s, root = document) => root.querySelector(s);
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
@@ -61,7 +63,7 @@ async function api(path, { body, confirmed, method } = {}) {
   const headers = { "content-type": "application/json" };
   if (confirmed) headers["X-Confirm"] = "yes";
   const init = body === undefined && !method ? {} : { method: method || "POST", headers, body: JSON.stringify(body || {}) };
-  const res = await fetch(base() + path, init).catch((e) => ({ ok: false, status: 0, json: async () => ({ detail: String(e) }) }));
+  const res = await authed(base() + path, init).catch((e) => ({ ok: false, status: 0, json: async () => ({ detail: String(e) }) }));
   const doc = await res.json().catch(() => ({}));
   return { ok: res.ok, status: res.status, doc };
 }
@@ -149,7 +151,6 @@ function renderPeers() {
   box.innerHTML = html;
 }
 
-function camUrl(c) { return `${base()}${c.url}?t=${state.camTick}`; }
 
 function renderRobots() {
   const box = $("#cx-robots");
@@ -174,7 +175,7 @@ function renderRobots() {
 function cardHtml(r) {
   const joints = Object.entries(r.joints || {}).map(([k, v]) => `<div class="j"><span>${esc(k)}</span><b data-joint="${esc(k)}">${(+v).toFixed(3)}</b>
     <input type="range" min="-1.5" max="1.5" step="0.05" value="${(+v).toFixed(2)}" data-robot="${esc(r.id)}" data-joint="${esc(k)}" aria-label="${esc(k)}"></div>`).join("");
-  const cams = (r.cameras || []).map((c) => `<figure><img data-cam="${esc(c.url)}" src="${esc(camUrl(c))}" alt="${esc(r.id)} ${esc(c.name)}"><figcaption>${esc(c.name)}</figcaption></figure>`).join("");
+  const cams = (r.cameras || []).map((c) => `<figure><img data-cam="${esc(c.url)}" alt="${esc(r.id)} ${esc(c.name)}"><figcaption>${esc(c.name)}</figcaption></figure>`).join("");
   return `<div class="rcard" data-robot="${esc(r.id)}"><h4><span class="who">${esc(r.id)} <small class="muted">${esc(r.name || "")}</small></span>
     <span class="tag">${esc(r.kind)}</span><span class="tag bad latch" hidden>E-STOPPED</span>
     <button class="estop" data-estop="${esc(r.id)}" title="stop now (never asks)">E-STOP</button></h4>
@@ -304,7 +305,7 @@ async function pollRobots() {
 function refreshCams() {
   state.camTick++;
   for (const img of document.querySelectorAll("#connect img[data-cam]")) {
-    if (img.complete) img.src = `${base()}${img.dataset.cam}?t=${state.camTick}`;
+    if (img.complete) image(img, `${base()}${img.dataset.cam}?t=${state.camTick}`);
   }
 }
 

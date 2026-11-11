@@ -332,3 +332,41 @@ def test_robot_facade_takes_driver_ros_and_host_for_a_registry_robot(ros):
         robot.close()
     finally:
         g1.close()
+
+
+def test_a_ros2_control_arm_takes_the_profiles_on_disconnect_so_it_can_carry_a_watchdog(ros):
+    """A model read from /robot_description has no registry hardware block. Without the profile's declared
+    on_disconnect ("hold" in ros2_control.json) a real robot cannot carry a watchdog, so the mesh serves it
+    observe-only and a generic ros2_control arm can never be commanded over the mesh (measured on a mock-hardware
+    arm: "no proven safe on_disconnect for this body")."""
+    from strands_robots import ros as sros
+    from strands_robots.robot.safety import Watchdog
+
+    arm = FakeArm()
+    try:
+        robot = sros.connect("ros2_control", timeout=1.0)
+        assert robot.description.hardware.on_disconnect == "hold"
+        assert {c.on_disconnect for c in robot.manifest.controls} == {"hold"}
+        Watchdog(robot, 500.0)  # refused with RequestRefused when the body has no proven-safe on_disconnect
+    finally:
+        arm.close()
+
+
+def test_connect_with_mesh_mounts_after_the_profiles_on_disconnect_is_applied(ros):
+    """ros.connect(..., mesh=) used to forward mesh into Robot(), which mounts inside the constructor, before the
+    profile's on_disconnect was applied, so the watchdog refused the body: "ros2_control: no proven safe
+    on_disconnect for this body" (review on #4935). The one-call form must mount the patched robot."""
+    import uuid
+
+    from strands_robots import ros as sros
+    from strands_robots.mesh import Mesh
+
+    arm, m = FakeArm(), Mesh(f"mem://ros-connect-{uuid.uuid4().hex[:6]}", tenant="t")
+    try:
+        robot = sros.connect("ros2_control", timeout=1.0, mesh=m)
+        assert robot.description.hardware.on_disconnect == "hold"
+        assert {c.on_disconnect for c in robot.manifest.controls} == {"hold"}
+        robot.close()
+    finally:
+        m.close()
+        arm.close()

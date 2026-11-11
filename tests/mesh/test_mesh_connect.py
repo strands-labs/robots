@@ -186,3 +186,19 @@ def test_a_robot_from_the_mesh_reprs_as_remote_not_hardware(mesh_pair):
     assert "remote on" in repr(remote) and "hardware" not in repr(remote)
     a.close()
     device.sim.close()
+
+
+@pytest.mark.parametrize("name", ["kinova_gen3", "robotiq_2f85"])
+def test_a_simulated_peer_with_an_unranged_actuator_connects_and_its_chain_decides(mesh_pair, name):
+    """The joint-range rule is for a body this process drives: a peer's writes are decided by the peer's own chain."""
+    a, b = mesh_pair
+    device = Robot(name, sim=Simulation())
+    a.mount(device, device_id="dev", watchdog_ms=None)
+    assert b.discover("dev", min_count=1, timeout=3.0)
+    remote = b.connect("dev")
+    assert remote.is_real and remote.drives_here is False
+    key = next(k for k in remote.description.action_keys if remote.description.limits.get(k) is None)
+    q = float(device.observe().joints[key])
+    remote.confirm_act({key: q}, confirmed=True)  # the local chain does not refuse it for having no range
+    a.close()
+    device.sim.close()

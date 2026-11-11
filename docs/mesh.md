@@ -34,8 +34,11 @@ me.broadcast("estop")         # every robot in the tenant stops
 Each robot runs its own safety chain on mesh commands. A remote caller cannot approve a move for the operator. If
 the caller disappears, the robot does what `on_disconnect` says.
 
-A real robot mounted with `watchdog_ms=None` only answers `observe` and `describe`. Set `watchdog_ms=` to move it
-over the mesh. A real robot on a mesh any machine may join is observe-only as well (see "Securing the mesh"): there
+A real robot mounted with `watchdog_ms=None` only answers `observe` and `describe`. `watchdog_ms` is an argument of
+`Mesh.mount` (500 ms by default; `Robot(..., mesh=lab)` mounts with the default), not of `Robot`:
+`lab.mount(Robot("so101", port="/dev/ttyACM0"), watchdog_ms=250)`. Like a command from an agent or the dashboard, a
+move over the mesh to a real robot also needs the operator's `confirm=` on that `Robot` (see [Safety](safety.md)).
+A real robot on a mesh any machine may join is observe-only as well (see "Securing the mesh"): there
 the peer id a request carries is only a claim, so any machine could move the robot, or keep its watchdog from
 noticing that the real mover is gone.
 
@@ -81,10 +84,14 @@ Give every machine a certificate from one lab CA. A machine with one joins the m
 everything it sends with the same key:
 
 ```bash
-python -m strands_robots.mesh ca                                  # once, on an admin machine
-python -m strands_robots.mesh cert lab-pc --serves 'so101,arm-*'  # on the robot's machine
-python -m strands_robots.mesh cert alice --out ./alice            # for an operator; copy ./alice to their machine
+python -m strands_robots.mesh ca                                                 # once, on an admin machine
+python -m strands_robots.mesh cert lab-pc --serves 'so101,arm-*' --out ./lab-pc  # for the robot's machine
+python -m strands_robots.mesh cert alice --out ./alice                           # for an operator
 ```
+
+Run every `cert` on the admin machine: it signs with the CA key (`--ca`, default `~/.strands/mesh/ca`), which stays
+there. Copy each `--out` folder to `~/.strands/mesh/identity` on its machine. `cert` replaces any identity already
+in its `--out` folder, so give each machine its own folder and list every robot it serves in one `--serves`.
 
 `cert` writes `~/.strands/mesh/identity` unless told otherwise, and a plain `zenoh://` mesh on that machine uses it.
 `zenoh://?identity=<dir>` or `STRANDS_MESH_IDENTITY=<dir>` names another one, and `none` opts a process out (a
@@ -105,6 +112,12 @@ A real robot moves over the mesh only on a mesh with identities, or on a network
 `zenoh://?trusted=1` or `STRANDS_ZENOH_TRUSTED=1` (a VLAN or WireGuard network only the lab reaches; peer ids there
 are claims). Every machine on the robot's mesh needs this version. A robot with an identity refuses unsigned
 requests from older peers.
+
+Where peer ids are claims, the robot's reply to the `act` that armed its watchdog carries a beat key, and only
+requests that carry it back count as its mover's. A machine that names the mover's peer id cannot keep its watchdog
+from noticing the mover went quiet. The key travels in the clear, so a machine that can read the lab's traffic could
+copy it. Only identities prove who sent a request. A mover on an older version sends no key, so its robot holds
+`watchdog_ms` after its last `act`.
 
 A zenoh config file (`?config=<path>` or `STRANDS_ZENOH_CONFIG`) is the session's config instead of the identity.
 The mesh adds only its lease, any `?listen=` or `?connect=`, peer mode if the file sets no mode, and its scouting
