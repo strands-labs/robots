@@ -7,6 +7,7 @@ names, units, cameras and holds at the edge. Nothing here imports lerobot, torch
 from .contract import Contract, server_config, write_server_yaml
 from .local import LeRobotPolicy
 from .remote import ZenohPolicy
+from .roles import Roles, make
 from .server import serve
 
-__all__ = ["LeRobotPolicy", "ZenohPolicy", "Contract", "server_config", "write_server_yaml", "serve"]
+__all__ = ["LeRobotPolicy", "ZenohPolicy", "Contract", "server_config", "write_server_yaml", "serve", "Roles", "make"]

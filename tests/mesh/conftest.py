@@ -63,3 +63,9 @@ def mesh_pair(request, tenant):
     yield a, b
     b.close()
     a.close()
+
+
+@pytest.fixture(autouse=True)
+def _no_machine_identity(monkeypatch):
+    """A developer's own ~/.strands/mesh/identity must not turn every test mesh into an mTLS one."""
+    monkeypatch.setenv("STRANDS_MESH_IDENTITY", "none")

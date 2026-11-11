@@ -13,6 +13,7 @@ from contextlib import ExitStack
 from typing import Any
 
 from . import authority as _authority
+from . import signed as _signed
 from . import watchdog as _watchdog
 from . import wire
 from .broadcast import broadcast, listen_estop, publish_estop
@@ -22,7 +23,6 @@ from .iot.options import attach as _iot_attach
 from .presence import Directory, announce, refuse_shared, refuse_taken
 from .record import RAISE, check_kill_switch, default_operator, default_tenant, record, state_rate
 from .remote import connect
-from .reply import the_reply
 from .serve import ARGS, act_wait, estop_each, serve
 from .stream import listen, publish
 from .transports.base import Transport, Unsubscribe, open_transport
@@ -52,12 +52,12 @@ class Mesh:
         self.operator = operator or default_operator()
         self.resume_authority = resume_authority or _authority.Authority()
         self.resume_key = resume_key
-        self.peer_id = uuid.uuid4().hex
         self.presence_ttl = float(presence_ttl)
         self.transports: list[Transport] = [
             open_transport(t, presence_ttl=self.presence_ttl, tenant=self.tenant) if isinstance(t, str) else t
             for t in items
         ]
+        self.peer_id = _signed.peer_id(self.transports)  # <cert name>.<random> on a mesh with identities
         self._own = own_transports
         self._lock = threading.Lock()
         self._mounted: dict[str, tuple[Any, Device, list[Unsubscribe], _authority.Lockout]] = {}
@@ -95,7 +95,7 @@ class Mesh:
             lockout = _authority.Lockout()
             undo: list[Unsubscribe] = []
             stack.callback(lambda: [u() for u in reversed(undo)])
-            dog = _watchdog.start(robot, watchdog_ms, self.transports, self.tenant)
+            dog = _watchdog.start(robot, watchdog_ms, self.transports, self.tenant, did)
             stack.callback(_watchdog.stopper(dog))  # a failed mount stops it first; close is idempotent
             on_rpc = getattr(dog, "on_rpc", None)
             undo += [serve(t, self.tenant, robot, did, lockout, self._authority, on_rpc) for t in self.transports]
@@ -151,10 +151,9 @@ class Mesh:
         self._seq = seq = self._seq + 1
         env = wire.envelope(self.tenant, device_id, "rpc", rpc, seq=seq, args=args, peer=self.peer_id)
         timeout += act_wait(args) if rpc == "act" else 0.0
-        replies = transport.query(wire.key("rpc", self.tenant, device_id, rpc), wire.encode(env), timeout)
-        if not replies:
-            raise TimeoutError(f"{device_id}.{rpc}: no reply within {timeout} s")
-        reply = the_reply(replies, self.tenant, device_id, rpc, seq)
+        raw = _signed.encode(transport, env)
+        replies = transport.query(wire.key("rpc", self.tenant, device_id, rpc), raw, timeout)
+        reply = _signed.answer(transport, replies, (self.tenant, device_id, rpc, seq), self.peer_id, timeout)
         if reply["kind"] == "error":
             err = reply.get("error") or {}
             raise RAISE.get(err.get("type", ""), RuntimeError)(err.get("message", "remote error"))

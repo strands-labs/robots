@@ -66,7 +66,10 @@ The dict keys are the image keys the policy sees. A camera that delivers a diffe
 `Robot(id=)`. Pass `calibration="my_arm.json"` to use any file. `calibrate()` with no arguments walks you through
 LeRobot's procedure at a terminal and saves the result. A Feetech calibration must fit the servo: `range_min` and
 `range_max` in 0..4095, `homing_offset` in -2047..2047 and `drive_mode` 0 or 1, or connecting raises `ValueError`
-naming the joint and the file.
+naming the joint and the file. Each joint's span must also fit its limits: the driver maps the limits onto
+`range_min..range_max`, so a span covering more than 1.5× the counts the limits take on the servo (4096 a turn) is
+refused too, at connect and by `calibrate()` before it saves. A real SO-101 sits at 1.0–1.25×. `extras()` reports
+`calibration` (the file) and `calibration_sha256` (a hash of its values) for the calibration in use.
 
 ## The operator gate
 
@@ -75,7 +78,10 @@ first. If it returns false, nothing is written. A real robot without `confirm=` 
 
 An agent's `run()` asks `approve=` once with the whole plan, not every step. Without `approve=`, the run is refused.
 The safety chain still checks every step. When the policy is a checkpoint or dataset on this machine, the plan's
-`files` is the SHA-256 of its files; if they change between the yes and the load, the run is refused and moves nothing.
+`files` is the SHA-256 of the files the loader reads (a preset name stays a preset, even next to a same-named folder).
+The run then loads a private copy of those files, hashed while it is written: if they changed after the yes, the run
+is refused and moves nothing, and a later write to the originals never reaches the robot. The copy is removed when
+the run ends. A Hub checkpoint (`owner/repo`) has no `files`: it is fetched at the Hub's current revision.
 
 {{drawing:d16_one_yes_per_run}}
 

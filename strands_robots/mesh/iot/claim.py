@@ -17,9 +17,8 @@ import threading
 from pathlib import Path
 from typing import Any
 
-from .. import wire
 from .claim_hook import HOOK_SOURCE, allow, hook_decision
-from .policy import POLICY_NAME, group_name
+from .policy import POLICY_NAME, check_device_id, group_name
 from .provision import _write, csr
 from .rules import rule_name
 
@@ -110,10 +109,10 @@ def claim(
     """Run the claim flow for ``record`` (id, device_type, tenant) against ``endpoint`` with the claim certificate.
     ``secret`` is the one-time secret ``claim_hook.allow`` returned when the operator approved this robot.
     Returns the thing name, certificate id and the ``iot://`` query (``client=&cert=&key=``) for ``Mesh``."""
+    did = check_device_id(str(record["id"]))  # before the SDK import: a reserved name fails the same everywhere
     from awscrt import mqtt5
     from awsiot import iotidentity, mqtt5_client_builder
 
-    did = wire.check_id(str(record["id"]), "device_id")
     key_pem, csr_pem = csr(did)
     up, done = threading.Event(), threading.Event()
     result: dict[str, Any] = {}
