@@ -13,7 +13,7 @@ from __future__ import annotations
 import os
 import shutil
 import stat
-from contextlib import ExitStack
+from contextlib import ExitStack, suppress
 from pathlib import Path
 
 _POSIX = hasattr(os, "getuid") and hasattr(os, "O_NOFOLLOW")
@@ -76,10 +76,8 @@ def _walk(path: Path, *, create: bool) -> tuple[int, int]:
         for name in path.parts[1:]:
             here = here / name
             if create:
-                try:
+                with suppress(FileExistsError):  # an existing directory is checked below like a new one
                     os.mkdir(name, 0o755, dir_fd=fd)
-                except FileExistsError:
-                    pass
             try:
                 child = os.open(name, _DIR, dir_fd=fd)
             except OSError:
