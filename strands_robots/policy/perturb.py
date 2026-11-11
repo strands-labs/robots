@@ -67,6 +67,12 @@ class Perturb(Policy):
         out = img.astype(np.float32) + self._rng.normal(0.0, self.image_noise * 255.0, img.shape)
         return np.clip(out, 0, 255).astype(img.dtype)
 
+    def loading(self, **kw: Any) -> Perturb:
+        """The same noise and delay around the wrapped policy's ``loading(**kw)`` (a pinned source; run/pin.py)."""
+        inner = self.policy.loading(**kw)  # type: ignore[attr-defined]  # AttributeError: nothing to pin, as before
+        noise = {"joint_noise": self.joint_noise, "image_noise": self.image_noise}
+        return Perturb(inner, **noise, action_delay=self.action_delay, seed=self.seed)
+
     def requirements(self) -> Requirements:
         req = getattr(self.policy, "requirements", None)
         return req() if callable(req) else Requirements()

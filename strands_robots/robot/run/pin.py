@@ -87,7 +87,15 @@ def pinned(plan: RunPlan | None, policy: Any) -> Iterator[Any]:
 
 def _repoint(policy: Any, *, checkpoint: Path | None = None, revision: str | None = None) -> Any:
     if not isinstance(policy, str | Path):
-        return policy.loading(checkpoint=checkpoint, revision=revision)
+        loaded = policy.loading(checkpoint=checkpoint, revision=revision)
+        if type(loaded) is not type(policy):  # a wrapper that only forwards loading() would be dropped, not pinned
+            from ..safety import RequestRefused
+
+            raise RequestRefused(
+                f"{type(policy).__name__} wraps a checkpoint but has no loading() of its own, so the approved run "
+                "cannot load it from the approved bytes; give it a loading(**kw) that wraps the inner policy's"
+            )
+        return loaded
     if revision is not None:
         from ...policy.factory import make
 

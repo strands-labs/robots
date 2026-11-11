@@ -120,3 +120,34 @@ def test_an_unlisted_hub_checkpoint_from_an_agent_is_refused_before_the_operator
     with from_agent(), pytest.raises(PermissionError, match="STRANDS_POLICY_REPOS"):
         arm.run("someone/ckpt", steps=1)
     assert plans == [] and hub.calls == 0 and loads == []  # nobody asked, nothing looked up, nothing loaded
+
+
+def test_a_wrapper_around_a_checkpoint_runs_as_approved_with_its_own_loading(ckpt):
+    from strands_robots.policy.perturb import Perturb
+    from strands_robots.robot.run.common import label
+    from strands_robots.robot.run.pin import files_digest, pinned
+    from strands_robots.robot.run.source import RunPlan
+
+    wrapped = Perturb(Policy(str(ckpt)), action_delay=3)
+    plan = RunPlan("arm", label(wrapped), None, None, None, 1, "auto", files_digest(wrapped))
+    with pinned(plan, wrapped) as loaded:
+        assert isinstance(loaded, Perturb) and loaded.action_delay == 3
+        assert loaded.policy.inner.checkpoint != str(ckpt)  # the private copy, inside the same wrapper
+
+
+def test_a_forwarding_wrapper_without_its_own_loading_is_refused_not_dropped(ckpt):
+    from strands_robots.robot.run.common import label
+    from strands_robots.robot.run.pin import files_digest, pinned
+    from strands_robots.robot.run.source import RunPlan
+
+    class Clamp:  # a developer's wrapper that forwards everything else to the policy it wraps
+        def __init__(self, inner):
+            self.inner = inner
+
+        def __getattr__(self, name):
+            return getattr(self.inner, name)
+
+    wrapped = Clamp(Policy(str(ckpt)))
+    plan = RunPlan("arm", label(wrapped), None, None, None, 1, "auto", files_digest(wrapped))
+    with pytest.raises(RequestRefused, match="Clamp wraps a checkpoint"), pinned(plan, wrapped):
+        pass
