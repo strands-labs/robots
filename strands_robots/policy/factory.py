@@ -2,13 +2,17 @@
 
 from __future__ import annotations
 
-import re
 from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qsl
 
-_REPO = re.compile(r"^[A-Za-z0-9][\w.-]*/[\w.-]+$")
-_PRESET = re.compile(r"^[a-z][a-z0-9_]*(\?[^\s/]*)?$")
+from .forms import PRESET as _PRESET
+from .forms import REPO as _REPO
+from .forms import is_checkpoint as _is_checkpoint
+from .forms import is_dataset as _is_dataset
+from .forms import is_preset as _is_preset
+from .hub import ENV, allowed_repos
+
 FORMS = (
     "<preset>[?k=v&k2=v2]            a named ONNX preset, run in-process",
     "zenoh://host:port/<deployment>   a lerobot-policy-server (tcp); zenoh://tls/host:port/<deployment> any zenoh link",
@@ -105,22 +109,6 @@ def local_root(spec: Any) -> Path | None:
     return local if _is_dataset(local) or _is_checkpoint(local) else None
 
 
-def _is_preset(spec: str) -> bool:
-    if not _PRESET.match(spec):
-        return False
-    from .onnx import preset_names
-
-    return spec.partition("?")[0] in preset_names()
-
-
-def _is_dataset(local: Path) -> bool:
-    return (local / "meta" / "info.json").is_file()
-
-
-def _is_checkpoint(local: Path) -> bool:
-    return (local / "config.json").is_file()
-
-
 def from_spec(spec: str) -> Any:
     """``from_spec("microduck?vx=0.3")`` is ``Policy("microduck?vx=0.3")``: a spec string alone, no keywords."""
     if not isinstance(spec, str):
@@ -134,8 +122,6 @@ def spec_help(robot: str | None = None) -> str:
     from .onnx import preset_names, preset_robots
 
     names = preset_names(robot)
-    from .hub import ENV, allowed_repos
-
     repos = allowed_repos()  # a model is told only the Hub repos the operator allows; none -> not the form at all
     hub = f"<owner>/<repo> a LeRobot checkpoint on the Hugging Face Hub, only one {ENV} allows: {', '.join(repos)}"
     wire = [

@@ -13,6 +13,8 @@ import re
 from pathlib import Path
 from typing import Any
 
+from .forms import REPO, is_checkpoint, is_dataset, is_preset
+
 ENV = "STRANDS_POLICY_REPOS"
 _ENTRY = re.compile(r"^[A-Za-z0-9][\w.-]*/(\*|[\w.-]+)$")
 
@@ -20,17 +22,15 @@ _ENTRY = re.compile(r"^[A-Za-z0-9][\w.-]*/(\*|[\w.-]+)$")
 def hub_repo(spec: Any) -> str | None:
     """The Hub repo id ``Policy(spec)`` would download, or None: a preset, a local checkpoint or dataset directory,
     a network address and a callable are not downloads (the same precedence ``make`` uses)."""
-    from .factory import _REPO, _is_checkpoint, _is_dataset, _is_preset
-
     if not isinstance(spec, (str, Path)):
         return None
     s = str(spec)
-    if s.startswith(("zenoh://", "zenoh+")) or _is_preset(s):
+    if s.startswith(("zenoh://", "zenoh+")) or is_preset(s):
         return None
     local = Path(s.partition("?")[0]).expanduser()
-    if _is_dataset(local) or _is_checkpoint(local):
+    if is_dataset(local) or is_checkpoint(local):
         return None
-    return s if _REPO.match(s) else None
+    return s if REPO.match(s) else None
 
 
 def allowed_repos() -> tuple[str, ...]:
