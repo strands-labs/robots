@@ -62,9 +62,14 @@ def test_a_session_counts_only_on_the_port_it_was_issued_on(signed) -> None:
     assert session.verify(dash.auth.store.secret, token)["aud"] == "localhost:8090"
 
 
+def _tampered(proof: str) -> str:
+    """Change the first character: unlike the last one it carries a full 6 bits, so the result always differs."""
+    return ("B" if proof[0] == "A" else "A") + proof[1:]
+
+
 def test_a_wrong_proof_an_old_cookie_name_or_a_script_token_in_the_cookie_is_refused(signed) -> None:
     dash, token, proof = signed
-    assert _cookie(dash, token).get("/api/scene", headers=proved(proof[:-1] + "A")).status_code == 401
+    assert _cookie(dash, token).get("/api/scene", headers=proved(_tampered(proof))).status_code == 401
     assert _cookie(dash, token, name=session.COOKIE).get("/api/scene", headers=proved(proof)).status_code == 401
     script = dash.auth.token("ci")
     assert _cookie(dash, script).get("/api/scene", headers=proved(dash.auth.proof(script))).status_code == 401
