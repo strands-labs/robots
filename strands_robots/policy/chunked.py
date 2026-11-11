@@ -36,6 +36,10 @@ class ChunkedPolicy(Policy):
             raise AttributeError(name)
         return getattr(self.inner, name)
 
+    def loading(self, **kw: Any) -> ChunkedPolicy:
+        """The same chunking around the inner policy's ``loading(**kw)`` (a pinned source; see robot/run/pin.py)."""
+        return ChunkedPolicy(self.inner.loading(**kw), replan_every=self.replan_every)
+
     def requirements(self) -> Any:
         req = getattr(self.inner, "requirements", None)
         return req() if callable(req) else super().requirements()

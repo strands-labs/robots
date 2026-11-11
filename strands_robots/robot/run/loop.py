@@ -20,7 +20,7 @@ from .common import announce, approve_run, emit, label, rate
 from .pace import OnMiss, Pacer
 from .pin import files_digest, pinned
 from .result import RunResult, StoppedBy
-from .source import RunPlan, is_agent, is_confirmed
+from .source import RunPlan, is_agent, is_confirmed, refuse_agent_spec
 from .task import Task
 from .tick import stopped, tick
 
@@ -62,6 +62,7 @@ def run(
         raise ValueError("run needs seconds=, steps= or stop_when=")
     if hz is not None and not 0 < hz < float("inf"):  # at an inf or nan hz no tick sleeps: the bus free-runs
         raise ValueError(f"hz must be a finite number > 0, got {hz}")  # before bind: a bad hz loads no checkpoint
+    refuse_agent_spec(policy)  # before the operator is asked: a spec no agent may pass is never put to them
     plan = None
     if is_agent() and robot.is_real and not is_confirmed():  # a real agent run asks the operator ONCE (K6),
         plan = RunPlan(robot.id, label(policy), instruction, hz, seconds, steps, units, files_digest(policy))
