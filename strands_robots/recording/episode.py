@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import shutil
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -13,6 +12,7 @@ from ..description import Description
 from ..types import Observation
 from ..units import Units
 from .features import ACTION, IMAGES, STATE
+from .place import Place, claim
 from .target import is_repo_id, locate
 
 
@@ -56,6 +56,7 @@ class Episode:
         self.frames = 0
         self._writer: Any = None
         self._created = False
+        self._place: Place | None = None
         check_target(self)
 
     def _in_units(self, rad: Any) -> np.ndarray:
@@ -67,11 +68,13 @@ class Episode:
         step one: its setup is then no tick's lateness, and a dataset this run cannot append to is refused before
         step one writes."""
         if self._writer is None:
-            from .lerobot_v3 import open_dataset, quiet
+            from .lerobot_v3 import hub_cache, open_dataset, quiet
 
             first = observe()
+            self._place = claim(self.root if self.root is not None else hub_cache(self.repo_id).resolve())
             with quiet():
                 self._writer, self._created = open_dataset(self, first)
+            self._place.bind()
 
     def add(self, obs: Observation, action: Any) -> None:
         self.open(lambda: obs)
@@ -112,8 +115,8 @@ class Episode:
             return
         self._writer.clear_episode_buffer()
         self._writer.finalize()
-        if self._created and int(self._writer.meta.total_episodes) == 0:
-            shutil.rmtree(self._writer.root, ignore_errors=True)
+        if self._created and int(self._writer.meta.total_episodes) == 0 and self._place is not None:
+            self._place.remove()  # only the directory this run created: kept if its path now names another one
         self._writer = None
 
 
