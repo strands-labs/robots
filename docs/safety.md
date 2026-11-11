@@ -24,6 +24,12 @@ except RequestRefused as e:
 `arm.manifest` lists each control with its range, its safe range and what it does if the link drops. The library
 builds it from the robot. Agent tools, the mesh and the dashboard all read it.
 
+A real robot needs a range for every joint it drives. If the model leaves one without a range
+(`limited="false"`, or no range in the joint or its default class), `Robot(..., port=)` raises `ValueError` naming
+the joints before it opens the port, and the range check refuses a target for such a joint. A joint that turns
+without end needs a `hardware.safe` bound in its registry entry instead; that bound is then the one checked. In a
+world, a joint without a range is still unconstrained.
+
 ## Safety chain
 
 Commands from agents, the dashboard or the mesh pass one chain: range, safe range, interlocks, validators, then

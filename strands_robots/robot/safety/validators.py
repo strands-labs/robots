@@ -64,9 +64,12 @@ class JointLimitValidator:
         manifest = robot.manifest
         measured = request.measured
         for i, (key, v) in enumerate(request.items()):
-            rng = manifest.control(f"{key}.pos").range
+            control = manifest.control(f"{key}.pos")
+            rng = control.range
+            if rng is None and manifest.real and control.safe is None:  # on hardware: it would take any goal
+                raise RequestRefused(f"{robot.id}: {key} has no range in the model; a real robot moves no such joint")
             if rng is None:
-                continue
+                continue  # unbounded in a world; on hardware its declared safe bound is checked next
             lo, hi = rng
             if measured is not None:  # the body may read past a soft/calibration limit: it can hold there
                 m = float(measured[i])

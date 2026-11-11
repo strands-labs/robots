@@ -1,6 +1,7 @@
 """A hardware Robot's twin shares Simulation.default() with simulated bodies: it never pushes them, one bad
 sample never resets their world, and a world that closes under another thread refuses cleanly."""
 
+import dataclasses
 import threading
 import time
 
@@ -114,8 +115,18 @@ def test_a_nan_reading_never_resets_the_twins_world():
 
 
 @pytest.mark.parametrize("value", [1e11, np.inf], ids=["1e11", "inf"])
-def test_a_huge_reading_never_resets_the_twins_world(value):
+def test_a_huge_reading_never_resets_the_twins_world(value, monkeypatch):
     # kinova_gen3's joint_1 has no limit, so nothing clips its reading; MuJoCo resets at a qpos beyond 1e10 (mjMAXVAL)
+    load = Description.load
+
+    def with_safe(name):  # a real arm drives a continuous joint only with a declared hardware.safe bound
+        d = load(name)
+        if d.name != "kinova_gen3":
+            return d
+        free = {k: (-6.28, 6.28) for k in d.action_keys if k not in d.limits}
+        return dataclasses.replace(d, hardware=dataclasses.replace(d.hardware, safe=free))
+
+    monkeypatch.setattr(Description, "load", staticmethod(with_safe))
     drv = _MemoryDriver("kinova_gen3")
     real = Robot("kinova_gen3", driver=drv, position=[0.0, -1.5, 0.0], twin=True)
     arm = Robot("so101", position=[0.0, 1.5, 0.0], id="sim_arm")  # in the twin's world, clear of the twin

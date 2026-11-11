@@ -15,6 +15,19 @@ if TYPE_CHECKING:
     from .robot import Robot
 
 
+def require_limits(description: Description) -> None:
+    """``ValueError`` unless every joint a real body drives has limits, or a ``hardware.safe`` bound its registry
+    entry declares for it (a continuous joint): the safety chain reads a joint with neither as unconstrained."""
+    safe = description.hardware.safe or {}
+    if missing := [k for k in description.action_keys if description.limits.get(k) is None and k not in safe]:
+        raise ValueError(
+            f"{description.name}: joint(s) {missing} have no range in the model, so a real robot would accept any "
+            'goal for them. Give each a range in the model (limited="true" range="lo hi"), or, for a joint that '
+            "turns without end, a hardware.safe bound in its registry entry; without the mujoco extra the model is "
+            "read by an XML walk that reads ranges as MuJoCo does"
+        )
+
+
 def clip_to_limits(description: Description, targets: np.ndarray) -> np.ndarray:
     """A copy of ``targets`` with every joint that has limits clipped into them."""
     out = np.array(targets, dtype=float)
