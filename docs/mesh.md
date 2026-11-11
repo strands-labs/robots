@@ -78,6 +78,12 @@ A real robot moves over the mesh only on a mesh with identities, or on a network
 are claims). Every machine on the robot's mesh needs this version. A robot with an identity refuses unsigned
 requests from older peers.
 
+Where peer ids are claims, the robot's reply to the `act` that armed its watchdog carries a beat key, and only
+requests that carry it back count as its mover's. A machine that names the mover's peer id cannot keep its watchdog
+from noticing the mover went quiet. The key travels in the clear, so a machine that can read the lab's traffic could
+copy it. Only identities prove who sent a request. A mover on an older version sends no key, so its robot holds
+`watchdog_ms` after its last `act`.
+
 A zenoh config file (`?config=<path>` or `STRANDS_ZENOH_CONFIG`) is the session's config instead of the identity.
 The mesh adds only its lease, any `?listen=` or `?connect=`, peer mode if the file sets no mode, and its scouting
 group if the file sets neither `scouting.multicast.enabled` nor its `address`. A file counts as an identity when it
