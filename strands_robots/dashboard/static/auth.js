@@ -137,6 +137,7 @@ export function showSignIn(state) {
 /** true: go on (signed in, sign-in off, or no dashboard server answering). false: the sign-in screen is up. */
 export async function signIn() {
   const state = await status();
+  if (state && state.enabled === false) keep(null); // sign-in off: a proof left from an earlier server is stale
   if (!state || state.enabled === false || state.signed_in) return true;
   showSignIn(state);
   return false;

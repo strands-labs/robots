@@ -36,6 +36,8 @@ class RequireSession:
         self.app, self.auth = app, auth
 
     async def __call__(self, scope: MutableMapping[str, Any], receive: Any, send: Any) -> None:
+        if scope["type"] == "websocket":  # echoed with sign-in off too: a page may still hold a proof for this origin
+            send = _echo_protocol(scope, send)
         if scope["type"] not in ("http", "websocket") or not self.auth.enabled:
             await self.app(scope, receive, send)
             return
@@ -55,8 +57,6 @@ class RequireSession:
                 await JSONResponse({"detail": SIGN_IN}, status_code=401)(scope, receive, send)
                 return
             scope.setdefault("state", {})["session"] = claims
-            if scope["type"] == "websocket":
-                send = _echo_protocol(scope, send)
         await self.app(scope, receive, send)
 
 

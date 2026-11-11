@@ -96,6 +96,15 @@ def test_a_socket_offers_the_proof_as_its_subprotocol_and_gets_it_back(signed) -
     assert closed.value.code == 4401
 
 
+def test_with_sign_in_off_a_socket_offering_a_stale_proof_still_gets_it_back() -> None:
+    offered = f"{session.PROTOCOL}stale"
+    with client(Dashboard(Simulation(), auth=False)).websocket_connect(
+        "ws://localhost:8090/ws/state", subprotocols=[offered]
+    ) as ws:
+        assert ws.accepted_subprotocol == offered
+        assert ws.receive_json()
+
+
 def test_sign_in_answers_with_the_proof_never_cached_and_logout_clears_this_ports_cookie() -> None:
     dash, key = Dashboard(Simulation()), Authenticator(BASE)
     c = client(dash)
