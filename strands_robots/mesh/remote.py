@@ -20,6 +20,8 @@ if TYPE_CHECKING:
 class RemoteBody:
     """The device ``device_id`` on ``mesh``, as a Body (and a Driver: hold, estop)."""
 
+    drives_here = False  # the device's own process drives the body and its chain decides every write (serve.py)
+
     def __init__(self, mesh: Mesh, device_id: str, names: tuple[str, ...], *, images: bool = False) -> None:
         self.where = f"remote on {mesh.tenant}"  # Robot's repr: a peer's body, whatever drives it there
         self.supports_position_hold = False  # the registry decides via its type; a peer's manifest cannot grant a hold
