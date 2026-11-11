@@ -52,5 +52,6 @@ def refuse_unlisted(spec: Any) -> None:
     if repo is not None and not repo_allowed(repo):
         raise PermissionError(
             f"Hub checkpoint {repo!r} runs code its publisher chose, and the operator has not allowed it; "
-            f"an agent may load only repos listed in {ENV} (now: {', '.join(allowed_repos()) or 'none'})"
+            f"an agent may load only repos listed in {ENV} (now: {', '.join(allowed_repos()) or 'none'}); to allow it, "
+            f"start the agent's process with {ENV}={repo} (or {repo.split('/')[0]}/* for every repo of that publisher)"
         )
