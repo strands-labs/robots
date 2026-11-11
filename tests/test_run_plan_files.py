@@ -169,14 +169,14 @@ def test_an_approved_preset_never_runs_a_same_named_folder_in_the_cwd(recording,
 
 def test_a_file_swapped_while_the_private_copy_is_taken_is_refused(recording, monkeypatch):
     rec, n = recording
-    listing = pin._files
+    listing = pin.walk
 
-    def swap_before_the_copy_reads(folder, seen):
+    def swap_before_the_copy_reads(folder):
         (rec / "a.json").write_text(json.dumps([[0.4] * n] * 3))
-        return listing(folder, seen)
+        return listing(folder)
 
     robot = Robot("so101", driver="memory")
-    robot.approve = lambda p: monkeypatch.setattr(pin, "_files", swap_before_the_copy_reads) or True
+    robot.approve = lambda p: monkeypatch.setattr(pin, "walk", swap_before_the_copy_reads) or True
     with from_agent(), pytest.raises(RequestRefused, match="changed on disk"):
         robot.run(str(rec), steps=3)
     assert np.allclose(_positions(robot), 0.0)

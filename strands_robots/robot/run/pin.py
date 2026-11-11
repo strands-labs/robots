@@ -3,17 +3,22 @@
 ``files_digest`` hashes what the policy loader would read from disk when the plan is shown; ``pinned`` then gives
 the loader a private copy taken in one pass: every byte written into the copy is the byte that was hashed, so a
 write to the original at any moment after the yes (during the dialog, the copy or the load) never reaches the robot.
+Every file is also checked on the open file itself: owned by this user or root, not writable by group or others
+(``policy.trust``).
 """
 
 from __future__ import annotations
 
 import hashlib
+import os
 import shutil
 import tempfile
 from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
+
+from ...policy.trust import refuse_foreign, walk
 
 if TYPE_CHECKING:
     from .source import RunPlan
@@ -69,10 +74,11 @@ def _snapshot(root: Path, into: Path | None) -> str:
     total = hashlib.sha256()
     if into is not None:
         into.mkdir()
-    for f in sorted(_files(root, set())):
+    for f in sorted(walk(root)[0]):
         rel = f.relative_to(root)
         one = hashlib.sha256()
         with f.open("rb") as src:
+            refuse_foreign(f, os.fstat(src.fileno()))  # the bytes hashed and copied: on the open file, not its name
             dst = None
             if into is not None:
                 (into / rel).parent.mkdir(parents=True, exist_ok=True)
@@ -87,14 +93,3 @@ def _snapshot(root: Path, into: Path | None) -> str:
                     dst.close()
         total.update(f"{rel.as_posix()}\0{one.hexdigest()}\n".encode())
     return total.hexdigest()
-
-
-def _files(folder: Path, seen: set[Path]) -> list[Path]:
-    """Every regular file under ``folder``, through symlinks as a loader reads them, each real folder once."""
-    if (real := folder.resolve()) in seen:
-        return []
-    seen.add(real)
-    found: list[Path] = []
-    for entry in folder.iterdir():
-        found += _files(entry, seen) if entry.is_dir() else [entry] if entry.is_file() else []
-    return found
