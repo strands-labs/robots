@@ -20,7 +20,7 @@ from strands_robots.units import lerobot_units
 
 DEG = {"*": "degrees", "gripper": "range_0_100"}
 ROW = [45.0] * 5 + [50.0]  # 45 degrees on every arm joint, the gripper half open
-AT_ROW = [2560, 2560, 2560, 2560, 2560, 2048]  # ROW in DEG on the fake bus: what the degrees run itself writes
+AT_ROW = [2560, 2560, 2560, 2560, 2560, 1712]  # ROW in DEG on the fake bus: what the degrees run itself writes
 WHOLE = "norm={'*': 'degrees', 'gripper': 'range_0_100'} or norm={'*': 'range_m100_100', 'gripper': 'range_0_100'}"
 
 
@@ -127,7 +127,7 @@ def test_a_norm_key_that_names_no_recorded_joint_is_refused(recorded):
 @pytest.mark.parametrize("policy", ["replay", "checkpoint"])
 def test_run_units_lerobot_keeps_the_norm_modes_the_policy_declares(recorded, policy):
     # units="lerobot" took the registry's range modes over the policy's degrees: 4.5 degrees off on four joints,
-    # 85.5 on wrist_roll ([2509, 2509, 2509, 2509, 1587, 2048])
+    # 85.5 on wrist_roll ([2509, 2509, 2509, 2509, 1587, 1712])
     spec = recorded("deg", _units_json(DEG))
     make = (lambda: Policy(spec)) if policy == "replay" else Degrees
     assert _goals(make(), units="lerobot") == _goals(make()) == AT_ROW
