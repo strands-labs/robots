@@ -63,7 +63,8 @@ def test_operator_policy_refuses_an_empty_thing_list():
 
 def test_operator_policy_all_things_opts_into_the_account_wide_grant():
     # The single-tenant-account escape hatch is explicit and still carries the wildcard it is documented to.
-    doc = json.loads(policy.policy_text(policy.operator_policy(REGION, ACCOUNT, "lab", all_things=True)))
+    with pytest.warns(UserWarning, match="single-tenant"):
+        doc = json.loads(policy.policy_text(policy.operator_policy(REGION, ACCOUNT, "lab", all_things=True)))
     pub = _by_action(doc, "iot:Publish")[0]["Resource"]
     assert any("$aws/things/*/shadow/name/control/update" in r for r in pub)
     assert any("iot:UpdateThingShadow" in s["Action"] and s["Resource"] == "*" for s in doc["Statement"])
@@ -147,7 +148,8 @@ def test_the_operator_hears_and_messages_only_its_tenants_devices():
         f"arn:aws:iot:{REGION}:{ACCOUNT}:client/arm-2",
     ]
     assert dm["Condition"] == {"StringLike": {"iot:Topic": ["strands/lab/*/rpc/*", "strands/lab/*/manifest"]}}
-    wide = policy.operator_policy(REGION, ACCOUNT, "lab", all_things=True)
+    with pytest.warns(UserWarning, match="EVERY thing"):
+        wide = policy.operator_policy(REGION, ACCOUNT, "lab", all_things=True)
     (dm,) = _by_action(wide, "iot:SendDirectMessage")
     tenant_bound = {"StringLike": {"iot:Topic": ["strands/lab/*/rpc/*", "strands/lab/*/manifest"]}}
     assert dm["Condition"] == tenant_bound, "the tenant bound stays"

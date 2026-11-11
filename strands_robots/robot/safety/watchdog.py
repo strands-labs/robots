@@ -2,13 +2,15 @@
 
 The clock is ``robot.clock``: the world's time for a simulated body (so ``manual_time`` tests are exact),
 the body's clock on hardware. ``poll()`` checks once; ``start()`` polls on a thread until ``stop()`` or the
-robot is closed. An apply that raises leaves the lapse open: the next poll retries it. A lapse while the e-stop
+robot is closed. An apply that raises leaves the lapse open: the next poll retries it. Every apply, from any
+caller, leaves one ``strands_robots.audit`` record (``apply_on_disconnect``). A lapse while the e-stop
 is latched is the e-stop's.
 """
 
 from __future__ import annotations
 
 import contextlib
+import logging
 import threading
 from collections.abc import Callable
 from typing import TYPE_CHECKING
@@ -17,6 +19,8 @@ import numpy as np
 
 if TYPE_CHECKING:
     from ..robot import Robot
+
+AUDIT = logging.getLogger("strands_robots.audit")
 
 
 class Watchdog:
@@ -57,7 +61,7 @@ class Watchdog:
             return True
         stops = self.robot.estop_latch.count
         try:
-            apply_on_disconnect(self.robot)
+            apply_on_disconnect(self.robot, reason="watchdog lapse")
         except BaseException:
             if self.robot.estop_latch.count == stops:  # a stop that landed during the apply takes the lapse too
                 self.lapsed = False
@@ -104,16 +108,38 @@ class Watchdog:
             self._thread.join(1.0)  # a fault subscriber runs on that thread, and may call stop()
 
 
-def apply_on_disconnect(robot: Robot) -> np.ndarray:
+def apply_on_disconnect(
+    robot: Robot,
+    *,
+    reason: str = "on_disconnect",
+    peer: str | None = None,
+    tenant: str | None = None,
+    device_id: str | None = None,
+) -> np.ndarray:
     """Write each control's declared disconnect target (hold / zero / safe / apply) straight to the body.
 
     While the e-stop is latched it writes nothing and returns the measured positions: ``estop()`` already asked
-    the body for its own stop (``Body.estop``), and only ``resume`` lifts the latch."""
+    the body for its own stop (``Body.estop``), and only ``resume`` lifts the latch. Every call leaves one record on
+    the ``strands_robots.audit`` logger: why (``reason``), for whom (``peer``), what it applied and its outcome, under
+    ``device_id`` (the robot's id unless it is mounted under another); one that raises is recorded with the
+    exception's type, then re-raised."""
+    where = (tenant, str(device_id or getattr(robot, "id", "?")))
+    applied = "nothing"
+    try:
+        out, applied = _apply(robot)
+    except BaseException as exc:
+        _record(where, reason, peer, applied, type(exc).__name__)
+        raise
+    _record(where, reason, peer, applied, "ok")
+    return out
+
+
+def _apply(robot: Robot) -> tuple[np.ndarray, str]:
     body = robot.body
     with robot._lock:
         q = np.array(body.read().positions, dtype=float)
         if robot.estopped:
-            return q
+            return q, "nothing (e-stop latched)"
         out = q.copy()
         for i, c in enumerate(robot.manifest.controls):
             if c.on_disconnect == "zero":
@@ -125,8 +151,16 @@ def apply_on_disconnect(robot: Robot) -> np.ndarray:
         if all(c.on_disconnect == "hold" for c in robot.manifest.controls):
             body.hold()
             robot._held = None
-        else:
-            from .estop import guarded_write
+            return out, "hold"
+        from .estop import guarded_write
 
-            guarded_write(robot, out)
-    return out
+        guarded_write(robot, out)
+    return out, "targets"
+
+
+def _record(where: tuple[str | None, str], reason: str, peer: str | None, applied: str, outcome: str) -> None:
+    tenant, device = where
+    rec = {"tenant": tenant, "device_id": device, "rpc": "on_disconnect", "peer": peer, "reason": reason}
+    rec.update(applied=applied, outcome=outcome)
+    line = "%s/%s on_disconnect reason=%s peer=%s applied=%s %s"
+    AUDIT.warning(line, tenant, device, reason, peer, applied, outcome, extra=rec)

@@ -5,6 +5,7 @@ certificate carries the same text, a small controller add-on, and the operator I
 from __future__ import annotations
 
 import json
+import warnings
 from collections.abc import Mapping
 from typing import Any
 
@@ -32,6 +33,21 @@ def operator_client_prefix(tenant: str) -> str:
     one). The key is ``rules.tenant_key``: a plain tenant as it is, any other hashed, never holding a ``-``, so
     ``lab`` and ``lab-a`` (``strands-op-lab_a_<hex>-``) never share a prefix."""
     return f"strands-op-{tenant_key(tenant, 64)}-"
+
+
+RESERVED_CLIENT_PREFIXES = ("strands-op-", "strands-claim-")
+"""Client ids the library hands to operators (``operator_client_prefix``) and to a robot while it claims its first
+certificate (``claim``). A device connects with its thing name as its client id, so no device may be named with one."""
+
+
+def check_device_id(value: object) -> str:
+    """A device id (thing name) that is one key segment and no operator's or claim client's id: IoT drops the older
+    session when two clients share an id, so a robot named ``strands-op-<tenant>-…`` would knock that operator off."""
+    did = wire.check_id(value, "device_id")
+    if did.lower().startswith(RESERVED_CLIENT_PREFIXES):
+        reserved = " or ".join(f"{p}…" for p in RESERVED_CLIENT_PREFIXES)
+        raise ValueError(f"device_id {did!r}: {reserved} are operator and claim client ids; name the robot otherwise")
+    return did
 
 
 def policy_text(doc: Mapping[str, Any]) -> str:
@@ -95,15 +111,27 @@ def operator_policy(
     tenant's own device ids (``things``, e.g. the ids ``registry.list_things`` yields): a shadow document carries
     no author and a thing name has no tenant segment, so an account-wide shadow grant would let an operator of one
     tenant move another tenant's robot through ``update_thing_shadow``. An empty ``things`` is refused rather than
-    widened to ``*``; ``all_things=True`` keeps the account-wide ``$aws/things/*`` shadow grant, which crosses the
-    tenant boundary and is only safe in a single-tenant account. A named shadow's IAM resource is
+    widened to ``*``; ``all_things=True`` (instead of ``things``) makes every per-thing grant account-wide (shadows,
+    direct messages, presence, describe), which crosses the tenant boundary, is only safe in a single-tenant account
+    and warns (``UserWarning``). A thing named like an operator or claim client id is refused
+    (:func:`check_device_id`). A named shadow's IAM resource is
     ``thing/<id>/<shadow>``: operators update ``control`` only and read every shadow (``thing/<id>/*``)."""
     arn, t = f"arn:aws:iot:{region}:{account}", f"strands/{wire.check_id(tenant, 'tenant')}"
-    ids = [wire.check_id(i, "device_id") for i in (things or [])]
+    ids = [check_device_id(i) for i in (things or [])]
+    if ids and all_things:
+        raise ValueError("pass things=[...] or all_things=True, not both")
     if not ids and not all_things:
         raise ValueError(
             "operator_policy needs the tenant's device ids (things=[...] from registry.list_things); "
             "pass all_things=True only in a single-tenant account, where it crosses no tenant boundary"
+        )
+    if all_things:
+        warnings.warn(
+            f"operator_policy(all_things=True): operators of {tenant!r} may read and move the shadow of, direct-message"
+            " and hear the presence of EVERY thing in the account, of every tenant; use it only in a single-tenant"
+            " account, else pass things=[...]",
+            UserWarning,
+            stacklevel=2,
         )
     marks = ["*"] if all_things else ids
     sh_pub = [f"{arn}:topic/$aws/things/{m}/shadow/name/control/update" for m in marks]

@@ -2,10 +2,8 @@
 
 from __future__ import annotations
 
-import hashlib
 from collections.abc import Iterable
 from os import PathLike
-from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from .bind import Bound
@@ -29,44 +27,6 @@ def label(policy: object) -> str:
     if isinstance(policy, CallablePolicy):
         return policy.name
     return str(policy) if isinstance(policy, str | PathLike) else str(getattr(policy, "__name__", None) or repr(policy))
-
-
-def files_digest(policy: object) -> str | None:
-    """SHA-256 over the names and bytes of the files a policy spec reads from disk, or None if it names none."""
-    if not isinstance(policy, str | PathLike):
-        return None
-    local = Path(str(policy).partition("?")[0]).expanduser()
-    if not local.exists():
-        return None  # a preset name or a hub repo id: nothing on this machine to change under the operator
-    root = local if local.is_dir() else local.parent
-    files = sorted(_files(local, set())) if local.is_dir() else [local]
-    total = hashlib.sha256()
-    for f in files:
-        one = hashlib.sha256()  # read in chunks, not hashlib.file_digest: that is Python 3.11+, the floor is 3.10
-        with f.open("rb") as fh:
-            while chunk := fh.read(1 << 20):
-                one.update(chunk)
-        total.update(f"{f.relative_to(root).as_posix()}\0{one.hexdigest()}\n".encode())
-    return total.hexdigest()
-
-
-def _files(folder: Path, seen: set[Path]) -> list[Path]:
-    """Every file under ``folder``, through symlinked folders as a loader reads them, each real folder once."""
-    if (real := folder.resolve()) in seen:
-        return []
-    seen.add(real)
-    found: list[Path] = []
-    for entry in folder.iterdir():
-        found += _files(entry, seen) if entry.is_dir() else [entry] if entry.is_file() else []
-    return found
-
-
-def check_files(robot: Robot, plan: RunPlan | None, policy: object) -> None:
-    """After the policy is loaded: the files the operator approved are the files that were read."""
-    from ..safety import RequestRefused
-
-    if plan is not None and plan.files is not None and files_digest(policy) != plan.files:
-        raise RequestRefused(f"{robot.id}: {plan.policy} changed on disk after the operator approved it; run again")
 
 
 def approve_run(robot: Robot, plan: RunPlan) -> None:

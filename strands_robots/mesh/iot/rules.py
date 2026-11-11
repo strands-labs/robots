@@ -59,6 +59,13 @@ def basic_ingest_topic(tenant: str, device_id: str) -> str:
     return f"$aws/rules/{rule_name('telemetry', tenant)}/{wire.key('state', tenant, device_id)}"
 
 
+def _sns(topic_arn: str, role_arn: str) -> dict[str, Any]:
+    """An SNS action that sends the rule's record as the message body. ``RAW``, not ``JSON``: with ``JSON`` SNS reads
+    the body as a per-protocol envelope and refuses one with no ``"default"`` key, which every record is, and a rule
+    with no error action drops that refusal silently (measured: 0 messages in 90 s after a real e-stop)."""
+    return {"sns": {"targetArn": topic_arn, "roleArn": role_arn, "messageFormat": "RAW"}}
+
+
 def _republish(topic: str, role_arn: str, qos: int = 1) -> dict[str, Any]:
     return {"republish": {"topic": topic, "roleArn": role_arn, "qos": qos}}
 
@@ -82,7 +89,7 @@ def rules_for(
     out: dict[str, dict[str, Any]] = {}
     estop_actions = [_republish(f"{wire.key('estop', t)}/latest", role_arn)]
     if sns_topic_arn:
-        estop_actions.append({"sns": {"targetArn": sns_topic_arn, "roleArn": role_arn, "messageFormat": "JSON"}})
+        estop_actions.append(_sns(sns_topic_arn, role_arn))
     out[rule_name("estop", t)] = {
         "sql": f"SELECT *, topic(2) AS tenant, timestamp() AS at FROM '{wire.key('estop', t)}'",
         "description": f"strands-robots tenant {t}: e-stop fan-out",
@@ -106,7 +113,7 @@ def rules_for(
             f"FROM '{wire.key('event', t, '*', 'fault').replace('*', '+')}' "
             f"WHERE result.severity = 'high'",
             "description": f"strands-robots tenant {t}: high-severity faults",
-            "actions": [{"sns": {"targetArn": sns_topic_arn, "roleArn": role_arn, "messageFormat": "JSON"}}],
+            "actions": [_sns(sns_topic_arn, role_arn)],
             "ruleDisabled": False,
             "awsIotSqlVersion": "2016-03-23",
         }

@@ -16,8 +16,9 @@ from ...types import Observation
 from ..clock import MONOTONIC
 from ..safety import apply_on_disconnect
 from .bind import Bound, bind, install_gains, looks, release
-from .common import announce, approve_run, check_files, emit, files_digest, label, rate
+from .common import announce, approve_run, emit, label, rate
 from .pace import OnMiss, Pacer
+from .pin import files_digest, pinned
 from .result import RunResult, StoppedBy
 from .source import RunPlan, is_agent, is_confirmed
 from .task import Task
@@ -65,26 +66,28 @@ def run(
     if is_agent() and robot.is_real and not is_confirmed():  # a real agent run asks the operator ONCE (K6),
         plan = RunPlan(robot.id, label(policy), instruction, hz, seconds, steps, units, files_digest(policy))
         approve_run(robot, plan)  # before acquire
-    bound = bind(robot, policy, units)
-    try:
-        check_files(robot, plan, policy)  # read after the yes: refuse files that changed while it was asked
-        ep = episode(  # before the start-pose ramp: a run that cannot be recorded never moves the robot
-            record,
-            description=robot.description,
-            hz=rate(bound, hz),
-            instruction=instruction,
-            units=bound.units,
-            push=push,
-        )
+    with pinned(plan, policy) as spec:  # an approved run loads a private copy of exactly what it approved
+        bound = bind(robot, spec, units)
         try:
-            if not start_pose(robot, bound):  # a policy that names where its episodes begin is taken there first
-                emit(robot, "run.started", {"policy": repr(bound.policy)})
-            result = _loop(robot, bound, instruction, hz, seconds, steps, stop_when, realtime, stop_event, ep, on_miss)
-        except BaseException:
-            ep.abort()
-            raise
-    finally:
-        release(bound)
+            ep = episode(  # before the start-pose ramp: a run that cannot be recorded never moves the robot
+                record,
+                description=robot.description,
+                hz=rate(bound, hz),
+                instruction=instruction,
+                units=bound.units,
+                push=push,
+            )
+            try:
+                if not start_pose(robot, bound):  # a policy that names where its episodes begin is taken there first
+                    emit(robot, "run.started", {"policy": repr(bound.policy)})
+                result = _loop(
+                    robot, bound, instruction, hz, seconds, steps, stop_when, realtime, stop_event, ep, on_miss
+                )
+            except BaseException:
+                ep.abort()
+                raise
+        finally:
+            release(bound)
     announce(robot, result)
     return result
 

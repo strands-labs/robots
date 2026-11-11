@@ -14,7 +14,7 @@ from collections.abc import Sequence
 from typing import Any
 
 from ..robot.safety import RequestRefused
-from . import wire
+from . import signed, wire
 from .device import Device
 from .transports.base import RemoteError, Transport, Unsubscribe
 
@@ -27,7 +27,7 @@ def announce(transport: Transport, tenant: str, record: dict[str, Any], peer: st
     did = record["id"]
 
     def answer(_key: str, _payload: bytes) -> bytes:
-        return wire.encode(wire.envelope(tenant, did, "manifest", "manifest", result=record))
+        return signed.encode(transport, wire.envelope(tenant, did, "manifest", "manifest", result=record))
 
     stop_answering = transport.queryable(wire.key("manifest", tenant, did), answer)
     drop_token = transport.liveliness(wire.key("presence", tenant, did))
@@ -78,7 +78,7 @@ class Directory:
             threading.Thread(target=self._fetch, args=(did,), daemon=True, name=f"mesh-fetch-{did}").start()
 
     def _fetch(self, did: str) -> None:
-        end = time.monotonic() + self.fetch_timeout
+        end, foreign = time.monotonic() + self.fetch_timeout, False
         while time.monotonic() < end:
             with self._lock:
                 if did not in self._alive or self._closed:
@@ -102,6 +102,11 @@ class Directory:
                     continue
                 if env["device_id"] != did or device.id != did:
                     continue  # a peer answering for another id never shadows the device that holds the token
+                if not signed.from_server(self.transport, env, did):
+                    if not foreign:  # once per appearance: the device's own answer may still come
+                        logger.warning("mesh: %s answered by a peer whose certificate does not serve it; ignored", did)
+                    foreign = True
+                    continue
                 with self._lock:
                     if did in self._alive:
                         self._devices[did] = device

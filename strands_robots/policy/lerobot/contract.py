@@ -15,6 +15,7 @@ from ...types import Observation
 from ...units import Units, lerobot_units, semantics_for, units_for_semantics
 from ...units.semantics import table
 from ..requirements import Requirements
+from .link import server_zenoh
 from .quiet import quiet_load
 
 if TYPE_CHECKING:
@@ -170,6 +171,7 @@ def server_config(
     fps: float = 30.0,
     modes: Sequence[str] = ("chunk",),
     n_action_steps: int | None = None,
+    zenoh_config: str | None = None,
 ) -> ServerConfig:
     """A LeRobot ``ServerConfig`` for this robot and checkpoint: nobody hand-writes features again.
 
@@ -177,13 +179,13 @@ def server_config(
     ``observation.images.*`` at its trained size (HWC), the semantics label comes from ``norm`` (default:
     the registry's ``hardware.lerobot_norm``) through ``units/semantics.json``, and checked against the
     checkpoint's own saved min/max (``check_units``): a checkpoint whose numbers cannot be in those units is refused.
+    ``zenoh_config``: the server's zenoh config file; in the ``policy-server`` role it joins the router at ``endpoint``.
     """
     lerobot()
     from lerobot.configs.policies import PreTrainedConfig
     from lerobot.inference import FeatureSpec
     from lerobot.remote_inference.configs import ExecutionConfig, ModelConfig, ServerConfig
     from lerobot.remote_inference.deployment import resolve_artifact
-    from lerobot.transport import ZenohConfig
 
     artifact = resolve_artifact(checkpoint, revision)
     with quiet_load():  # only its features are read here; ModelConfig below carries the device
@@ -211,7 +213,7 @@ def server_config(
         deployment=deployment,
         model=ModelConfig(repo_or_path=checkpoint, revision=revision, device=device or default_device()),
         execution=ExecutionConfig(supported_modes=list(modes), action_fps=fps, n_action_steps=n_action_steps),
-        zenoh=ZenohConfig(listen_endpoints=[endpoint]),
+        zenoh=server_zenoh(endpoint, zenoh_config),
         semantics=sem,
         robot_type=description.hardware.lerobot_type or description.name,
         features=feats,

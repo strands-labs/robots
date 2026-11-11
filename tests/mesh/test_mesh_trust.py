@@ -163,13 +163,13 @@ def test_a_real_robot_on_a_mesh_anyone_may_join_is_reported(tenant, caplog):
     from strands_robots.mesh.transports import open_transport
 
     t = open_transport(f"mem://open-{tenant}")
-    t.open_peers = True  # what a zenoh transport without a config file says
+    t.open_peers = True  # what a zenoh transport without a mesh identity says
     mesh = Mesh([t], tenant=tenant)
     d, _ = test_drivers.make_driver()
     real = Robot("so101", driver=d, id="real_arm", twin=False)
     with caplog.at_level(logging.WARNING, logger="strands_robots.audit"):
         mesh.mount(real, device_id="real_arm")
-    assert any("STRANDS_ZENOH_CONFIG" in r.getMessage() for r in caplog.records)
+    assert any("python -m strands_robots.mesh" in r.getMessage() for r in caplog.records)
     mesh.close()
     real.close()
 

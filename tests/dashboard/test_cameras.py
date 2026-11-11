@@ -52,7 +52,7 @@ def test_a_camera_is_listed_and_its_png_is_the_frame_sim_render_returns(served) 
 )
 def test_the_page_changes_the_world_with_the_verbs_sim_tool_offers(served, call, status) -> None:
     sim, url = served
-    r = httpx.post(f"{url}/api/world", json=call)
+    r = httpx.post(f"{url}/api/world", json=call, headers={"X-Confirm": "yes"})
     assert r.status_code == status, r.text
     if status == 200:
         assert call[call["rpc"]]["name"] in {o.name for o in sim.scene.objects} | {c.name for c in sim.scene.cameras}

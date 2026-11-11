@@ -4,7 +4,8 @@ Every motion rpc goes through the robot's safety chain and operator gate (``conf
 never confirm on the operator's behalf. ``estop`` has its own queryable, answered on the transport thread itself:
 it never waits on the rpc pool, a lock or a queue. Errors travel as ``{"type", "message"}`` with the message
 verbatim. Every rpc leaves one record on the ``strands_robots.audit`` logger: tenant, device, rpc, who, peer, seq and
-the outcome. ``by`` is the name the caller asserts; the transport proves the device, not the operator.
+the outcome. ``by`` is the name the caller asserts. On a transport with mesh identities a request must prove its
+``peer`` (``signed``), and ``cert`` records the certificate that signed it; elsewhere ``peer`` is only a claim.
 """
 
 from __future__ import annotations
@@ -17,9 +18,10 @@ from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
 from ..robot.safety import RequestRefused
-from . import wire
+from . import signed, wire
 from .authority import Authority, Lockout, new_epoch
 from .codec import observation_to_dict
+from .identity import Freshness
 from .skills import SKILL_ARGS, Skills
 from .transports.base import Transport, Unsubscribe
 from .watchdog import MOTION_RPCS
@@ -170,15 +172,18 @@ def serve(
     """Answer ``strands/<tenant>/<device_id>/rpc/<name>`` for ``robot``; ``on_rpc(name, peer)`` sees every call
     before it runs (the watchdog) and may return a callable run once the call ends. ``skills`` answers ``skill`` and
     ``skill_status`` (a device mounted without any refuses ``skill`` by name). Returns the undo."""
+    signed.check_mount(transport, device_id)
     skills = skills or Skills(robot, device_id, {})
     handlers = _handlers(robot, device_id, lockout, authority, in_process(transport.url), skills)
     counter = itertools.count(1)
+    fresh = Freshness() if signed.identity_of(transport) is not None else None
     # a hardware body is served observe-only with no mesh watchdog (a vanished mover must not leave it commanded), or
     # on a mesh any peer may join (a peer id there is only a claim); a simulated body is harmless, unchanged
     real = bool(getattr(robot, "is_real", False))
     why = "a hardware device with watchdog_ms=None" if on_rpc is None and real else None
     if real and getattr(transport, "open_peers", False):
-        why = why or "a real robot on a mesh any peer may join: give it STRANDS_ZENOH_CONFIG or ?trusted=1"
+        fix = "give it a mesh identity (`python -m strands_robots.mesh cert`) or vouch with ?trusted=1"
+        why = why or f"a real robot on a mesh any peer may join: {fix}"
         AUDIT.warning("%s/%s is served observe-only: %s (docs/mesh.md)", tenant, device_id, why)
 
     def answer(key: str, payload: bytes) -> bytes:
@@ -187,10 +192,16 @@ def serve(
         env: dict[str, Any] = {}
         args: dict[str, Any] = {}
         done: Callable[[bool], None] | None = None
+        cert: str | None = None
         try:
             env = wire.decode_envelope(payload)
             seq = int(env.get("seq", seq))  # M3: echo the request's seq so the caller can match the reply
             args = env.get("args") or {}
+            named = (env.get("tenant"), env.get("device_id"), env.get("name"))
+            here = (tenant, device_id, name)
+            if named != here and name != "estop":  # estop exempt: a stop only halts, so it always lands
+                raise RequestRefused(f"a request naming {named} arrived on {here}: answered only on the key it names")
+            cert = signed.check_request(transport, env, fresh, name)  # before anything else hears of the call
             if why is not None and name in WRITE_RPCS:
                 raise RequestRefused(f"{device_id} is mounted observe-only ({why}); {name} is refused (docs/mesh.md)")
             if on_rpc is not None and name in (*MOTION_RPCS, "skill") and env.get("peer") is None:
@@ -208,28 +219,13 @@ def serve(
                 done("result" in body)
         outcome = "ok" if "result" in body else body["error"]["type"]
         who = (args.get("by") or args.get("approved_by")) if isinstance(args, dict) else None
-        AUDIT.info(
-            "%s/%s %s by=%s peer=%s seq=%s %s",
-            tenant,
-            device_id,
-            name,
-            who,
-            env.get("peer"),
-            seq,
-            outcome,
-            extra={
-                "tenant": tenant,
-                "device_id": device_id,
-                "rpc": name,
-                "by": who,
-                "peer": env.get("peer"),
-                "seq": seq,
-                "outcome": outcome,
-            },
-        )
-        return wire.encode(
-            wire.envelope(tenant, device_id, "result" if "result" in body else "error", name, seq=seq, **body)
-        )
+        peer = env.get("peer")
+        rec = {"tenant": tenant, "device_id": device_id, "rpc": name, "by": who, "peer": peer, "cert": cert}
+        rec.update(seq=seq, outcome=outcome)
+        line = "%s/%s %s by=%s peer=%s cert=%s seq=%s %s"
+        AUDIT.info(line, tenant, device_id, name, who, peer, cert, seq, outcome, extra=rec)
+        kind = "result" if "result" in body else "error"
+        return signed.encode(transport, wire.envelope(tenant, device_id, kind, name, seq=seq, peer=peer, **body))
 
     undos = [
         transport.queryable(wire.key("rpc", tenant, device_id, name), answer, inline=(name == "estop")) for name in ARGS

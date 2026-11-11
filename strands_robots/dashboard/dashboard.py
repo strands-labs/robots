@@ -14,6 +14,7 @@ from functools import cached_property
 from typing import TYPE_CHECKING, Any
 
 from .._extras import hint
+from . import confirm
 from .auth import configure
 from .connect import Connections
 from .twin_scene import SceneXml, robot_cards, scene_to_mjcf
@@ -31,7 +32,8 @@ if TYPE_CHECKING:
 class Dashboard:
     """A browser twin of ``sim``; ``robots=`` are hardware robots (their twins get a real card); ``model=`` chats;
     ``voice=`` talks (``"openai"`` | ``"nova"`` | ``"auto"`` | a BidiModel factory, see ``dashboard.voice``); ``auth=``
-    is passkey sign-in (``True``; ``self.auth.token()`` signs a script in; ``False`` is refused with a real robot)."""
+    is passkey sign-in (``True``; ``self.auth.token()`` signs a script in; ``False`` is refused with a real robot);
+    ``object_dir=`` is the one folder ``POST /api/world`` may load object files from (none by default)."""
 
     def __init__(
         self,
@@ -45,6 +47,7 @@ class Dashboard:
         voice: Any = None,
         auth: Any = True,
         unauthenticated_hardware: bool = False,
+        object_dir: Any = None,
     ) -> None:
         if hz <= 0:
             raise ValueError(f"hz must be > 0, got {hz}")
@@ -53,6 +56,7 @@ class Dashboard:
         self.real: dict[str, Robot] = {r.id: r for r in robots}
         self.auth = configure(auth, hardware=bool(self.real), insist=unauthenticated_hardware)  # dashboard/auth/
         self._scene_cache: tuple[int, SceneXml] | None = None
+        self.object_dir = confirm.object_dir(object_dir)
         self._app: Any = None
         self.model = model
         self.mesh = mesh  # a strands_robots.mesh.Mesh: its devices are listed (and e-stoppable) next to the world's
@@ -108,15 +112,9 @@ class Dashboard:
                 for c in self.sim.scene.cameras
             ]
 
-    def world(self, call: Any) -> Any:
-        """One ``sim.tool`` call from the page (``{"rpc": "add_object", "add_object": {...}}``): the model's verbs."""
-        from ..tools.call import dispatch
-        from ..tools.wire import json_safe
-        from ..tools.world import WorldDevice
-
-        if not isinstance(call, dict):
-            raise ValueError('body must be {"rpc": <verb>, <verb>: {arguments}}')
-        return json_safe(dispatch(WorldDevice(self.sim), call))
+    def world(self, call: Any, *, confirmed: bool = False) -> Any:
+        """One ``sim.tool`` call from the page (``{"rpc": "add_object", "add_object": {...}}``): ``confirm.world``."""
+        return confirm.world(self.sim, call, confirmed=confirmed, objects=self.object_dir)
 
     def frame(self) -> dict[str, Any]:
         """One state frame: joint values by model joint name, root poses by the browser's root body."""

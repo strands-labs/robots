@@ -12,7 +12,7 @@ import uuid
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
-from . import wire
+from . import signed, wire
 from .device import Device, Selector
 from .transports.base import Transport, Unsubscribe
 
@@ -57,10 +57,10 @@ def broadcast(mesh: Mesh, command: str, selector: str, deadline: float, approved
 
 def publish_estop(mesh: Mesh, selector: str, args: dict[str, Any]) -> None:
     """The tenant-wide e-stop: every mesh in the tenant latches its devices matching ``selector`` on hearing it."""
-    raw = wire.encode(wire.envelope(mesh.tenant, mesh.peer_id, "event", "estop", args={**args, "selector": selector}))
-    for t in mesh.transports:
+    env = wire.envelope(mesh.tenant, mesh.peer_id, "event", "estop", args={**args, "selector": selector})
+    for t in mesh.transports:  # signed where the transport has identities; heard by every listener regardless
         try:
-            t.publish(wire.key("estop", mesh.tenant), raw)
+            t.publish(wire.key("estop", mesh.tenant), signed.encode(t, env))
         except Exception:  # one transport down must not stop the e-stop going out on the others
             pass
 

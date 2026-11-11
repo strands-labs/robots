@@ -13,6 +13,7 @@ from ..robot.safety import EStopped, RequestRefused
 
 RAISE: dict[str, type[Exception]] = {
     "RequestRefused": RequestRefused,
+    "Unverified": RequestRefused,
     "EStopped": EStopped,
     "TypeError": TypeError,
     "ValueError": ValueError,
