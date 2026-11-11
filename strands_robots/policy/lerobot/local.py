@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import time
 from collections.abc import Mapping
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import numpy as np
@@ -66,6 +67,20 @@ class LeRobotPolicy:
         self.contract.check()
         with quiet_load():
             self._runner, self.identity = load_deployment(cfg)
+
+    def load_source(self) -> Path | tuple[str, str | None]:
+        """Where ``attach`` reads the checkpoint: a Hub ``(repo, revision)``, else this folder on disk. An approved
+        agent run pins it (robot/run/pin.py) and loads ``loading(...)``, so the bytes are the ones approved."""
+        from ..hub import hub_repo
+
+        if hub_repo(self.checkpoint) is not None:
+            return (self.checkpoint, self._kw["revision"])
+        return Path(self.checkpoint).expanduser()
+
+    def loading(self, *, checkpoint: Path | None = None, revision: str | None = None) -> LeRobotPolicy:
+        """A fresh, unattached copy of this policy reading ``checkpoint`` or Hub ``revision``; this one is unchanged."""
+        kw = {**self._kw, "revision": revision or self._kw["revision"]}
+        return LeRobotPolicy(str(checkpoint) if checkpoint is not None else self.checkpoint, **kw)
 
     def _need(self) -> Contract:
         if self.contract is None:
