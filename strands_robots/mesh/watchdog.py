@@ -43,6 +43,7 @@ class MeshWatchdog:
         self._moving = 0  # motion rpcs in progress: their invoker is waiting, not quiet
         self.cuts: list[Callable[[], None]] = []  # what must stop before on_disconnect (a running skill)
         self._armed = threading.Event()
+        self._armings = 0  # how many times it was armed: a skill's release can tell whether anything else moved
         self._stop = threading.Event()
         self._thread = threading.Thread(target=self._loop, daemon=True, name="mesh-watchdog")
         self._thread.start()
@@ -82,6 +83,7 @@ class MeshWatchdog:
                     self._key = secrets.token_urlsafe(16)
                 self.peer = peer
                 self._armed.set()
+                self._armings += 1
                 return self._key
             return None
 
@@ -100,6 +102,8 @@ class MeshWatchdog:
                 self._key = secrets.token_urlsafe(16)
             self.peer, key = peer, self._key
             self._armed.set()
+            self._armings += 1
+            mine = self._armings
             self.dog.beat()
         released = threading.Event()
 
@@ -109,7 +113,9 @@ class MeshWatchdog:
             released.set()
             with self._lock:
                 self._moving -= 1
-                if not moved and self.peer == peer and self._key == key and self._armed.is_set():  # nothing re-armed it
+                if (
+                    not moved and self._armings == mine and self._armed.is_set()
+                ):  # nothing armed it since, same peer too
                     self.peer, self._key = before[0], before[2]
                     if not before[1]:
                         self._armed.clear()

@@ -195,6 +195,7 @@ def serve(
         args: dict[str, Any] = {}
         done: Callable[[bool], str | None] | None = None
         beat: str | None = None
+        body: dict[str, Any] = {}
         cert: str | None = None
         try:
             env = wire.decode_envelope(payload)

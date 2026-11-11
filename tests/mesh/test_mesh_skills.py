@@ -301,3 +301,27 @@ def test_a_caller_that_keeps_polling_after_its_skill_keeps_the_watchdog_quiet(me
         time.sleep(0.1)
     assert holds == [], "a caller that kept polling was taken for a quiet one"
     arm.close()
+
+
+def test_an_act_from_the_skill_caller_while_the_skill_waits_keeps_the_watchdog_armed():
+    """A refused skill restores the watchdog only if nothing armed it since. An act from the same caller while the
+    operator is still deciding keeps that caller's peer and key, so comparing those cannot see it: the act moved the
+    body, so the caller's silence must still apply on_disconnect (review on #4938). Driven on the watchdog directly,
+    in the order that matters: skill armed, act done, skill released as having moved nothing."""
+    from strands_robots.mesh.watchdog import MeshWatchdog
+
+    arm = Robot("so101", id="arm")
+    holds: list[float] = []
+    real_hold = arm.body.hold
+    arm.body.hold = lambda: (holds.append(time.monotonic()), real_hold())
+    dog = MeshWatchdog(arm, 300.0, [], "t", "arm")
+    try:
+        release, key = dog.busy("caller")
+        done = dog.on_rpc("act", "caller", key, False)  # the same caller, showing its key: the act moves the body
+        assert done is not None
+        done(True)
+        release(False)  # the operator refused the skill: it moved nothing
+        assert _wait(lambda: holds, 2.0), "the act moved the body, so its quiet caller must still make the device hold"
+    finally:
+        dog.close()
+        arm.close()
