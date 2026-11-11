@@ -66,7 +66,7 @@ class JointLimitValidator:
         for i, (key, v) in enumerate(request.items()):
             control = manifest.control(f"{key}.pos")
             rng = control.range
-            if rng is None and manifest.real:  # a hardware Robot gives every joint a range
+            if rng is None and manifest.real and getattr(robot, "drives_here", True):
                 raise RequestRefused(f"{robot.id}: {key} has no range in the model; a real robot moves no such joint")
             if rng is None:
                 continue  # unbounded in a world
