@@ -77,15 +77,17 @@ def connect(
     src = model_source(prof, model, host=host, timeout=timeout)
     desc = Description.load(src)
     drv = RosDriver(desc, host=host, profile=str(profile), timeout=timeout, **driver_options)
-    robot = Robot(
-        str(src),
-        driver=drv,
-        id=id or prof.name,
-        mesh=mesh,
-        confirm=confirm,
-        approve=approve,
-    )
-    return with_profile_on_disconnect(robot, prof)
+    robot = Robot(str(src), driver=drv, id=id or prof.name, confirm=confirm, approve=approve)
+    # Mount only after the profile's on_disconnect is in place: Robot(mesh=) mounts inside the constructor, where the
+    # watchdog would see the unpatched description and refuse the body (and a manifest built then would be cached).
+    with_profile_on_disconnect(robot, prof)
+    if mesh is not None:
+        try:
+            mesh.mount(robot)
+        except BaseException:
+            robot.close()  # the driver and command stream are already running
+            raise
+    return robot
 
 
 def with_profile_on_disconnect(robot: Any, prof: _profile.Profile) -> Any:
