@@ -6,6 +6,7 @@ import functools
 from collections.abc import Callable, Mapping
 from typing import Any
 
+from ..policy.hub import refuse_unlisted
 from ..robot.run.source import REMOTE_SPEC
 from .spec import DEVELOPER_ONLY_ARGS, OPERATOR_ONLY, handler, rpc_names
 from .wire import decode
@@ -88,6 +89,8 @@ def dispatch(device: Any, tool_input: Mapping[str, Any], *, policies: Mapping[st
             raise PermissionError(
                 f"a policy at a network address is the developer's to pass, not an agent's: {spec}{hint}"
             )
+        if isinstance(spec, str) and spec not in policies:  # a Hub checkpoint runs its publisher's code: refused
+            refuse_unlisted(spec)  # here, before anything starts, unless the operator listed it
     if rpc == "run":
         args = resolve_policy(args, policies)
     fn = target(device, rpc)

@@ -27,6 +27,17 @@ def refuse_remote_spec(spec: object) -> None:
         raise PermissionError(f"a policy at a network address is the developer's to pass, not an agent's: {spec}")
 
 
+def refuse_agent_spec(spec: object) -> None:
+    """Under ``from_agent()``: no policy at a network address, and no Hub checkpoint the operator has not listed in
+    ``STRANDS_POLICY_REPOS`` (loading one runs code its publisher chose). An operator yes for a run does not lift
+    this: it approves motion, not code."""
+    refuse_remote_spec(spec)
+    if is_agent():
+        from ...policy.hub import refuse_unlisted
+
+        refuse_unlisted(spec)
+
+
 @contextmanager
 def from_agent(*, confirmed: bool = False) -> Iterator[None]:
     """Mark the calls inside as an agent's or a dashboard's. ``confirmed=True`` carries one operator yes into the

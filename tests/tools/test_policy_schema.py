@@ -25,7 +25,8 @@ def _world_policy() -> dict:
 @pytest.mark.parametrize(
     ("schema", "robot"), [(_robot_policy, "so101"), (_world_policy, None)], ids=["Robot.run", "Simulation.run"]
 )
-def test_the_policy_schema_names_every_preset_that_drives_the_robot_and_every_wire_form(schema, robot):
+def test_the_policy_schema_names_every_preset_that_drives_the_robot_and_every_wire_form(schema, robot, monkeypatch):
+    monkeypatch.setenv("STRANDS_POLICY_REPOS", "lerobot/*")  # the Hub form is told only when a repo is allowed
     s = schema()
     assert s["type"] == "string"
     names = presets.preset_names(robot)

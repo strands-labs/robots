@@ -134,7 +134,17 @@ def spec_help(robot: str | None = None) -> str:
     from .onnx import preset_names, preset_robots
 
     names = preset_names(robot)
-    wire = [f for f in FORMS if not f.startswith("<callable>") and (names or not f.startswith("<preset>"))]
+    from .hub import ENV, allowed_repos
+
+    repos = allowed_repos()  # a model is told only the Hub repos the operator allows; none -> not the form at all
+    hub = f"<owner>/<repo> a LeRobot checkpoint on the Hugging Face Hub, only one {ENV} allows: {', '.join(repos)}"
+    wire = [
+        hub if f.startswith("<owner>/") else f
+        for f in FORMS
+        if not f.startswith("<callable>")
+        and (names or not f.startswith("<preset>"))
+        and (repos or not f.startswith("<owner>/"))
+    ]
     forms = "; ".join(" ".join(f.split()) for f in wire)
     if robot is not None:
         presets = ", ".join(map(repr, names)) or f"none drives {robot}"
