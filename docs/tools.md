@@ -31,11 +31,12 @@ shows an agent building a scene and looking at it.
 ## Give the agent your policies
 
 ```python
-arm.tool(policies={"wave": my_policy})
+tool = arm.tool(policies={"wave": my_policy})  # a new tool; `arm.tool` itself stays without names
+Agent(tools=[tool, arm.sim.tool])
 ```
 
-The agent can then call `run(policy="wave", ...)`. Give a remote policy this way too. The agent cannot pass
-a network address itself.
+Give the agent the tool this call returns. The agent can then call `run(policy="wave", ...)`. Give a remote policy
+this way too. The agent cannot pass a network address itself.
 
 An agent may name a Hugging Face Hub checkpoint (`run(policy="owner/repo")`) only if you list it:
 `STRANDS_POLICY_REPOS=lerobot/smolvla_base,myorg/*` (exact repos, or every repo of one publisher). Loading a

@@ -81,7 +81,8 @@ server.stop()
 sim.close()
 ```
 
-From the command line, `--print-token` prints one when the server starts.
+From the command line, `--print-token` prints one when the server starts. A token, like a passkey, is good on every
+dashboard that shares the same auth file; give a dashboard its own with `Auth(store=...)`.
 
 **Turning sign-in off.** `Dashboard(sim, auth=False)` (or `--no-auth`) logs a warning and lets any local program use
 every route. It is refused while a real robot is attached. You can force it with `unauthenticated_hardware=True`; the
