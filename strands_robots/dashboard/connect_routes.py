@@ -11,7 +11,7 @@ from typing import TYPE_CHECKING, Any
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse, Response
 
-from . import cameras
+from . import cameras, confirm
 
 if TYPE_CHECKING:
     from .dashboard import Dashboard
@@ -68,13 +68,13 @@ def register(app: FastAPI, dash: Dashboard) -> None:
     @app.post("/api/connect/robot/{rid}/act")
     async def act(rid: str, request: Request) -> JSONResponse:
         b = await _body(request)
-        confirmed = request.headers.get("x-confirm", "").lower() == "yes"
+        confirmed = confirm.operator_yes(request)
         return await _call(lambda: dash.connections.act(rid, b.get("targets"), b.get("seconds"), confirmed=confirmed))
 
     @app.post("/api/connect/robot/{rid}/resume")
     async def resume(rid: str, request: Request) -> JSONResponse:
         b = await _body(request)
-        by, confirmed = b.get("approved_by"), request.headers.get("x-confirm", "").lower() == "yes"
+        by, confirmed = b.get("approved_by"), confirm.operator_yes(request)
 
         def go() -> Any:
             if not confirmed:  # before the device is asked: a resume from this page is the operator's yes
@@ -87,8 +87,14 @@ def register(app: FastAPI, dash: Dashboard) -> None:
     @app.post("/api/connect/policy")
     async def policy(request: Request) -> JSONResponse:
         b = await _body(request)
-        c = dash.connections
-        return await _call(lambda: c.add_policy(b.get("endpoint"), b.get("kind"), b.get("deployment"), b.get("name")))
+        c, yes = dash.connections, confirm.operator_yes(request)
+
+        def go() -> Any:
+            if not yes:  # a policy endpoint is dialled and loaded here: the operator's yes, before anything
+                raise PermissionError("connecting a policy needs a signed-in request with header X-Confirm: yes")
+            return c.add_policy(b.get("endpoint"), b.get("kind"), b.get("deployment"), b.get("name"))
+
+        return await _call(go)
 
     @app.get("/api/robots/{rid}/cameras/{cam}.png")
     async def camera(rid: str, cam: str) -> Response:

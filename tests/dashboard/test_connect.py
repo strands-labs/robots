@@ -141,9 +141,10 @@ def test_a_connected_policy_is_listed_with_the_runnable_ones() -> None:
     server = Dashboard(sim).start()
     try:
         u = server.url
-        r = httpx.post(f"{u}/api/connect/policy", json={"endpoint": "h:1", "kind": "grpc"})
+        r = httpx.post(f"{u}/api/connect/policy", json={"endpoint": "h:1", "kind": "grpc"}, headers=YES)
         assert r.status_code == 400 and "kind" in r.json()["detail"]
-        r = httpx.post(f"{u}/api/connect/policy", json={"endpoint": "lerobot/act_so101", "kind": "lerobot"})
+        body = {"endpoint": "lerobot/act_so101", "kind": "lerobot"}
+        r = httpx.post(f"{u}/api/connect/policy", json=body, headers=YES)
         assert r.status_code == 200, r.text
         names = [p["name"] for p in httpx.get(f"{u}/api/policies").json()["policies"]]
         assert "lerobot/act_so101" in names
