@@ -17,7 +17,8 @@ from contextlib import ExitStack, suppress
 from pathlib import Path
 
 _POSIX = hasattr(os, "getuid") and hasattr(os, "O_NOFOLLOW")
-_DIR = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
+# O_PATH (Linux) needs only search permission on the parent, as a by-name mkdir/open does: a 711 /home still walks
+_DIR = getattr(os, "O_PATH", os.O_RDONLY) | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
 
 
 class Place:

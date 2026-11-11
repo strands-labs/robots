@@ -89,6 +89,19 @@ def test_a_directory_other_accounts_can_write_on_the_path_is_refused(lerobot, pl
     assert not (base / "a" / "set").exists()
 
 
+@pytest.mark.skipif(not hasattr(os, "O_PATH") or os.geteuid() == 0, reason="O_PATH is Linux; root reads any dir")
+def test_a_directory_on_the_path_this_account_may_search_but_not_read_still_records(lerobot, places):
+    """A hardened host's /home is 711: traversing it needs only its x bit, as LeRobot's by-name mkdir does."""
+    base, _ = places
+    base.chmod(0o311)  # search, no read: like a root-owned 711 /home seen by its users
+    try:
+        ep = _episode(base / "a" / "set")
+        ep.open(lambda: None)
+        assert (base / "a" / "set" / "meta" / "info.json").is_file()
+    finally:
+        base.chmod(0o755)
+
+
 def test_a_sticky_shared_directory_holding_a_directory_of_ours_records(lerobot, places):
     base, _ = places
     base.chmod(0o1777)

@@ -8,4 +8,5 @@ symlink on the path, or a directory owned by another account or writable by othe
 parent directories are created during the walk. A dropped take deletes its directory only if its path still leads
 to the same directory the take created. This applies to `record=` and the dashboard's Record tab, for directories and
 `hf://` targets (LeRobot's cache). Behaviour change: a target under a shared directory that others can write to is now
-refused; record into a directory only you can change (`chmod go-w`), or one with the sticky bit.
+refused; record into a directory only you can change (`chmod go-w`), or one with the sticky bit. A directory you may
+search but not list (a `711` `/home`) is walked like `cd` walks it, so it does not refuse.
