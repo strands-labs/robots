@@ -41,8 +41,11 @@ noticing that the real mover is gone.
 
 The watchdog arms only on a move the robot carried out. A move it refused, for bad arguments or by its safety
 chain, changes nothing, so a request that moved nothing can never make it apply `on_disconnect`. Every
-`on_disconnect` the watchdog applies leaves a `strands_robots.audit` warning. If one request gets two different
-answers (a second peer answering for the robot), `invoke` raises `RemoteError` instead of picking one.
+`on_disconnect` applied (by the mesh watchdog, a local `Watchdog` or a run that faulted) leaves one
+`strands_robots.audit` warning with `rpc="on_disconnect"`, the mover's `peer`, the `reason`, what it `applied`
+(`hold`, `targets`, or nothing while the e-stop is latched) and the `outcome` (`ok`, or the error's type). If one
+request gets two different answers (a second peer answering for the robot), `invoke` raises `RemoteError` instead
+of picking one.
 
 ## Securing the mesh
 
