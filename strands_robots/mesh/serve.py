@@ -172,14 +172,16 @@ def serve(
     device_id: str,
     lockout: Lockout,
     authority: Callable[[], Authority],
-    on_rpc: Callable[[str, str | None], Callable[[bool], None] | None] | None = None,
+    on_rpc: Callable[[str, str | None, str | None, bool], Callable[[bool], str | None] | None] | None = None,
 ) -> Unsubscribe:
-    """Answer ``strands/<tenant>/<device_id>/rpc/<name>`` for ``robot``; ``on_rpc(name, peer)`` sees every call
-    before it runs (the watchdog) and may return a callable run once the call ends. Returns the undo."""
+    """Answer ``strands/<tenant>/<device_id>/rpc/<name>`` for ``robot``; ``on_rpc(name, peer, beat, proven)`` sees
+    every call before it runs (the watchdog) and may return a callable run once the call ends, whose beat key goes
+    back in the reply. Returns the undo."""
     signed.check_mount(transport, device_id)
     handlers = _handlers(robot, device_id, lockout, authority, in_process(transport.url))
     counter = itertools.count(1)
-    fresh = Freshness() if signed.identity_of(transport) is not None else None
+    proven = signed.identity_of(transport) is not None  # a request's ``peer`` is proven, not only claimed
+    fresh = Freshness() if proven else None
     # a hardware body is served observe-only with no mesh watchdog (a vanished mover must not leave it commanded), or
     # on a mesh any peer may join (a peer id there is only a claim); a simulated body is harmless, unchanged
     real = bool(getattr(robot, "is_real", False))
@@ -194,7 +196,8 @@ def serve(
         seq = next(counter)
         env: dict[str, Any] = {}
         args: dict[str, Any] = {}
-        done: Callable[[bool], None] | None = None
+        done: Callable[[bool], str | None] | None = None
+        beat: str | None = None
         cert: str | None = None
         try:
             env = wire.decode_envelope(payload)
@@ -213,13 +216,13 @@ def serve(
             if extra:  # checked before the watchdog hears of it: a request refused here moves nothing, arms nothing
                 raise TypeError(f"{device_id}.{name} takes {list(ARGS[name]) or 'no arguments'}, not {extra}")
             if on_rpc is not None and name != "estop":
-                done = on_rpc(name, env.get("peer"))
+                done = on_rpc(name, env.get("peer"), env.get("beat"), proven)
             body = {"result": handlers[name](**args)}
         except Exception as exc:
             body = {"error": _error(exc)}
         finally:
             if done is not None:  # the quiet clock restarts when the motion ends; a refused motion arms nothing
-                done("result" in body)
+                beat = done("result" in body)
         outcome = "ok" if "result" in body else body["error"]["type"]
         who = (args.get("by") or args.get("approved_by")) if isinstance(args, dict) else None
         peer = env.get("peer")
@@ -228,7 +231,8 @@ def serve(
         line = "%s/%s %s by=%s peer=%s cert=%s seq=%s %s"
         AUDIT.info(line, tenant, device_id, name, who, peer, cert, seq, outcome, extra=rec)
         kind = "result" if "result" in body else "error"
-        return signed.encode(transport, wire.envelope(tenant, device_id, kind, name, seq=seq, peer=peer, **body))
+        reply = wire.envelope(tenant, device_id, kind, name, seq=seq, peer=peer, beat=beat, **body)
+        return signed.encode(transport, reply)
 
     undos = [
         transport.queryable(wire.key("rpc", tenant, device_id, name), answer, inline=(name == "estop")) for name in ARGS

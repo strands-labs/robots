@@ -69,6 +69,10 @@ def parse_presence(k: str) -> tuple[str, str]:
     return parts[1], parts[3]
 
 
+MAX_BEAT = 64
+"""The longest watchdog beat key an envelope may carry (the device mints 22 characters)."""
+
+
 def envelope(
     tenant: str,
     device_id: str,
@@ -81,9 +85,11 @@ def envelope(
     result: Any = None,
     error: Any = None,
     peer: str | None = None,
+    beat: str | None = None,
 ) -> dict[str, Any]:
     """A new envelope; only the body fields that are set travel. ``peer`` is the calling Mesh's peer id: a request
-    carries it so the device knows whose silence to watch, and its reply names it back."""
+    carries it so the device knows whose silence to watch, and its reply names it back. ``beat`` is the key the
+    device's watchdog gave that peer (in the reply to the ``act`` that armed it); later requests carry it back."""
     if kind not in KINDS:
         raise ValueError(f"unknown envelope kind {kind!r}; known: {KINDS}")
     env: dict[str, Any] = {"v": VERSION, "tenant": check_id(tenant, "tenant")}
@@ -91,7 +97,7 @@ def envelope(
     env["t"] = time.time() if t is None else float(t)
     if peer is not None:
         env["peer"] = check_id(peer, "peer")
-    for field, value in (("args", args), ("result", result), ("error", error)):
+    for field, value in (("beat", beat), ("args", args), ("result", result), ("error", error)):
         if value is not None:
             env[field] = value
     return env
@@ -163,6 +169,8 @@ def decode_envelope(raw: bytes | bytearray | memoryview | str) -> dict[str, Any]
     check_id(env.get("device_id"), "device_id")
     if "peer" in env:
         check_id(env["peer"], "peer")
+    if "beat" in env and (not isinstance(env["beat"], str) or not 0 < len(env["beat"]) <= MAX_BEAT):
+        raise ValueError(f"mesh envelope beat must be a string of 1 to {MAX_BEAT} characters")
     if not isinstance(env.get("name"), str):
         raise ValueError("mesh envelope name must be a string")
     if type(env.get("seq")) is not int or not isinstance(env.get("t"), (int, float)) or isinstance(env["t"], bool):
