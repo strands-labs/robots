@@ -83,7 +83,7 @@ def test_an_aborted_take_keeps_a_directory_swapped_in_under_its_name(lerobot, pl
 
 def test_a_directory_other_accounts_can_write_on_the_path_is_refused(lerobot, places):
     base, _ = places
-    base.chmod(0o775)
+    base.chmod(0o777)  # world-writable, not sticky (a 775 one in a shared group: the umask 002 test below)
     with pytest.raises(PermissionError, match=r"another account.*chmod go-w"):
         _episode(base / "a" / "set").open(lambda: None)
     assert not (base / "a" / "set").exists()
