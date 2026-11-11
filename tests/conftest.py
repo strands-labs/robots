@@ -34,6 +34,15 @@ def dashboard_token() -> str:
     return Auth().token("tests")
 
 
+def browser_session(host: str) -> tuple[str, str]:
+    """A browser session's two halves (cookie token, page proof) as a passkey sign-in on ``host`` hands them out."""
+    from strands_robots.dashboard.auth import Auth, session
+
+    auth = Auth()
+    token = session.mint(auth.store.secret, "token:tests", auth.ttl, aud=host)
+    return token, auth.proof(token)
+
+
 @pytest.fixture(autouse=True)
 def _dashboard_signed_in(request, tmp_path, monkeypatch):
     """Each test gets its own dashboard passkey store; its httpx and websockets calls to a loopback dashboard carry a

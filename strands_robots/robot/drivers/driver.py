@@ -66,6 +66,20 @@ def driver_kind(description: Description) -> str | None:
     return driver if driver in _DRIVERS else None
 
 
+MOUNT_OPTIONS = frozenset({"device_id", "labels", "state_hz", "watchdog_ms", "iot"})  # Mesh.mount's own arguments
+
+
+def _where(unknown: list[str]) -> str:
+    """Where an option a driver does not take belongs instead, for the error that names it."""
+    hints = []
+    mount = [k for k in unknown if k in MOUNT_OPTIONS]
+    if mount:
+        hints.append(f"{mount} are Mesh.mount arguments: lab.mount(robot, {mount[0]}=...)")
+    if "calibration" in unknown:
+        hints.append("calibration= is a Feetech bus's (driver='feetech')")
+    return "; " + "; ".join(hints) if hints else ""
+
+
 def make_driver(
     description: Description,
     *,
@@ -109,7 +123,7 @@ def make_driver(
         kw.setdefault("robot_id", id)
     unknown = sorted(set(kw) - set(accepted))
     if unknown:  # D3/D4: a misspelt option is an error naming what the driver takes, never silently dropped
-        raise TypeError(f"the {kind} driver takes no {unknown}; it takes {sorted(accepted)}")
+        raise TypeError(f"the {kind} driver takes no {unknown}; it takes {sorted(accepted)}{_where(unknown)}")
     return cls(description, port=port, cameras=cameras or {}, **kw)
 
 

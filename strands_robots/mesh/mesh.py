@@ -58,12 +58,11 @@ class Mesh:
             for t in items
         ]
         self.peer_id = _signed.peer_id(self.transports)  # <cert name>.<random> on a mesh with identities
-        self._own = own_transports
-        self._lock = threading.Lock()
+        self._own, self._lock = own_transports, threading.Lock()
         self._mounted: dict[str, tuple[Any, Device, list[Unsubscribe], _authority.Lockout]] = {}
         self._dirs = [Directory(t, self.tenant) for t in self.transports]
-        self._closed = False
-        self._seq = 0
+        self._closed, self._seq = False, 0
+        self._beats: dict[str, str] = {}  # the watchdog beat key each device gave this peer, sent back on every rpc
         self.tasks: dict[str, Any] = {}  # runs started through the tool, by device id
         self._subs: list[Unsubscribe] = [listen_estop(t, self.tenant, self._on_estop) for t in self.transports]
         self._subs += [t.liveliness(wire.key("peer", self.tenant, self.peer_id)) for t in self.transports]
@@ -149,7 +148,8 @@ class Mesh:
                 by = str(args.get("approved_by") or self.operator)
                 args["assertion"] = _authority.sign(self.resume_key, lock["epoch"], [device_id], by)
         self._seq = seq = self._seq + 1
-        env = wire.envelope(self.tenant, device_id, "rpc", rpc, seq=seq, args=args, peer=self.peer_id)
+        beat = self._beats.get(device_id)
+        env = wire.envelope(self.tenant, device_id, "rpc", rpc, seq=seq, args=args, peer=self.peer_id, beat=beat)
         timeout += act_wait(args) if rpc == "act" else 0.0
         raw = _signed.encode(transport, env)
         replies = transport.query(wire.key("rpc", self.tenant, device_id, rpc), raw, timeout)
@@ -157,6 +157,7 @@ class Mesh:
         if reply["kind"] == "error":
             err = reply.get("error") or {}
             raise RAISE.get(err.get("type", ""), RuntimeError)(err.get("message", "remote error"))
+        self._beats.update({device_id: reply["beat"]} if "beat" in reply else {})
         for d in self._dirs:
             d.touch(device_id)
         result = reply.get("result")

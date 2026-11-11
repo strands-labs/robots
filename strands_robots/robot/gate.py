@@ -44,7 +44,7 @@ def operator_gate(robot: Robot, targets: np.ndarray, *, confirmed: bool = False)
         return
     if robot.confirm is None:
         raise RequestRefused(
-            f"{robot.id} is a real robot and this command came through an agent or dashboard: pass "
+            f"{robot.id} is a real robot and this command came from an agent, the dashboard or the mesh: pass "
             f"confirm=<callable(action) -> bool> to Robot(...) to allow it"
         )
     if not robot.confirm(targets):

@@ -10,6 +10,7 @@
  */
 import * as THREE from "./vendor/three.module.min.js";
 import { OrbitControls } from "./vendor/OrbitControls.js";
+import { authed } from "./auth.js";
 
 const HIDDEN_GROUPS = new Set([3]); // MuJoCo convention: 3 = collision geoms
 const MUJOCO_URL = new URL("./vendor/mujoco.js", import.meta.url).href;
@@ -139,7 +140,7 @@ export class Twin {
   }
 
   _get(url) {
-    return fetch(`${this.base}${url}`).then((r) => { if (!r.ok) throw new Error(`${new URL(url, location.href).href}: HTTP ${r.status}`); return r; });
+    return authed(`${this.base}${url}`).then((r) => { if (!r.ok) throw new Error(`${new URL(url, location.href).href}: HTTP ${r.status}`); return r; });
   }
 
   _clear() {

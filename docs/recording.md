@@ -15,8 +15,9 @@ for _ in range(3):
     arm.run(my_policy, seconds=3, record="datasets/so101-wave")
 ```
 
-Each run adds one episode to the same directory. LeRobot's own writer makes the files, so any LeRobot training
-code can read them.
+`my_policy` stands for your policy: any function from an observation to targets, such as
+`lambda obs: {"gripper": 1.0}`. Each run adds one episode to the same directory.
+LeRobot's own writer makes the files, so any LeRobot training code can read them.
 
 <img class="sr-media" src="../assets/media/recording.gif" alt="frames read back from a recorded dataset">
 
@@ -25,6 +26,12 @@ code can read them.
 | The run raises | The episode is dropped. |
 | The run is stopped or e-stopped | The frames so far are kept. |
 | `record="hf://you/so101-wave"` | Uses a Hub name. Nothing uploads unless you pass `push=True`. |
+
+A dataset directory must stay where it is while a take writes it. So `record=` and the dashboard refuse a dataset
+whose path goes through a symlink, or through a directory that another account owns or can write to (unless that
+directory has the sticky bit, like `/tmp`). The error names the directory, its owner and its mode. Record into a
+directory only you can change (`chmod go-w`). Missing parent directories are created for you. When a take that
+created its dataset is dropped, only that directory is deleted. If its path now leads somewhere else, it is kept.
 
 ## Record from the dashboard
 
@@ -37,7 +44,9 @@ name in that directory, a path inside it, or `hf://owner/name`.
 3. Press **rec**, then move the robot any way you like: sliders, a policy, the chat or a script.
 4. Press **save episode** to keep the take, **discard** to drop it, or **stop** to finish.
 
-Each robot gets its own dataset at `<target>/<robot id>`. Scripts can call the same routes:
+Each robot gets its own dataset at `<target>/<robot id>`. Scripts can call the same routes with the session token
+(see [Signing in](dashboard.md#signing-in)). Every `POST` takes a JSON body, `{}` when it has no fields; start with
+`{"robots": ["so101"], "target": "so101-wave", "task": "wave", "fps": 30}`:
 
 | Route | Does |
 |---|---|

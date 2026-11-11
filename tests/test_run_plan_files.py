@@ -72,6 +72,8 @@ def _appear(rec, cwd):
 )
 def test_a_spec_that_changes_kind_while_the_operator_was_asked_is_refused(recording, monkeypatch, tmp_path, change):
     rec, n = recording
+    monkeypatch.setattr(pin, "_commit", lambda repo, revision: "c" * 40)  # the Hub id resolves; no network
+    monkeypatch.setenv("STRANDS_POLICY_REPOS", "org/rec")  # and the operator lists it
     (rec / "a.json").write_text(json.dumps([[0.4] * n] * 3))
     cwd = tmp_path / "cwd"
     cwd.mkdir()
@@ -85,9 +87,10 @@ def test_a_spec_that_changes_kind_while_the_operator_was_asked_is_refused(record
     assert np.allclose(_positions(robot), before)
 
 
-def test_a_policy_not_on_disk_has_no_files_to_pin(tmp_path):
+def test_a_policy_not_on_disk_has_no_files_to_pin_and_a_hub_id_pins_its_commit(tmp_path, monkeypatch):
+    monkeypatch.setattr(pin, "_commit", lambda repo, revision: "c" * 40)
     assert files_digest(lambda obs: {}) is None
-    assert files_digest("lerobot/act_so101_not_here") is None
+    assert files_digest("lerobot/act_so101_not_here") == "lerobot/act_so101_not_here@" + "c" * 40
     assert files_digest(str(tmp_path / "missing")) is None
     assert files_digest(str(tmp_path)) is None  # a folder the loader would refuse: nothing it reads to pin
 
@@ -216,3 +219,15 @@ def test_under_umask_002_the_private_copy_is_still_this_users_alone(recording):
             assert robot.run(str(rec), steps=3).steps == 3
     finally:
         os.umask(old)
+
+
+@pytest.mark.parametrize("where", ["the folder", "a folder inside it"])
+def test_an_approved_real_run_checks_the_original_folder_not_only_the_copy(recording, where):
+    """The folder walk runs on what the operator approved, so a folder another user could write is refused."""
+    rec, _ = recording
+    os.chmod(rec if where == "the folder" else next(p for p in rec.rglob("*") if p.is_dir()), 0o777)
+    asked = []
+    robot = Robot("so101", driver="memory", approve=lambda p: asked.append(p) or True)
+    with from_agent(), pytest.raises(PermissionError, match="writable by group or others"):
+        robot.run(str(rec), steps=3)
+    assert asked == []  # refused before the operator is asked

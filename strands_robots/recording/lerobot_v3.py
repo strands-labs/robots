@@ -57,7 +57,7 @@ def quiet() -> Iterator[None]:
 
 def check_target(ep: Episode) -> None:
     """Refuse an existing dataset with another fps, robot or units before step one (no observation needed)."""
-    root = ep.root if ep.root is not None else _hub_cache(ep.repo_id)
+    root = ep.root if ep.root is not None else hub_cache(ep.repo_id)
     info = root / "meta" / "info.json"
     if not info.is_file():
         return
@@ -79,7 +79,7 @@ def open_dataset(ep: Episode, first: Observation) -> tuple[Any, bool]:
     LeRobotDataset = require_lerobot()
     features = features_from(first, ep.description.action_keys)
     said = units_meta(ep.units, ep.description)
-    root = ep.root if ep.root is not None else _hub_cache(ep.repo_id)
+    root = ep.root if ep.root is not None else hub_cache(ep.repo_id)
     if (root / "meta" / "info.json").is_file():
         _same_units(ep, root, said)
         ds = LeRobotDataset.resume(ep.repo_id, root=root)
@@ -125,7 +125,7 @@ def _shown(entries: dict[str, Any], key: str) -> str:
     return repr(entries[key]) if key in entries else "none"
 
 
-def _hub_cache(repo_id: str) -> Path:
+def hub_cache(repo_id: str) -> Path:
     from lerobot.utils.constants import HF_LEROBOT_HOME
 
     return Path(HF_LEROBOT_HOME) / repo_id
