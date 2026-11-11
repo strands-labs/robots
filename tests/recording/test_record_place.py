@@ -105,3 +105,28 @@ def test_missing_parents_are_created_and_an_aborted_take_removes_its_own_directo
     ep.abort()
     assert not (base / "new" / "deeper" / "set").exists()
     assert (base / "new" / "deeper").is_dir()
+
+
+@pytest.mark.parametrize("private", [True, False], ids=["private-group", "shared-group"])
+def test_under_umask_002_a_private_group_records_and_a_shared_group_is_refused(lerobot, places, monkeypatch, private):
+    """Debian/Ubuntu give each user a group of their own and umask 002, so their directories are 775: still theirs."""
+    import grp
+    import pwd
+
+    me = pwd.getpwuid(os.getuid())
+    group = SimpleNamespace(gr_gid=me.pw_gid, gr_name=me.pw_name if private else "staff", gr_mem=[])
+    monkeypatch.setattr(grp, "getgrgid", lambda gid: group)
+    base, _ = places
+    for d in (base, base / "a"):
+        os.chmod(d, 0o775)
+    old = os.umask(0o002)
+    try:
+        ep = _episode(base / "a" / "set")
+        if private:
+            ep.open(lambda: None)
+            assert (base / "a" / "set" / "meta" / "info.json").is_file()
+        else:
+            with pytest.raises(PermissionError, match="can be changed by another account"):
+                ep.open(lambda: None)
+    finally:
+        os.umask(old)

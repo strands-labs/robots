@@ -93,7 +93,7 @@ def _walk(path: Path, *, create: bool) -> tuple[int, int]:
 def _trusted(st: os.stat_result, where: Path) -> os.stat_result:
     if not stat.S_ISDIR(st.st_mode):
         raise PermissionError(f"{where} is not a directory")
-    others_write = st.st_mode & (stat.S_IWGRP | stat.S_IWOTH)
+    others_write = st.st_mode & (stat.S_IWOTH if _private_group(st) else stat.S_IWGRP | stat.S_IWOTH)
     if st.st_uid not in (0, os.getuid()) or (others_write and not st.st_mode & stat.S_ISVTX):
         raise PermissionError(
             f"{where} (owner uid {st.st_uid}, mode {stat.S_IMODE(st.st_mode):o}) can be changed by another account, "
@@ -101,3 +101,15 @@ def _trusted(st: os.stat_result, where: Path) -> os.stat_result:
             "(chmod go-w), or one with the sticky bit"
         )
     return st
+
+
+def _private_group(st: os.stat_result) -> bool:
+    """The directory's group is its owner's own private group (Debian/Ubuntu's default, umask 002): no one else."""
+    import grp
+    import pwd
+
+    try:
+        owner, group = pwd.getpwuid(st.st_uid), grp.getgrgid(st.st_gid)
+    except KeyError:
+        return False
+    return group.gr_gid == owner.pw_gid and group.gr_name == owner.pw_name and not group.gr_mem
