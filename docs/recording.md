@@ -15,8 +15,9 @@ for _ in range(3):
     arm.run(my_policy, seconds=3, record="datasets/so101-wave")
 ```
 
-Each run adds one episode to the same directory. LeRobot's own writer makes the files, so any LeRobot training
-code can read them.
+`my_policy` stands for your policy: any function from an observation to targets, such as
+`lambda obs: {"gripper": 1.0}`. Each run adds one episode to the same directory.
+LeRobot's own writer makes the files, so any LeRobot training code can read them.
 
 <img class="sr-media" src="../assets/media/recording.gif" alt="frames read back from a recorded dataset">
 
@@ -37,7 +38,9 @@ name in that directory, a path inside it, or `hf://owner/name`.
 3. Press **rec**, then move the robot any way you like: sliders, a policy, the chat or a script.
 4. Press **save episode** to keep the take, **discard** to drop it, or **stop** to finish.
 
-Each robot gets its own dataset at `<target>/<robot id>`. Scripts can call the same routes:
+Each robot gets its own dataset at `<target>/<robot id>`. Scripts can call the same routes with the session token
+(see [Signing in](dashboard.md#signing-in)). Every `POST` takes a JSON body, `{}` when it has no fields; start with
+`{"robots": ["so101"], "target": "so101-wave", "task": "wave", "fps": 30}`:
 
 | Route | Does |
 |---|---|

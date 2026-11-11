@@ -49,8 +49,13 @@ python -m strands_robots.policy.lerobot zenoh-config --deployment smolvla \
 zenohd -c ~/.strands/lerobot/smolvla/router.json5
 ```
 
+`zenohd`, the router, is not on PyPI: install a 1.x release (`brew install zenoh`, the
+[eclipse-zenoh releases](https://github.com/eclipse-zenoh/zenoh/releases) or the `eclipse/zenoh` container image).
+
 <!-- test: skip, needs a running zenohd with the generated certificates -->
 ```python
+from strands_robots.policy.lerobot import server_config
+
 d = "~/.strands/lerobot/smolvla"
 cfg = server_config(arm.description, "lerobot/smolvla_base", deployment="smolvla", endpoint="tls/gpu-box:7447",
                     zenoh_config=f"{d}/server.json5")  # the policy-server role joins the router as a client
