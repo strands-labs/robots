@@ -153,9 +153,10 @@ def refuse_taken(dirs: list[Directory], did: str, tenant: str) -> None:
 
 
 def refuse_shared(dirs: list[Directory], did: str, rpc: str, tenant: str) -> None:
-    """Refuse a write (``act``, ``hold``, ``resume``) to an id two peers hold at once (a race ``refuse_taken`` cannot
-    see, or a peer gone without a goodbye until its ttl): it would reach both; ``estop``, ``stop`` go to all."""
-    if rpc in ("act", "hold", "resume") and any(d.holders(did) > 1 for d in dirs):
+    """Refuse a write (``act``, ``hold``, ``resume``, ``skill``) to an id two peers hold at once (a race
+    ``refuse_taken`` cannot see, or a peer gone without a goodbye until its ttl): it would reach both, and two
+    identical acks hide that a second body moved; ``estop``, ``stop`` go to all."""
+    if rpc in ("act", "hold", "resume", "skill") and any(d.holders(did) > 1 for d in dirs):
         raise RequestRefused(f"{did!r} is mounted by more than one peer in tenant {tenant!r}; one {rpc} reaches all")
 
 

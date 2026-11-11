@@ -152,3 +152,25 @@ def test_one_id_mounted_by_two_peers_at_once_refuses_motion_and_still_stops_both
     finally:
         for m in (c, b, a):
             m.close()
+
+
+def test_one_id_mounted_by_two_peers_at_once_refuses_a_skill(tenant, monkeypatch):
+    """A skill is a body-moving write like act: with one id on two robots it would start the policy on both, and the
+    two acks are identical, so the caller could not tell a second body moved (review on #4938)."""
+    import strands_robots.mesh.mesh as mesh_mod
+
+    monkeypatch.setattr(mesh_mod, "refuse_taken", lambda *a: None, raising=False)
+    a, b, c = (Mesh(f"mem://race-skill-{tenant}", tenant=tenant) for _ in range(3))
+    try:
+        arms = [_arm(), _arm()]
+        a.mount(arms[0], skills={"pan": lambda o: {"shoulder_pan": 0.5}})
+        b.mount(arms[1], skills={"pan": lambda o: {"shoulder_pan": 0.5}})
+        assert [d.id for d in c.discover("so101", min_count=1, timeout=3.0)] == ["so101"]
+        time.sleep(0.5)  # both holder tokens reach the third peer
+        with pytest.raises(Exception, match="more than one peer"):
+            c.invoke("so101", "skill", name="pan", seconds=0.5)
+        time.sleep(0.7)
+        assert [round(float(r.observe().joints["shoulder_pan"]), 3) for r in arms] == [0.0, 0.0]
+    finally:
+        for m in (c, b, a):
+            m.close()
