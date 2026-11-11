@@ -161,3 +161,46 @@ def test_a_group_write_bit_counts_only_for_a_group_others_are_in(tmp_path, monke
     else:
         with pytest.raises(PermissionError, match="writable by group or others"):
             refuse_untrusted_local(str(folder))
+
+
+def _lstat_reports_foreign_owner(link, monkeypatch):
+    """Report one link path as owned by another user, every other path as it really is."""
+    real_lstat = os.lstat
+    other = os.geteuid() + 1
+
+    def fake(path, *a, **k):
+        st = real_lstat(path, *a, **k)
+        try:
+            same = os.fspath(path) == os.fspath(link)
+        except TypeError:
+            same = False
+        if not same:
+            return st
+        fields = list(st)
+        fields[4] = other  # st_uid
+        return os.stat_result(fields)
+
+    monkeypatch.setattr(os, "lstat", fake)
+
+
+def test_a_symlink_another_user_owns_is_refused_under_a_sticky_folder(tmp_path, monkeypatch):
+    target = _ckpt(tmp_path / "ckpt")
+    sticky = tmp_path / "sticky"
+    sticky.mkdir()
+    link = sticky / "ckpt"
+    os.symlink(target, link)
+    os.chmod(sticky, 0o1777)  # like /tmp: another user may rename over their own link after the walk
+    _lstat_reports_foreign_owner(link, monkeypatch)
+    with from_agent(), pytest.raises(PermissionError, match="a symlink owned by uid"):
+        refuse_untrusted_local(str(link))
+
+
+def test_a_symlink_this_user_owns_still_loads_under_a_sticky_folder(tmp_path):
+    target = _ckpt(tmp_path / "ckpt")
+    sticky = tmp_path / "sticky"
+    sticky.mkdir()
+    link = sticky / "ckpt"
+    os.symlink(target, link)
+    os.chmod(sticky, 0o1777)
+    with from_agent():
+        refuse_untrusted_local(str(link))  # the link is ours: no error

@@ -82,7 +82,9 @@ def _check_path(path: Path, inside: set[Path]) -> None:
             continue
         nxt = cur / name
         st = os.lstat(nxt)
-        if stat.S_ISLNK(st.st_mode):  # its folder is checked already, so no other user can swap the link itself
+        if stat.S_ISLNK(st.st_mode):  # a sticky parent lets another plant their own link: check who owns it
+            if st.st_uid not in (os.geteuid(), 0):
+                raise PermissionError(_why(path, f"passes through {nxt}, a symlink owned by uid {st.st_uid}"))
             if (hops := hops + 1) > _HOPS:
                 raise PermissionError(_why(path, "resolves through too many symlinks"))
             target = Path(os.readlink(nxt))
