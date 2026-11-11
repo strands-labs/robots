@@ -84,8 +84,9 @@ sim.close()
 From the command line, `--print-token` prints one when the server starts.
 
 **Turning sign-in off.** `Dashboard(sim, auth=False)` (or `--no-auth`) logs a warning and lets any local program use
-every route. It is refused while a real robot is attached. You can force it with `unauthenticated_hardware=True`, but
-then any program that can reach the port can move that robot.
+every route. It is refused while a real robot is attached. You can force it with `unauthenticated_hardware=True`; the
+page then shows that robot, but `X-Confirm` counts for nothing without a session, so every command to it waits for the
+robot's own `confirm` callback.
 
 ## Tabs
 
@@ -118,6 +119,20 @@ hosts a standalone bundle (the page carries the same policy itself). `?scene=` a
 the page's own address, and text from the address or a scene file is shown as text. A command to a real robot also
 needs the operator's `X-Confirm` header, which the page sends after asking. Voice never sends that header, so voice
 cannot move a real robot.
+
+`X-Confirm` is the operator's yes only on a signed-in request. Starting a run checks it before the policy is built, so
+an unconfirmed run on a real robot dials no endpoint. Connecting a policy (`POST /api/connect/policy`) needs it, and so
+does every `POST /api/world` verb except the reads (`describe`, `pose`, `contacts`, `render`). World calls run like an
+agent's, so a `run` there cannot name a policy at a network address. `add_object(path=...)` loads a file only from the
+folder given as `Dashboard(sim, object_dir=...)` or `$STRANDS_ROBOTS_DASHBOARD_OBJECTS`; with neither set, the
+dashboard loads no object files (shapes still work):
+
+```python
+dash = Dashboard(sim, object_dir="~/scenes/objects")
+headers = {"Authorization": f"Bearer {dash.auth.token()}", "X-Confirm": "yes"}
+httpx.post(f"{url}/api/world", headers=headers,
+           json={"rpc": "add_object", "add_object": {"name": "mug", "path": "~/scenes/objects/mug.xml"}})
+```
 
 ## Live view in these docs
 

@@ -227,8 +227,9 @@ async function onSlider(e) {
 
 async function addPolicy() {
   const body = { endpoint: $("#cx-endpoint").value.trim(), kind: $("#cx-kind").value, deployment: $("#cx-deployment").value.trim() || null };
+  if (!confirm(`Connect the ${body.kind} policy at ${body.endpoint}? This machine loads it (and dials it if remote).`)) return;
   note(`asking ${body.endpoint} …`);
-  const r = await api("/api/connect/policy", { body });
+  const r = await api("/api/connect/policy", { body, confirmed: true });
   if (!r.ok) return fail("policy", r);
   note(`policy ${r.doc.name}: ${r.doc.description}${r.doc.info?.features?.length ? ` · features ${r.doc.info.features.join(", ")}` : ""}`);
   await loadRunPickers(r.doc.name);

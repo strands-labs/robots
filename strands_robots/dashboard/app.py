@@ -15,7 +15,7 @@ from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconn
 from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 
-from . import cameras, connect_routes, record_routes, runs, voice_routes
+from . import cameras, confirm, connect_routes, record_routes, runs, voice_routes
 from . import vendor as _vendor
 from .auth import routes as auth_routes
 from .guard import SameOrigin
@@ -88,7 +88,7 @@ def build_app(dash: Dashboard) -> FastAPI:
     async def world(request: Request) -> JSONResponse:
         body = await request.json()
         try:
-            return JSONResponse(await asyncio.to_thread(dash.world, body))
+            return JSONResponse(await asyncio.to_thread(dash.world, body, confirmed=confirm.operator_yes(request)))
         except Exception as exc:  # noqa: BLE001 — an unknown verb or argument is a 4xx with the reason
             raise http_error(exc) from exc
 
@@ -116,7 +116,7 @@ def build_app(dash: Dashboard) -> FastAPI:
     @app.post("/api/robots/{rid}/run")
     async def run(rid: str, request: Request) -> JSONResponse:
         body = await request.json()
-        confirmed = request.headers.get("x-confirm", "").lower() == "yes"
+        confirmed = confirm.operator_yes(request)
 
         def go() -> dict[str, Any]:
             return runs.start(
@@ -172,7 +172,7 @@ def build_app(dash: Dashboard) -> FastAPI:
     async def resume(rid: str, request: Request) -> JSONResponse:
         body = await request.json()
         try:
-            confirmed = request.headers.get("x-confirm", "").lower() == "yes"
+            confirmed = confirm.operator_yes(request)
             out = await asyncio.to_thread(dash.resume, rid, approved_by=body.get("approved_by"), confirmed=confirmed)
             return JSONResponse(out)
         except Exception as exc:  # noqa: BLE001 — a resume without an operator is a 403 with the reason
@@ -181,7 +181,7 @@ def build_app(dash: Dashboard) -> FastAPI:
     @app.post("/api/robots/{rid}/act")
     async def act(rid: str, request: Request) -> JSONResponse:
         body = await request.json()
-        confirmed = request.headers.get("x-confirm", "").lower() == "yes"
+        confirmed = confirm.operator_yes(request)
         try:
             out = await asyncio.to_thread(dash.act, rid, body.get("targets"), confirmed=confirmed)
         except Exception as exc:  # noqa: BLE001 — every refusal is an HTTP status with its reason

@@ -73,6 +73,7 @@ def test_the_connect_panel_attaches_moves_estops_and_resumes_a_peers_arm() -> No
             page.select_option("#cx-kind", "lerobot")
             page.locator("#cx-policy").dispatch_event("click")
             page.wait_for_selector('#cx-run-policy option[value="lerobot/act_so101"]', state="attached", timeout=30_000)
+            assert "Connect the lerobot policy at lerobot/act_so101" in asked[-1]  # the click asks before X-Confirm
             robots = page.eval_on_selector_all("#cx-run-robot option", "os => os.map((o) => o.value)")
             assert set(robots) == {"local_arm", "far_arm"}
             assert not page.errors, page.errors

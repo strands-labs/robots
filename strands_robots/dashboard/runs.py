@@ -67,10 +67,10 @@ def start(robot: Any, spec: Any, *, instruction: Any, seconds: Any, hz: Any, con
         raise ValueError("hz and seconds must be > 0")
     if robot._task is not None and robot._task.running:
         raise RuntimeError(f"{robot.id} already runs a task; POST /api/robots/{robot.id}/stop first")
+    if robot.is_real and not confirmed:  # before make(): an unconfirmed run builds nothing and dials no endpoint
+        raise PermissionError(f"{robot.id} is a real robot: run it from this page with header X-Confirm: yes")
     pol: Any = _hold if spec == "hold" else make(spec)
     if robot.is_real:
-        if not confirmed:
-            raise PermissionError(f"{robot.id} is a real robot: run it from this page with header X-Confirm: yes")
         first = pol(robot.observe(images=False)) if callable(pol) else pol.act(robot.observe(images=False))
         robot.gate(first, confirmed=True)  # the whole chain on the first action, before the task even starts
         if hasattr(pol, "reset"):
