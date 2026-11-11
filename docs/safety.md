@@ -27,8 +27,10 @@ builds it from the robot. Agent tools, the mesh and the dashboard all read it.
 A real robot needs a range for every joint it drives. If the model leaves one without a range
 (`limited="false"`, or no range in the joint or its default class), `Robot(..., port=)` raises `ValueError` naming
 the joints before it opens the port, and the range check refuses a target for such a joint. A joint that turns
-without end needs a `hardware.safe` bound in its registry entry instead; that bound is then the one checked. In a
-world, a joint without a range is still unconstrained.
+without end needs a `hardware.safe` bound in its registry entry instead. On hardware that bound is the joint's hard
+range: a target past it is refused even with the operator's yes (`confirmed=True`, the dashboard's confirm), and a
+direct `act()` is clipped into it. `kinova_gen3` declares one turn, ±π rad, for its continuous joints 1, 3, 5 and 7.
+In a world, a joint without a range is still unconstrained.
 
 ## Safety chain
 

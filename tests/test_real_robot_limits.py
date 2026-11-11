@@ -72,7 +72,7 @@ def test_the_joint_limit_check_refuses_a_real_joint_without_a_range():
     real.close()
 
 
-def test_a_joint_that_turns_without_end_drives_a_real_robot_inside_its_declared_safe_bound(tmp_path, monkeypatch):
+def test_a_joint_that_turns_without_end_takes_its_declared_safe_bound_as_its_hard_range(tmp_path, monkeypatch):
     model, load = _model(tmp_path, 'limited="false"'), Description.load
 
     def declared(name):  # the registry entry's hardware.safe bound for the continuous wrist
@@ -81,7 +81,39 @@ def test_a_joint_that_turns_without_end_drives_a_real_robot_inside_its_declared_
 
     monkeypatch.setattr(Description, "load", staticmethod(declared))
     real = Robot(model, driver="memory")
-    real.confirm_act({"wrist": 2.0}, confirmed=True)  # the joint moves, its declared bound is the one checked
-    with pytest.raises(RequestRefused, match="wrist=10.0000 rad outside safe"):
-        real.gate({"wrist": 10.0}, approved_run=True)  # an approved run's step outside it is refused
+    assert real.manifest.control("wrist.pos").range == (-3.0, 3.0)
+    real.confirm_act({"wrist": 2.0}, confirmed=True)  # the joint moves inside its declared bound
+    with pytest.raises(RequestRefused, match="wrist=10.0000 rad is outside its range"):
+        real.confirm_act({"wrist": 10.0}, confirmed=True)  # the operator's yes does not pass it
+    with pytest.raises(RequestRefused, match="outside its range"):
+        real.gate({"wrist": 10.0}, approved_run=True)
+    real.act({"wrist": 10.0})  # a direct write is clipped into it
+    assert real.body.read().positions[2] == pytest.approx(3.0)
     real.close()
+
+
+@pytest.fixture
+def gen3():
+    real = Robot("kinova_gen3", driver="memory")
+    yield real
+    real.close()
+
+
+def test_a_real_kinova_gen3_moves_its_continuous_joints_inside_one_turn(gen3):
+    gen3.confirm_act({"joint_1": 1.0}, confirmed=True)
+    assert gen3.body.read().positions[0] == pytest.approx(1.0)
+
+
+@pytest.mark.parametrize("target", [{"joint_1": 50.0}, {"joint_7": -4.0}, {"joint_2": 3.0}])
+def test_a_real_kinova_gen3_refuses_a_goal_past_a_hard_range_even_when_confirmed(gen3, target):
+    with pytest.raises(RequestRefused, match="outside its range"):
+        gen3.confirm_act(target, confirmed=True)
+
+
+def test_a_simulated_kinova_gen3_keeps_its_continuous_joints_unbounded():
+    from strands_robots import Simulation
+
+    sim = Simulation()
+    arm = Robot("kinova_gen3", sim=sim)
+    assert arm.manifest.control("joint_1.pos").range is None
+    sim.close()

@@ -82,7 +82,7 @@ class Robot(DeviceVerbs):
                 raise TypeError("a hardware Robot takes port=/driver=, not sim=: its twin is in Simulation.default()")
             from .drivers import make_driver
 
-            _targets.require_limits(self.description)  # before the bus opens: a joint without a range takes any goal
+            self.description = _targets.hardware_limits(self.description)  # before the bus opens
             self.id = id or default_id(name)  # the name as written: Robot("g1").id == "g1"
             hw = {"port": port, "driver": driver, "cameras": cameras, "calibration": calibration}
             self._body = make_driver(self.description, **hw, options=driver_options, id=id)

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+from dataclasses import replace
 from typing import TYPE_CHECKING
 
 import numpy as np
@@ -15,17 +16,21 @@ if TYPE_CHECKING:
     from .robot import Robot
 
 
-def require_limits(description: Description) -> None:
-    """``ValueError`` unless every joint a real body drives has limits, or a ``hardware.safe`` bound its registry
-    entry declares for it (a continuous joint): the safety chain reads a joint with neither as unconstrained."""
+def hardware_limits(description: Description) -> Description:
+    """``description`` as a real body drives it: a joint with no range in the model (one that turns without end)
+    takes the ``hardware.safe`` bound its registry entry declares as its hard limits, so the range check refuses a
+    target past it even with the operator's yes, and ``clip_to_limits`` holds it inside. ``ValueError`` names any
+    driven joint with neither: the safety chain would read it as unconstrained."""
     safe = description.hardware.safe or {}
     if missing := [k for k in description.action_keys if description.limits.get(k) is None and k not in safe]:
         raise ValueError(
             f"{description.name}: joint(s) {missing} have no range in the model, so a real robot would accept any "
             'goal for them. Give each a range in the model (limited="true" range="lo hi"), or, for a joint that '
-            "turns without end, a hardware.safe bound in its registry entry; without the mujoco extra the model is "
-            "read by an XML walk that reads ranges as MuJoCo does"
+            "turns without end, a hardware.safe bound in its registry entry, which is then its hard limit on "
+            "hardware; without the mujoco extra the model is read by an XML walk that reads ranges as MuJoCo does"
         )
+    folded = {k: safe[k] for k in description.action_keys if description.limits.get(k) is None}
+    return replace(description, limits={**description.limits, **folded}) if folded else description
 
 
 def clip_to_limits(description: Description, targets: np.ndarray) -> np.ndarray:
