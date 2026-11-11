@@ -37,7 +37,9 @@ def reader(request, monkeypatch):
 
 
 @pytest.mark.parametrize(
-    "wrist", ['limited="false" range="-1 1"', 'class="main"'], ids=["limited-false", "no-range-in-its-class"]
+    "wrist",
+    ['limited="false" range="-1 1"', 'class="main"', 'range="-inf inf"', 'range="1 1"'],
+    ids=["limited-false", "no-range-in-its-class", "infinite-range", "empty-range"],
 )
 def test_a_real_robot_refuses_a_model_with_a_driven_joint_without_a_range(tmp_path, reader, wrist):
     with pytest.raises(ValueError, match=r"joint\(s\) \['wrist'\] have no range"):
