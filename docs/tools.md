@@ -37,6 +37,11 @@ arm.tool(policies={"wave": my_policy})
 The agent can then call `run(policy="wave", ...)`. Give a remote policy this way too. The agent cannot pass
 a network address itself.
 
+An agent may name a Hugging Face Hub checkpoint (`run(policy="owner/repo")`) only if you list it:
+`STRANDS_POLICY_REPOS=lerobot/smolvla_base,myorg/*` (exact repos, or every repo of one publisher). Loading a
+checkpoint runs code its publisher chose (its saved processor steps can load further repos with remote code), so the
+default is none. A run you approve does not change this. Your own `Policy("owner/repo")` and handles are not checked.
+
 A robot reached over the mesh counts as a real robot. An agent's `run` through `mesh.tool` is refused unless you
 build the tool with the operator's answer:
 

@@ -135,7 +135,8 @@ A real robot moves only through its operator gate. Keep these invariants when yo
   Over the mesh it is published on the tenant's `@estop` key and sent as an rpc. Only a named operator can resume,
   and only the stop they saw (`approved_by`, compare-and-release).
 - A model never resumes, calibrates, picks a network address for a policy (`://` specs are refused unless the
-  developer registered the handle), or sets `record`, `push` or `units`.
+  developer registered the handle), loads a Hub checkpoint `STRANDS_POLICY_REPOS` does not list, or sets `record`,
+  `push` or `units`.
 - A real robot without `hardware.on_disconnect` refuses a watchdog; a real robot on the mesh without a watchdog is
   observe-only. The dashboard binds loopback only, checks Host and Origin, answers `/api` and `/ws` only to a
   passkey session or a `dash.auth.token()` bearer (`dashboard/auth/`; a new route is guarded by being under those
