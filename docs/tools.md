@@ -43,6 +43,11 @@ An agent may name a Hugging Face Hub checkpoint (`run(policy="owner/repo")`) onl
 checkpoint runs code its publisher chose (its saved processor steps can load further repos with remote code), so the
 default is none. A run you approve does not change this. Your own `Policy("owner/repo")` and handles are not checked.
 
+An agent may name a checkpoint or dataset folder on this machine only if no other user could have written it: every
+file the loader reads, and every folder down to it, is owned by the user running the agent (or root) and is not
+writable by group or others. A sticky shared folder such as `/tmp` may sit above it. A folder another user owns or may
+write is refused, with the path that failed; fix it with `chown` and `chmod go-w`, or register it as a handle.
+
 A robot reached over the mesh counts as a real robot. An agent's `run` through `mesh.tool` is refused unless you
 build the tool with the operator's answer:
 

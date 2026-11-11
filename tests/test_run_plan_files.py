@@ -172,14 +172,14 @@ def test_an_approved_preset_never_runs_a_same_named_folder_in_the_cwd(recording,
 
 def test_a_file_swapped_while_the_private_copy_is_taken_is_refused(recording, monkeypatch):
     rec, n = recording
-    listing = pin._files
+    listing = pin.walk
 
-    def swap_before_the_copy_reads(folder, seen):
+    def swap_before_the_copy_reads(folder):
         (rec / "a.json").write_text(json.dumps([[0.4] * n] * 3))
-        return listing(folder, seen)
+        return listing(folder)
 
     robot = Robot("so101", driver="memory")
-    robot.approve = lambda p: monkeypatch.setattr(pin, "_files", swap_before_the_copy_reads) or True
+    robot.approve = lambda p: monkeypatch.setattr(pin, "walk", swap_before_the_copy_reads) or True
     with from_agent(), pytest.raises(RequestRefused, match="changed on disk"):
         robot.run(str(rec), steps=3)
     assert np.allclose(_positions(robot), 0.0)
@@ -205,3 +205,29 @@ def test_the_private_copy_is_removed_however_the_run_ends(recording, monkeypatch
     with from_agent(), pytest.raises(KeyboardInterrupt if fail == "ctrl-c in the load" else ValueError):
         robot.run(str(rec), steps=3, hz=10)  # the recording runs at 30 Hz: refused after it is loaded
     assert list((tmp_path / "t").iterdir()) == []
+
+
+def test_under_umask_002_the_private_copy_is_still_this_users_alone(recording):
+    """The copy an approved run loads is made 0700/0600 whatever the umask, so the trust check on it passes."""
+    rec, _ = recording
+    for path in (rec, *rec.rglob("*")):
+        os.chmod(path, 0o755 if path.is_dir() else 0o644)
+    old = os.umask(0o002)
+    try:
+        robot = Robot("so101", driver="memory", approve=lambda p: True)
+        with from_agent():
+            assert robot.run(str(rec), steps=3).steps == 3
+    finally:
+        os.umask(old)
+
+
+@pytest.mark.parametrize("where", ["the folder", "a folder inside it"])
+def test_an_approved_real_run_checks_the_original_folder_not_only_the_copy(recording, where):
+    """The folder walk runs on what the operator approved, so a folder another user could write is refused."""
+    rec, _ = recording
+    os.chmod(rec if where == "the folder" else next(p for p in rec.rglob("*") if p.is_dir()), 0o777)
+    asked = []
+    robot = Robot("so101", driver="memory", approve=lambda p: asked.append(p) or True)
+    with from_agent(), pytest.raises(PermissionError, match="writable by group or others"):
+        robot.run(str(rec), steps=3)
+    assert asked == []  # refused before the operator is asked

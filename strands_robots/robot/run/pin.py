@@ -6,11 +6,14 @@ exactly that: a private copy of the disk files taken in one pass (every byte wri
 was hashed, so a write to the original at any moment after the yes never reaches the robot), or the Hub commit the
 operator saw (a commit names immutable content). The same holds for a policy object the developer registered: a
 LeRobot checkpoint reads its bytes when it attaches, after the yes, so it is re-pointed at the pinned source.
+Every disk file is also checked on the open file itself: owned by this user or root, not writable by group or
+others (``policy.trust``).
 """
 
 from __future__ import annotations
 
 import hashlib
+import os
 import re
 import shutil
 import tempfile
@@ -18,6 +21,8 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
+
+from ...policy.trust import refuse_foreign, walk
 
 if TYPE_CHECKING:
     from .source import RunPlan
@@ -130,15 +135,17 @@ def _snapshot(root: Path, into: Path | None) -> str:
     """Hash every file under ``root``, each read once; with ``into``, write the same bytes there as they are hashed."""
     total = hashlib.sha256()
     if into is not None:
-        into.mkdir()
-    for f in sorted(_files(root, set())):
+        into.mkdir(mode=0o700)  # the private copy is this process's own, whatever the umask: 0700 folders, 0600 files
+    for f in sorted(walk(root)[0]):
         rel = f.relative_to(root)
         one = hashlib.sha256()
         with f.open("rb") as src:
+            refuse_foreign(f, os.fstat(src.fileno()))  # the bytes hashed and copied: on the open file, not its name
             dst = None
             if into is not None:
-                (into / rel).parent.mkdir(parents=True, exist_ok=True)
-                dst = (into / rel).open("xb")
+                for folder in reversed(rel.parents[:-1]):  # one by one: mkdir(parents=True) gives the parents no mode=
+                    (into / folder).mkdir(mode=0o700, exist_ok=True)
+                dst = os.fdopen(os.open(into / rel, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600), "wb")
             try:
                 while chunk := src.read(_CHUNK):  # chunks, not hashlib.file_digest: that is 3.11+, the floor is 3.10
                     one.update(chunk)
@@ -149,14 +156,3 @@ def _snapshot(root: Path, into: Path | None) -> str:
                     dst.close()
         total.update(f"{rel.as_posix()}\0{one.hexdigest()}\n".encode())
     return total.hexdigest()
-
-
-def _files(folder: Path, seen: set[Path]) -> list[Path]:
-    """Every regular file under ``folder``, through symlinks as a loader reads them, each real folder once."""
-    if (real := folder.resolve()) in seen:
-        return []
-    seen.add(real)
-    found: list[Path] = []
-    for entry in folder.iterdir():
-        found += _files(entry, seen) if entry.is_dir() else [entry] if entry.is_file() else []
-    return found

@@ -28,14 +28,16 @@ def refuse_remote_spec(spec: object) -> None:
 
 
 def refuse_agent_spec(spec: object) -> None:
-    """Under ``from_agent()``: no policy at a network address, and no Hub checkpoint the operator has not listed in
-    ``STRANDS_POLICY_REPOS`` (loading one runs code its publisher chose). An operator yes for a run does not lift
-    this: it approves motion, not code."""
+    """Under ``from_agent()``: no policy at a network address, no Hub checkpoint the operator has not listed in
+    ``STRANDS_POLICY_REPOS`` (loading one runs code its publisher chose), and no folder on this disk another user
+    could have written. An operator yes for a run does not lift this: it approves motion, not code."""
     refuse_remote_spec(spec)
     if is_agent():
         from ...policy.hub import refuse_unlisted
+        from ...policy.trust import refuse_untrusted_local
 
         refuse_unlisted(spec)
+        refuse_untrusted_local(spec)
 
 
 @contextmanager
