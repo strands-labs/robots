@@ -22,8 +22,10 @@ from . import signed, wire
 from .authority import Authority, Lockout, new_epoch
 from .codec import observation_to_dict
 from .identity import Freshness
+from .skills import SKILL_ARGS, Skills
 from .transports.base import Transport, Unsubscribe
 from .watchdog import MOTION_RPCS
+from .wire import in_process
 
 AUDIT = logging.getLogger("strands_robots.audit")
 MAX_STEPS = 10_000
@@ -31,7 +33,7 @@ MAX_STEPS = 10_000
 MAX_SECONDS = 10.0
 """The longest reach one ``act(seconds=)`` may ask for: the rpc holds a worker (and its invoker) that long."""
 
-WRITE_RPCS = ("act", "hold")
+WRITE_RPCS = ("act", "hold", "skill")
 """The rpcs that physically move a body: an observe-only device (a hardware body mounted without a watchdog)
 refuses them by name, so a mover can never leave an arm commanded with nothing to recall it."""
 
@@ -44,6 +46,8 @@ ARGS: dict[str, tuple[str, ...]] = {
     "estop": ("by", "epoch"),
     "resume": ("approved_by", "assertion"),
     "lockout": (),
+    "skill": SKILL_ARGS,
+    "skill_status": (),
 }
 """The rpcs a mounted device answers over the mesh, and the arguments each takes."""
 
@@ -133,9 +137,11 @@ def _hold(robot: Any) -> None:
 
 
 def _handlers(
-    robot: Any, did: str, lockout: Lockout, authority: Callable[[], Authority], local: bool
+    robot: Any, did: str, lockout: Lockout, authority: Callable[[], Authority], local: bool, skills: Skills
 ) -> dict[str, Callable[..., Any]]:
     return {
+        "skill": skills.start,  # answered through skills.start_for in answer(), which knows the caller's beat
+        "skill_status": skills.status,
         "describe": lambda: robot.describe(),
         "observe": lambda images=False: _observe(robot, bool(images)),
         "act": lambda action=None, steps=None, seconds=None, by=None: _act(robot, action, steps, seconds),
@@ -147,18 +153,6 @@ def _handlers(
         ),
         "lockout": lambda: _lockout(robot, lockout).to_dict(),
     }
-
-
-def in_process(url: str) -> bool:
-    """True only when no peer outside this process can reach the transport: ``mem://`` and the fake IoT broker.
-
-    A zenoh endpoint is never in-process, even one that only listens on loopback: a listener accepts connections
-    from any other local process (another user, a container, an ``ssh -L`` tunnel), so a name claimed over it is
-    not trusted without operator keys.
-    """
-    from urllib.parse import urlparse
-
-    return url.startswith("mem://") or (url.startswith("iot://") and urlparse(url).netloc == "fake")
 
 
 def _error(exc: BaseException) -> dict[str, str]:
@@ -173,12 +167,15 @@ def serve(
     lockout: Lockout,
     authority: Callable[[], Authority],
     on_rpc: Callable[[str, str | None, str | None, bool], Callable[[bool], str | None] | None] | None = None,
+    skills: Skills | None = None,
 ) -> Unsubscribe:
     """Answer ``strands/<tenant>/<device_id>/rpc/<name>`` for ``robot``; ``on_rpc(name, peer, beat, proven)`` sees
     every call before it runs (the watchdog) and may return a callable run once the call ends, whose beat key goes
-    back in the reply. Returns the undo."""
+    back in the reply. ``skills`` answers ``skill`` and ``skill_status`` (a device mounted without any refuses
+    ``skill`` by name); a started skill's reply carries its beat key the same way. Returns the undo."""
     signed.check_mount(transport, device_id)
-    handlers = _handlers(robot, device_id, lockout, authority, in_process(transport.url))
+    skills = skills or Skills(robot, device_id, {})
+    handlers = _handlers(robot, device_id, lockout, authority, in_process(transport.url), skills)
     counter = itertools.count(1)
     proven = signed.identity_of(transport) is not None  # a request's ``peer`` is proven, not only claimed
     fresh = Freshness() if proven else None
@@ -198,6 +195,7 @@ def serve(
         args: dict[str, Any] = {}
         done: Callable[[bool], str | None] | None = None
         beat: str | None = None
+        body: dict[str, Any] = {}
         cert: str | None = None
         try:
             env = wire.decode_envelope(payload)
@@ -210,14 +208,18 @@ def serve(
             cert = signed.check_request(transport, env, fresh, name)  # before anything else hears of the call
             if why is not None and name in WRITE_RPCS:
                 raise RequestRefused(f"{device_id} is mounted observe-only ({why}); {name} is refused (docs/mesh.md)")
-            if on_rpc is not None and name in MOTION_RPCS and env.get("peer") is None:
+            if on_rpc is not None and name in (*MOTION_RPCS, "skill") and env.get("peer") is None:
                 raise TypeError(f"{device_id}.{name} needs the caller's peer id: the watchdog arms on whoever moves it")
             extra = sorted(set(args) - set(ARGS[name]))
             if extra:  # checked before the watchdog hears of it: a request refused here moves nothing, arms nothing
                 raise TypeError(f"{device_id}.{name} takes {list(ARGS[name]) or 'no arguments'}, not {extra}")
             if on_rpc is not None and name != "estop":
                 done = on_rpc(name, env.get("peer"), env.get("beat"), proven)
-            body = {"result": handlers[name](**args)}
+            if name == "skill":  # a skill holds its caller's watchdog; like an act, its reply carries the beat key
+                result, beat = skills.start_for(env.get("peer"), env.get("beat"), proven, **args)
+                body = {"result": result}
+            else:
+                body = {"result": handlers[name](**args)}
         except Exception as exc:
             body = {"error": _error(exc)}
         finally:

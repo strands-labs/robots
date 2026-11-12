@@ -10,6 +10,7 @@ from __future__ import annotations
 import logging
 import threading
 import time
+from collections.abc import Sequence
 from typing import Any
 
 from ..robot.safety import RequestRefused
@@ -152,7 +153,26 @@ def refuse_taken(dirs: list[Directory], did: str, tenant: str) -> None:
 
 
 def refuse_shared(dirs: list[Directory], did: str, rpc: str, tenant: str) -> None:
-    """Refuse a write (``act``, ``hold``, ``resume``) to an id two peers hold at once (a race ``refuse_taken`` cannot
-    see, or a peer gone without a goodbye until its ttl): it would reach both; ``estop``, ``stop`` go to all."""
-    if rpc in ("act", "hold", "resume") and any(d.holders(did) > 1 for d in dirs):
+    """Refuse a write (``act``, ``hold``, ``resume``, ``skill``) to an id two peers hold at once (a race
+    ``refuse_taken`` cannot see, or a peer gone without a goodbye until its ttl): it would reach both, and two
+    identical acks hide that a second body moved; ``estop``, ``stop`` go to all."""
+    if rpc in ("act", "hold", "resume", "skill") and any(d.holders(did) > 1 for d in dirs):
         raise RequestRefused(f"{did!r} is mounted by more than one peer in tenant {tenant!r}; one {rpc} reaches all")
+
+
+def present(dirs: Sequence[Directory]) -> list[Device]:
+    """Every device any directory has heard from, the freshest record of each, sorted by id."""
+    seen: dict[str, Device] = {}
+    for directory in dirs:
+        for d in directory.devices():
+            if d.id not in seen or d.last_seen > seen[d.id].last_seen:
+                seen[d.id] = d
+    return sorted(seen.values(), key=lambda d: d.id)
+
+
+def transport_of(transports: Sequence[Transport], dirs: Sequence[Directory], device_id: str, tenant: str) -> Transport:
+    """The transport a device was heard on; ``LookupError`` naming the devices present when none."""
+    for t, directory in zip(transports, dirs, strict=True):
+        if any(d.id == device_id for d in directory.devices()):
+            return t
+    raise LookupError(f"no device {device_id!r} in tenant {tenant!r}; present: {[d.id for d in present(dirs)]}")

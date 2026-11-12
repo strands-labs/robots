@@ -50,6 +50,34 @@ chain, changes nothing, so a request that moved nothing can never make it apply 
 request gets two different answers (a second peer answering for the robot), `invoke` raises `RemoteError` instead
 of picking one.
 
+## Skills: a policy that runs on the device
+
+`me.connect(id).run(policy)` runs the policy in the caller and sends one observe and one act rpc per control step,
+so the policy is only as fast as the network. Give the device a catalogue instead, and a caller starts a skill by
+name; the policy runs on the device at its own rate:
+
+<!-- test: skip, needs a second process for the device -->
+```python
+lab.mount(arm, skills={"walk": "microduck?skill=velstand&vx=0.3", "wave": my_policy})
+me.invoke("so101", "skill", name="walk", seconds=4.0)  # answers at once
+me.invoke("so101", "skill_status")                     # {"name": "walk", "state": "running", ...}
+```
+
+| Fact | |
+|---|---|
+| What a caller sends | A skill name from the device's own list and `seconds` (at most 60), optionally `instruction` |
+| Where it runs | On the device, as an agent's run: every step passes its safety chain |
+| A real robot | Asks its own `Robot(approve=)` on the device; the caller's reply never waits on a person |
+| `stop`, `estop` | End a running skill |
+| The caller goes quiet | The skill carries on; the caller may poll `skill_status` slowly |
+| The caller's mesh vanishes | The device ends the skill and applies `on_disconnect` |
+
+`mesh.tool` lists each device's skills, and its `run` starts one of them by name. A real robot on another machine
+that offers no skills is refused there, instead of being driven one round trip per control step.
+
+Measured over AWS IoT Core with the G1 walk (`holosoma?vx=0.5`, 4 s): 9.2 steps per second when the caller drove it,
+the full 200 steps in 2 s as a skill.
+
 ## Securing the mesh
 
 Give every machine a certificate from one lab CA. A machine with one joins the mesh over mutual TLS only, and signs

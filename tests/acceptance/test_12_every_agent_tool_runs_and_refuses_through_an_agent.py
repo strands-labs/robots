@@ -59,6 +59,7 @@ MESH = [
     ("act", {"device_id": "mesh-arm", "act": {"shoulder_pan": 99.0}}, "error", "shoulder_pan"),
     ("run", {"device_id": "mesh-arm", "run": {"policy": HOLD, "steps": 3}}, "success", "started"),
     ("stop", {"device_id": "mesh-arm"}, "success", ""),
+    ("status", {"device_id": "mesh-arm"}, "success", "idle"),  # it offers no skills: none has run
     ("estop", {"selector": "device(role:arm)"}, "success", "mesh-arm"),
     ("resume", {"device_id": "mesh-arm"}, "error", "operator"),  # no operator key on this mesh
 ]

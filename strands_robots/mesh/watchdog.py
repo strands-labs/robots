@@ -9,7 +9,8 @@ carries the key, so another peer naming the invoker's id never keeps its clock a
 ``on_disconnect`` once, with one ``strands_robots.audit`` record naming that peer and why, and disarms until the next
 motion. Reads never arm it.
 The quiet clock does not run while a motion rpc is still moving the device (an ``act(seconds=)`` reach): its
-invoker is waiting on the reply.
+invoker is waiting on the reply. A skill (``mesh/skills.py``) holds the watchdog for its whole run (``busy``): the
+quiet clock pauses, a vanished invoker still ends it (``cuts``) before ``on_disconnect`` is applied.
 """
 
 from __future__ import annotations
@@ -40,7 +41,9 @@ class MeshWatchdog:
         self._key: str | None = None  # the watched mover's beat key, sent only in the reply to the act that armed
         self._lock = threading.Lock()
         self._moving = 0  # motion rpcs in progress: their invoker is waiting, not quiet
+        self.cuts: list[Callable[[], None]] = []  # what must stop before on_disconnect (a running skill)
         self._armed = threading.Event()
+        self._armings = 0  # how many times it was armed: a skill's release can tell whether anything else moved
         self._stop = threading.Event()
         self._thread = threading.Thread(target=self._loop, daemon=True, name="mesh-watchdog")
         self._thread.start()
@@ -80,8 +83,45 @@ class MeshWatchdog:
                     self._key = secrets.token_urlsafe(16)
                 self.peer = peer
                 self._armed.set()
+                self._armings += 1
                 return self._key
             return None
+
+    def busy(self, peer: str, beat: str | None = None, proven: bool = True) -> tuple[Callable[..., None], str | None]:
+        """A skill started for ``peer``: armed for it now (so a vanished caller still ends the run), quiet clock paused
+        until the returned ``release(moved)`` is called. Like an ``act``, it returns the beat key the reply carries:
+        a new key unless ``peer`` is already the watched mover and showed its key (or the transport proved it). A run
+        that never moved the body (the operator refused it, or it failed before its first step) puts the watchdog
+        back as it was, key included: a request that moved nothing must never make the device apply
+        ``on_disconnect``."""
+        with self._lock:
+            mover = self._is_mover(peer, beat, proven)
+            before = (self.peer, self._armed.is_set(), self._key)
+            self._moving += 1
+            if not (mover and peer == self.peer):
+                self._key = secrets.token_urlsafe(16)
+            self.peer, key = peer, self._key
+            self._armed.set()
+            self._armings += 1
+            mine = self._armings
+            self.dog.beat()
+        released = threading.Event()
+
+        def release(moved: bool = True) -> None:
+            if released.is_set():
+                return
+            released.set()
+            with self._lock:
+                self._moving -= 1
+                if (
+                    not moved and self._armings == mine and self._armed.is_set()
+                ):  # nothing armed it since, same peer too
+                    self.peer, self._key = before[0], before[2]
+                    if not before[1]:
+                        self._armed.clear()
+                self.dog.beat()
+
+        return release, key
 
     def _on_peer(self, key: str, alive: bool) -> None:
         if alive or not self._armed.is_set() or key.rsplit("/", 1)[-1] != self.peer:
@@ -94,6 +134,8 @@ class MeshWatchdog:
                 return
             self._armed.clear()
             peer, self.peer, self._key = self.peer, None, None
+        for cut in self.cuts:  # a skill still running for the vanished mover ends first, then the robot holds
+            cut()
         try:  # the apply leaves its own audit record, a failed one too
             apply_on_disconnect(self.robot, reason=reason, peer=peer, tenant=self.tenant, device_id=self.device_id)
         except Exception:  # a closed robot cannot hold; nothing left to protect
