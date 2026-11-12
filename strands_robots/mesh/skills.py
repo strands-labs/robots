@@ -59,6 +59,16 @@ def _seconds(value: Any) -> float:
     return float(value)
 
 
+def _moved(res: Any, refused: bool) -> bool:
+    """Whether a finished skill run may have moved the body. Fail safe: only what is known to have moved nothing
+    counts as unmoved, namely a refusal before the body was touched, or a result that took no step, held nothing and
+    did not fault. A run that raised anything else (a policy error, a bus error) may have moved it mid-run, so it
+    counts as moved and the watchdog stays armed for its caller."""
+    if res is None:
+        return not refused
+    return bool(getattr(res, "steps", 0) or getattr(res, "holds", 0) or getattr(res, "fault", None))
+
+
 class Skills:
     """One device's skills: start one by name, report on it, and end it when the watchdog fires."""
 
@@ -132,20 +142,18 @@ class Skills:
 
     def _finish(self, task: Any, name: str, release: Callable[..., None] | None) -> None:
         state: dict[str, Any] = {"name": name, "state": "done"}
-        res = None
+        res, refused = None, False
         try:
             res = task._wait()
             state.update(steps=getattr(res, "steps", None), stopped_by=getattr(res, "stopped_by", None))
             if getattr(res, "fault", None):
                 state.update(state="fault", fault=str(res.fault))
         except Exception as exc:  # noqa: BLE001 - a refusal or a policy error is the skill's outcome, reported
-            state.update(state="refused" if isinstance(exc, PermissionError) else "error", error=f"{exc}")
+            refused = isinstance(exc, PermissionError)  # the operator said no before the body was touched
+            state.update(state="refused" if refused else "error", error=f"{exc}")
         finally:
-            if release is not None:  # moved: it stepped or held, or faulted mid-run; a refusal before step 1 did not
-                release(
-                    res is not None
-                    and bool(getattr(res, "steps", 0) or getattr(res, "holds", 0) or getattr(res, "fault", None))
-                )
+            if release is not None:
+                release(_moved(res, refused))
         with self._lock:
             if self._task is task:
                 self._state = {**self._state, **state}

@@ -325,3 +325,29 @@ def test_an_act_from_the_skill_caller_while_the_skill_waits_keeps_the_watchdog_a
     finally:
         dog.close()
         arm.close()
+
+
+def test_a_skill_whose_policy_raises_mid_run_keeps_the_watchdog_armed(mesh_pair):
+    """A run that raised partway through may have moved the body, so it must not restore the watchdog the way a
+    refused skill does: the caller's silence must still apply on_disconnect (review on #4938)."""
+    a, b = mesh_pair
+    arm = Robot("so101", id="arm")
+    holds: list[float] = []
+    real_hold = arm.body.hold
+    arm.body.hold = lambda: (holds.append(time.monotonic()), real_hold())
+    ticks = [0]
+
+    def policy(obs):
+        ticks[0] += 1
+        if ticks[0] > 5:
+            raise KeyError("the policy failed mid-run")
+        return {"shoulder_pan": 0.3}
+
+    a.mount(arm, skills={"pan": policy}, watchdog_ms=300)
+    assert b.discover("arm", min_count=1, timeout=3.0)
+    b.invoke("arm", "skill", name="pan", seconds=2.0)
+    assert _done(b)["state"] == "error"
+    assert arm.observe().joints["shoulder_pan"] != 0.0, "the run moved the body before it raised"
+    time.sleep(0.9)  # the caller goes quiet
+    assert holds, "a run that moved the body before it raised must leave the watchdog armed"
+    arm.close()
