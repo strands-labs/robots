@@ -10,11 +10,24 @@ from __future__ import annotations
 import math
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Literal
 
 from ..base import PolicyFault
 from .contract import Contract
+from .network import NETWORKS, is_far, round_trip
 from .sequential import Sequential, ledgered
+
+Execution = Literal["auto", "sequential", "splice"]
+EXECUTIONS = ("auto", "sequential", "splice")
+
+
+def check_options(*, execution: str, reconnect_s: float, network: str) -> None:
+    """``ValueError`` naming an option ``ZenohPolicy`` cannot run with, and what it takes."""
+    for name, value, allowed in (("execution", execution, EXECUTIONS), ("network", network, NETWORKS)):
+        if value not in allowed:
+            raise ValueError(f"{name} must be one of {', '.join(map(repr, allowed))}, got {value!r}")
+    if not reconnect_s >= 0:
+        raise ValueError(f"reconnect_s must be a number of seconds >= 0, got {reconnect_s!r}")
 
 
 @dataclass
@@ -94,6 +107,11 @@ def open_session(
             raise PolicyFault(f"{policy!r}: the server came back with a different deployment: {e}") from e
         raise
     try:
+        if like is None:  # a reopened session keeps the first one's decision: no flip mid-run
+            far, policy.rtt_s = is_far(
+                policy.endpoint, policy.asked_network, lambda: round_trip(client, policy.deployment)
+            )
+            policy.network = "wan" if far else "lan"
         caps, sem = client.capabilities, client.descriptor["semantics"]
         contract = Contract(robot.description, tuple(caps.features), caps.action_feature, sem)
         execution = execution_of(client.descriptor, policy.asked)

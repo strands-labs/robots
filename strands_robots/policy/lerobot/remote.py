@@ -15,7 +15,7 @@ from __future__ import annotations
 import time
 from collections.abc import Mapping, Sequence
 from contextlib import closing
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
 
@@ -26,13 +26,10 @@ from ..requirements import Requirements
 from .contract import Contract, lerobot
 from .link import check_channel, wan_defaults, zenoh_config
 from .redial import Redial
-from .session import Session, open_session
+from .session import Execution, Session, check_options, open_session
 
 if TYPE_CHECKING:
     from ...description import Description
-
-Execution = Literal["auto", "sequential", "splice"]
-EXECUTIONS = ("auto", "sequential", "splice")
 
 
 class ZenohPolicy:
@@ -62,6 +59,7 @@ class ZenohPolicy:
         trusted: bool = False,
         zenoh_config: str | None = None,
         reconnect_s: float = 10.0,
+        network: str = "auto",
         **settings: Any,
     ) -> None:
         """``execution``: see the module docstring. ``start_pose`` (the deployment's units; a mapping of joint -> value
@@ -70,13 +68,14 @@ class ZenohPolicy:
         instructions it was trained on — any other ``run(instruction=)`` is refused naming them before a frame goes
         out; left out, the descriptor may say (``tasks``); else any instruction is sent. ``zenoh_config`` (or
         ``STRANDS_LEROBOT_ZENOH_CONFIG``): the session's zenoh config file. ``trusted``: see ``link.check_channel``.
-        ``reconnect_s``: when the server goes away, hold and reopen the session for this long (0: fault at once)."""
-        if execution not in EXECUTIONS:
-            raise ValueError(f"execution must be one of {', '.join(map(repr, EXECUTIONS))}, got {execution!r}")
-        if not reconnect_s >= 0:
-            raise ValueError(f"reconnect_s must be a number of seconds >= 0, got {reconnect_s!r}")
+        ``reconnect_s``: when the server goes away, hold and reopen the session for this long (0: fault at once).
+        ``network``: ``"lan"``/``"wan"`` picks the link's timeouts and frame encoding; ``"auto"`` judges by the address,
+        and measures the round trip of one that looks local (``network.is_far``)."""
+        check_options(execution=execution, reconnect_s=reconnect_s, network=network)
         self.endpoint, self.deployment, self.settings, self.trusted = endpoint, deployment, settings, trusted
-        self.reconnect_s = float(reconnect_s)
+        self.reconnect_s, self.asked_network = float(reconnect_s), network
+        self.network: str | None = None  # resolved at attach: "lan" or "wan"
+        self.rtt_s: float | None = None  # the round trip measured to decide it, when it was measured
         self.zenoh_config = zenoh_config or settings.pop("zenoh_config_path", None)  # LeRobot's own name, same file
         self._wire = endpoint  # what the session opens: the endpoint, pinned at attach for a real robot
         self.asked: Execution = execution
@@ -104,7 +103,8 @@ class ZenohPolicy:
     def _config(self, semantics: str = "?", descriptor: dict[str, Any] | None = None, **forced: Any) -> Any:
         from lerobot.inference import RemoteInferenceConfig
 
-        kw = wan_defaults(self.endpoint, self.settings, descriptor)
+        far = None if self.network is None else self.network == "wan"
+        kw = wan_defaults(self.endpoint, self.settings, descriptor, far)
         kw["zenoh_config_path"] = zenoh_config(self.zenoh_config)
         blend = kw.get("blend_components")
         kw["blend_components"] = [f"{k}.pos" if "." not in k else k for k in blend or []]
@@ -121,6 +121,7 @@ class ZenohPolicy:
         self.detach()
         mode = self.settings.get("zenoh_mode")  # the caller's word over wan_defaults' client
         self._wire = check_channel(repr(self), self.endpoint, robot, self.trusted, self.zenoh_config, mode)
+        self.network = self.rtt_s = None  # measured again for this run, on its own session
         s = open_session(self, robot, check=lambda c: c.requirements().check(robot.observe(), who=repr(self)))
         self._adopt(s, robot)
         if self._tasks is None:  # the server's word on what it was trained to do, when it has one
@@ -137,10 +138,6 @@ class ZenohPolicy:
     @property
     def _seq(self) -> Any:
         return None if self._s is None else self._s.seq
-
-    @property
-    def _engine(self) -> Any:
-        return None if self._s is None else self._s.engine
 
     def detach(self) -> None:
         if self._redial is not None:
@@ -171,9 +168,10 @@ class ZenohPolicy:
             )
 
     def reset(self) -> None:
-        if self._engine is not None and self._last is not None:  # a fresh session needs no reset
-            self._engine.reset()
-            self._engine.resume()
+        engine = None if self._s is None else self._s.engine
+        if engine is not None and self._last is not None:  # a fresh session needs no reset
+            engine.reset()
+            engine.resume()
         if self._seq is not None:
             self._seq.retarget(None)
         self._last = None
@@ -226,7 +224,7 @@ class ZenohPolicy:
     def _act_splice(self, c: Contract, obs: Observation, instruction: str | None) -> Action:
         from lerobot.inference import dispatch_tick
 
-        engine, interp = self._engine, self._s.interp  # type: ignore[union-attr]
+        engine, interp = self._s.engine, self._s.interp  # type: ignore[union-attr]
         if instruction is not None and instruction != self._task:
             self.check_task(instruction)
             if error := engine.text_input_error(instruction, instruction=True):
