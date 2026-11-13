@@ -164,6 +164,12 @@ forbidden_modules = ["strands_robots.policy", "strands_robots.simulation.backend
 allow_indirect_imports = true
 
 [[tool.importlinter.contracts]]
+name = "the LeRobot v3 writer does not import the episode it serves (episode -> lerobot_v3 is the one edge)"
+type = "forbidden"
+source_modules = ["strands_robots.recording.lerobot_v3"]
+forbidden_modules = ["strands_robots.recording.episode"]
+
+[[tool.importlinter.contracts]]
 name = "recording depends only on types, description and units (the run loop calls it, never the reverse)"
 type = "forbidden"
 source_modules = ["strands_robots.recording"]
