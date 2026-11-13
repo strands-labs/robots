@@ -5,16 +5,31 @@ from __future__ import annotations
 import weakref
 from collections.abc import Mapping
 from dataclasses import replace
-from typing import TYPE_CHECKING
+from typing import Any, Protocol
 
 import numpy as np
 
 from ..description import Description
 from ..types import Action, JointState
+from .body import Body
 from .safety import NonFiniteTarget
 
-if TYPE_CHECKING:
-    from .robot import Robot
+
+class Targetable(Protocol):
+    """The handful of attributes ``coerce`` reads off a ``Robot`` to build a target vector: its facts
+    (``description``), its name for errors (``id``), the body it reads a base pose from, the last targets
+    written (``_held``) and the bus lock guarding that read. Typing against this, not ``Robot``, keeps this
+    leaf module free of an import back into ``robot.py``."""
+
+    id: str
+    description: Description
+    _held: np.ndarray | None
+
+    @property
+    def body(self) -> Body: ...
+
+    @property
+    def _lock(self) -> Any: ...
 
 
 def hardware_limits(description: Description) -> Description:
@@ -63,7 +78,7 @@ def clip_to_limits(description: Description, targets: np.ndarray) -> np.ndarray:
     return np.minimum(np.maximum(np.array(targets, dtype=float), lo), hi)
 
 
-def coerce(robot: Robot, action: Action, *, clip: bool = True, measured: np.ndarray | None = None) -> np.ndarray:
+def coerce(robot: Targetable, action: Action, *, clip: bool = True, measured: np.ndarray | None = None) -> np.ndarray:
     """Any accepted Action -> a full target vector in ``action_keys`` order, clipped to limits.
 
     A joint a mapping does not name keeps its last commanded target (``robot._held``, set by every write), so
