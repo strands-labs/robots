@@ -102,25 +102,27 @@ def test_a_mode_the_camera_lacks_is_refused_naming_it_and_the_cameras_modes(monk
 
 
 def _process_wide_av(monkeypatch):
-    """PyAV's logging as it behaves: one level for the process (None drops every line) and one stack of captures,
-    the newest getting each line. Listing devices takes ~60 ms; opening the first camera is refused in ~20 ms."""
-    state = {"level": None, "stack": []}
+    """PyAV's logging as it behaves: one process-wide level (a line at level L reaches the log when ``L <= level``;
+    None drops every line) and a thread-local ``Capture``, so each open's lines go to the capture on its own thread.
+    Listing devices takes ~60 ms; opening the first camera is refused in ~20 ms."""
+    state: dict = {"level": None, "captures": {}}
 
     class Capture(list):
         def __init__(self, local=True):
             super().__init__()
 
         def __enter__(self):
-            state["stack"].append(self)
+            state["captures"][threading.get_ident()] = self
             return self
 
         def __exit__(self, *exc):
-            state["stack"].remove(self)
+            state["captures"].pop(threading.get_ident(), None)
             return False
 
     def emit(level, line):
-        if state["level"] is not None and level >= state["level"] and state["stack"]:
-            state["stack"][-1].append(("libav.avfoundation", level, line))
+        cap = state["captures"].get(threading.get_ident())
+        if state["level"] is not None and level <= state["level"] and cap is not None:
+            cap.append(("libav.avfoundation", level, line))
 
     def open_(name, format, options):
         if options.get("list_devices"):
@@ -169,4 +171,68 @@ def test_a_refused_open_on_a_capture_thread_does_not_cut_the_next_cameras_name_l
         grabber.join()
         assert listed == [("Logi 4K", 0), ("USB2.0_CAM1", 1)]
         assert str(errors[0]).endswith("Its modes: 640x480@30fps, 1280x720@10fps, 1280x720@30fps")
-        assert state["level"] is None and state["stack"] == []  # PyAV left as it was found
+        assert state["level"] is None and state["captures"] == {}  # PyAV left as it was found
+
+
+def test_a_camera_stalled_in_av_open_does_not_block_the_next_cameras_name_lookup(monkeypatch):
+    """The log lock is never held across ``av.open``: a camera stalled in ``av.open`` on its capture thread must not
+    stop the caller from listing the next camera by name (which also raises the log level). Before the fix the lister
+    blocked on the lock the stalled open held, so ``Cameras.open`` never reached ``grabber.wait(open_timeout_s)`` and
+    hung forever instead of refusing within ``open_timeout_s``."""
+    from strands_robots.robot.drivers import cameras
+
+    state: dict = {"level": None, "captures": {}}
+    entered = threading.Event()  # the first open has reached its stall, holding whatever av_log holds
+    release = threading.Event()  # let the stalled open finish, so its daemon thread (and av_log) can unwind
+
+    class Capture(list):
+        def __init__(self, local=True):
+            super().__init__()
+
+        def __enter__(self):
+            state["captures"][threading.get_ident()] = self
+            return self
+
+        def __exit__(self, *exc):
+            state["captures"].pop(threading.get_ident(), None)
+            return False
+
+    def open_(name, format, options):
+        if options.get("list_devices"):
+            for line in ["AVFoundation video devices:", "[0] Logi 4K", "[1] USB2.0_CAM1"]:
+                state["captures"].get(threading.get_ident(), []).append(("libav", 32, line))
+            raise OSError(5, "Input/output error")
+        entered.set()
+        release.wait(5.0)  # stall inside av.open, as USB2.0_CAM1 does with no matching mode
+        raise OSError(5, "Input/output error")
+
+    log = types.ModuleType("av.logging")
+    log.ERROR, log.INFO = 16, 32
+    log.get_level = lambda: state["level"]
+    log.set_level = lambda v: state.__setitem__("level", v)
+    log.Capture = Capture
+    av = types.ModuleType("av")
+    av.open, av.logging = open_, log
+    monkeypatch.setitem(sys.modules, "av", av)
+    monkeypatch.setitem(sys.modules, "av.logging", log)
+
+    def open_first():
+        try:
+            devices._AVCapture("USB2.0_CAM1", CameraSpec(name="USB2.0_CAM1", width=1280, height=720, fps=60))
+        except OSError:
+            pass
+
+    grabber = threading.Thread(target=open_first, daemon=True)
+    grabber.start()
+    assert entered.wait(2.0), "the first open never reached its stall"
+
+    listed: list = []
+    lister = threading.Thread(target=lambda: listed.append(cameras._avfoundation()), daemon=True)
+    lister.start()
+    lister.join(2.0)
+    try:
+        assert listed, "listing blocked behind the stalled open: the log lock is held across av.open"
+        assert listed[0] == [("Logi 4K", 0), ("USB2.0_CAM1", 1)]
+    finally:
+        release.set()
+        grabber.join(2.0)

@@ -14,26 +14,40 @@ import numpy as np
 
 from .camera_spec import CameraSpec
 
-# PyAV's log level and ``av.logging.Capture(local=False)`` are process-wide, and each camera opens on its own capture
-# thread while ``Cameras.open`` may still be listing devices by name: unserialised, one restore silences the other's
-# listing and one camera's "Supported modes" lines land in the other's refusal. Only AVFoundation opens take it.
+# PyAV's log level is process-wide and ``av.open`` can block forever (an AVFoundation device with no matching mode;
+# see ``av_options``). ``_AV_LOG`` guards only a ref-counted bump of that level: held while the level is raised or put
+# back, NEVER across ``av.open``. Holding it across the open let a camera stalled on its capture thread block the next
+# camera's name lookup (which also raises the level), so ``Cameras.open`` never reached ``grabber.wait(open_timeout_s)``
+# and hung instead of refusing. While any caller holds, the level is the most verbose asked; it is put back only when
+# the last leaves. ``Capture(local=True)`` is thread-local, so each open sees its own device's lines, not a neighbour's.
 _AV_LOG = threading.Lock()
+_av_level_users = 0  # how many ``av_log`` contexts are open; the process level is restored when this returns to zero
+_av_saved_level: int | None = None  # the level found before the first; restored when the last leaves
 
 
 @contextlib.contextmanager
 def av_log(at_least: int) -> Iterator[list[tuple[str, int, str]]]:
-    """libav's log lines while held (level raised to ``at_least``), then PyAV's level put back; one holder at a time."""
+    """libav's log lines for THIS thread while held, the process level raised to ``at_least`` for as long as any caller
+    needs it; the lock is never held across the blocking ``av.open``, so a stalled open cannot block another camera."""
+    global _av_level_users, _av_saved_level
     import av.logging
 
     with _AV_LOG:
+        if _av_level_users == 0:
+            _av_saved_level = av.logging.get_level()
+        _av_level_users += 1
         level = av.logging.get_level()
         if level is None or level < at_least:
             av.logging.set_level(at_least)
-        try:
-            with av.logging.Capture(local=False) as logs:
-                yield logs
-        finally:
-            av.logging.set_level(level)
+    try:
+        with av.logging.Capture(local=True) as logs:
+            yield logs
+    finally:
+        with _AV_LOG:
+            _av_level_users -= 1
+            if _av_level_users == 0:
+                av.logging.set_level(_av_saved_level)
+                _av_saved_level = None
 
 
 class _CVCapture:
