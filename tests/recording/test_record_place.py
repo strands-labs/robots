@@ -143,3 +143,31 @@ def test_under_umask_002_a_private_group_records_and_a_shared_group_is_refused(l
                 ep.open(lambda: None)
     finally:
         os.umask(old)
+
+
+def _open_fds() -> set[int]:
+    """The directory fds this process holds right now (Linux ``/proc/self/fd``)."""
+    return {int(name) for name in os.listdir("/proc/self/fd")}
+
+
+@pytest.mark.skipif(not hasattr(os, "O_PATH"), reason="the walk opens directory fds on Linux")
+def test_the_walk_leaks_no_directory_fd_on_success_refusal_or_a_missing_parent(places):
+    """Every directory fd ``claim`` opens is closed again, on each path out: a good walk, a symlink
+    refused mid-walk, and a walk that finds a missing parent. A leak would grow the fd set."""
+    from strands_robots.recording import place
+
+    base, other = places
+    before = _open_fds()
+
+    place.claim(base / "a" / "set")  # a good deep walk that also creates the parent
+
+    (base / "a").rmdir()
+    os.symlink(other, base / "a")  # a symlink swapped onto the path
+    with pytest.raises(PermissionError, match="symlink"):
+        place.claim(base / "a" / "set")
+
+    os.unlink(base / "a")
+    with pytest.raises(FileNotFoundError):  # a parent that is simply gone
+        place._walk(base / "gone" / "deeper", create=False)
+
+    assert _open_fds() == before

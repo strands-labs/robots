@@ -148,7 +148,8 @@ class Robot(DeviceVerbs):
         if kp.shape != (n,) or kd.shape != (n,):
             raise ValueError(f"{self.id}: kp {kp.shape} / kd {kd.shape} for {n} actuators {list(self.action_keys)}")
         if self.sim is None:  # a ROS humanoid: kp/kd ride in every command frame
-            return self.body.set_gains(kp, kd)  # type: ignore[attr-defined]
+            self.body.set_gains(kp, kd)  # type: ignore[attr-defined]
+            return
         with self.sim.lock:
             self.sim.backend.set_gains(self.id, kp, kd)
 
