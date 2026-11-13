@@ -4,12 +4,11 @@ for the device's next frame; ``capture.Grabber`` makes that wait a capture threa
 from __future__ import annotations
 
 import time
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 import numpy as np
 
-if TYPE_CHECKING:
-    from .cameras import CameraSpec
+from .camera_spec import CameraSpec
 
 
 class _CVCapture:

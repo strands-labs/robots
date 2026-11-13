@@ -29,7 +29,7 @@ class Grabber:
         self._open_device = open_device
         self._lock = threading.Lock()
         self._frame: tuple[np.ndarray, float] | None = None
-        self._error: BaseException | None = None
+        self._error: Exception | None = None
         self._ready = threading.Event()  # set by the first frame, or by the error that ends the thread
         self._stop = threading.Event()
         self.thread = threading.Thread(target=self._run, name=f"camera-{camera}", daemon=True)
@@ -38,7 +38,7 @@ class Grabber:
     def _run(self) -> None:
         try:
             device = self._open_device()
-        except BaseException as exc:  # noqa: BLE001  (kept and re-raised on the caller's thread)
+        except Exception as exc:  # noqa: BLE001  (kept and re-raised on the caller's thread)
             self._fail(exc)
             return
         try:
@@ -50,12 +50,12 @@ class Grabber:
                 with self._lock:
                     self._frame = (rgb, time.monotonic())
                 self._ready.set()
-        except BaseException as exc:  # noqa: BLE001
+        except Exception as exc:  # noqa: BLE001
             self._fail(exc)
         finally:
             device.close()
 
-    def _fail(self, exc: BaseException) -> None:
+    def _fail(self, exc: Exception) -> None:
         with self._lock:
             self._error = exc
         self._ready.set()
