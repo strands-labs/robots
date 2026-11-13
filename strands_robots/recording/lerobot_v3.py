@@ -10,7 +10,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol
 
-from .._extras import LEROBOT
+from .._extras import hint
 from ..types import Observation
 from .features import TIME, features_from, units_meta
 
@@ -39,7 +39,7 @@ def require_lerobot() -> Any:
         from lerobot.datasets.lerobot_dataset import LeRobotDataset
     except ImportError as e:
         raise ImportError(
-            f"record= writes a LeRobot dataset and needs LeRobot with its dataset extra: {LEROBOT} ({e})"
+            f"record= writes a LeRobot dataset and needs LeRobot with its dataset extra: {hint('lerobot')} ({e})"
         ) from e
     return LeRobotDataset
 

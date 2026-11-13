@@ -26,13 +26,11 @@ From the repository root, Python 3.12:
 
 ```bash
 uv venv -p 3.12 && source .venv/bin/activate
-uv pip install -e ".[all]" ipykernel nbconvert av playwright
-uv pip install "lerobot[remote,feetech,dataset] @ git+https://github.com/huggingface/lerobot@main"  # 02, 05, 06, 11
+uv pip install -e ".[all]" ipykernel nbconvert av playwright          # [all] carries LeRobot (02, 05, 06, 11)
 playwright install chromium                                                                    # 07
 python notebooks/scripts/00_quickstart.py        # or: jupyter lab notebooks/
 ```
 
-The LeRobot commit is the one `strands_robots/_extras.py` names (LeRobot's PyPI release predates `remote_inference`).
 03 and 04 call a model; they use Amazon Bedrock when `AWS_BEARER_TOKEN_BEDROCK` (or AWS credentials) is set.
 
 ## Editing

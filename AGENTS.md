@@ -26,14 +26,13 @@ from the top level.
 ```bash
 uv venv -p 3.12 && source .venv/bin/activate
 uv pip install -e ".[all,dev]"
-uv pip install "lerobot[remote,feetech,dataset] @ git+https://github.com/huggingface/lerobot@main"
 ```
 
 - Python 3.10+ for the package; CI, mypy and LeRobot use 3.12.
 - `[all]` is every extra except `isaac`, `newton` and `dev`. Adding an extra means adding it to `all`
   (`tests/test_install_lines.py`).
-- LeRobot comes from its main branch and is never a wheel dependency (a wheel can't carry a git ref). The one line
-  lives in `strands_robots/_extras.py` (`LEROBOT`), the hatch `lerobot` env and the docs; a test keeps them equal.
+- LeRobot is a normal dependency of the `lerobot` extra (its 0.7 release carries `remote_inference`); `[all]` installs
+  it. It needs Python 3.12, so the dependency carries a `python_version >= '3.12'` marker.
 - Headless Linux: set `MUJOCO_GL=egl` (CI does) or let `_gl.ensure_gl()` pick egl or osmesa. Import `strands_robots`
   before `mujoco`.
 

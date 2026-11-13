@@ -5,12 +5,11 @@ cta: true
 
 # Quickstart
 
-First install the library and LeRobot. See [Installation](install.md) for details.
+First install the library. See [Installation](install.md) for details.
 
 ```bash
 uv venv -p 3.12 && source .venv/bin/activate
 uv pip install "strands-robots[all] @ git+https://github.com/strands-labs/robots@main"
-uv pip install "lerobot[remote,feetech,dataset] @ git+https://github.com/huggingface/lerobot@main"
 ```
 
 ## Walk a robot

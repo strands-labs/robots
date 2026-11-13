@@ -42,13 +42,9 @@ The core needs only `numpy` and `robot_descriptions`. If you use a feature witho
 
 ## LeRobot
 
-LeRobot comes from its main branch, so it has its own install line:
-
-```bash
-uv pip install "lerobot[remote,feetech,dataset] @ git+https://github.com/huggingface/lerobot@main"
-```
-
-`dataset` lets you record datasets. `remote` adds `lerobot-policy-server`.
+LeRobot is a normal dependency of the `lerobot` extra (its 0.7 release carries `remote_inference`), so `[lerobot]`
+and `[all]` install it for you. `remote` adds `lerobot-policy-server` and Zenoh, `dataset` lets you record datasets,
+and `feetech` drives the SO arms. LeRobot requires Python 3.12.
 
 ## Check the install
 

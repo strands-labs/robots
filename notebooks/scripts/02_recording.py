@@ -10,7 +10,6 @@
 #
 # ```bash
 # uv pip install -e ".[mujoco,lerobot]"
-# uv pip install "lerobot[remote,feetech,dataset] @ git+https://github.com/huggingface/lerobot@main"
 # ```
 
 # %%
