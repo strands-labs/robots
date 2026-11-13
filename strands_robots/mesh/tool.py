@@ -24,7 +24,7 @@ from .record import _LABEL
 from .wire import in_process
 
 if TYPE_CHECKING:
-    from .mesh import Mesh
+    from .protocol import MeshView
 
 ACTIONS = ("list", "describe", "observe", "act", "run", "status", "stop", "estop", "resume")
 
@@ -53,7 +53,7 @@ def _token(x: Any) -> str | None:
     return x if isinstance(x, str) and _LABEL.match(x) else None
 
 
-def spec(mesh: Mesh) -> dict[str, Any]:
+def spec(mesh: MeshView) -> dict[str, Any]:
     """The tool spec for the devices present right now: their ids, labels, rpcs and joints come from manifests.
 
     Every manifest field comes from a peer, so only selector tokens and numbers reach the description, one JSON
@@ -108,7 +108,7 @@ def spec(mesh: Mesh) -> dict[str, Any]:
     }
 
 
-def dispatch(mesh: Mesh, inp: Mapping[str, Any], *, approve: Any = None) -> Any:
+def dispatch(mesh: MeshView, inp: Mapping[str, Any], *, approve: Any = None) -> Any:
     """One ``use_mesh`` call. ``approve`` (``callable(RunPlan) -> bool``) is the operator's answer for an agent's run
     on a device: without it such a run is refused, as for any real robot."""
     action, did = inp.get("action"), inp.get("device_id")
@@ -172,7 +172,7 @@ def dispatch(mesh: Mesh, inp: Mapping[str, Any], *, approve: Any = None) -> Any:
     return mesh.invoke(did, action)
 
 
-def _run_skill(mesh: Mesh, did: str, offered: Any, args: Mapping[str, Any]) -> Any:
+def _run_skill(mesh: MeshView, did: str, offered: Any, args: Mapping[str, Any]) -> Any:
     """``run`` on a device with skills: ``policy`` names one of them; ``seconds`` bounds it (``steps``/``hz`` are the
     device's own). The operator's yes, if the robot is real, is asked on the device by its own ``approve=``."""
     name, seconds = args.get("policy"), args.get("seconds")
@@ -186,7 +186,7 @@ def _run_skill(mesh: Mesh, did: str, offered: Any, args: Mapping[str, Any]) -> A
     return mesh.invoke(did, "skill", name=name, seconds=seconds, **extra)
 
 
-def use_mesh(mesh: Mesh, *, approve: Any = None) -> Any:
+def use_mesh(mesh: MeshView, *, approve: Any = None) -> Any:
     """The tool. Every call runs as an agent's (``from_agent``); ``approve`` answers its runs (see ``dispatch``)."""
     from strands.tools.tools import PythonAgentTool
 
