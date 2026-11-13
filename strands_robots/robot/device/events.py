@@ -1,11 +1,14 @@
 """In-process device events. ``state`` is the joints dict a policy sees, plus ``t`` (monotonic) and ``seq``.
 
 ``seq`` counts a stream's ticks: a tick whose sample failed (a corrupted reply, an I/O error) leaves a gap.
+A velocity or effort the body did not measure (NaN: a position-only Feetech read, a ros2_control joint without an
+effort interface) is ``None``, so every subscriber gets strict-JSON values (mesh stream, IoT shadow, telemetry).
 """
 
 from __future__ import annotations
 
 import contextlib
+import math
 import threading
 import time
 from collections.abc import Callable
@@ -17,13 +20,17 @@ if TYPE_CHECKING:
 EVENTS: tuple[str, ...] = ("state", "fault", "estop", "run.started", "run.stopped")
 
 
+def _measured(value: float) -> float | None:
+    return value if math.isfinite(value) else None
+
+
 def state_payload(robot: Robot, seq: int) -> dict[str, Any]:
     js = robot.observe(images=False).joints
     out: dict[str, Any] = {"t": time.monotonic(), "seq": seq}
     for i, name in enumerate(js.names):
         out[f"{name}.pos"] = float(js.positions[i])
-        out[f"{name}.vel"] = float(js.velocities[i])
-        out[f"{name}.effort"] = float(js.efforts[i])
+        out[f"{name}.vel"] = _measured(float(js.velocities[i]))
+        out[f"{name}.effort"] = _measured(float(js.efforts[i]))
     return out
 
 

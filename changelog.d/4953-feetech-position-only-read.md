@@ -5,4 +5,5 @@ loop, the safety chain, recording and the LeRobot policies use positions only: 2
 SO-101, about 0.24 ms at 1 Mbaud. It now reads `Present_Position` alone and reports `velocities` and `efforts` as NaN,
 the value a body gives for what it did not measure (the mesh sends it as `null`). `Robot("so101", port=...,
 read_motion=True)` restores the 6-byte read; `extras()["read_motion"]` says which one a robot uses. An agent or voice tool's `observe` result sends an unmeasured velocity as `null`, so it stays
-strict JSON.
+strict JSON. Every `state` subscriber (mesh stream, IoT
+`state` shadow, Basic Ingest telemetry) gets an unmeasured velocity or effort as `None`.
