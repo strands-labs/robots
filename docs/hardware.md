@@ -50,6 +50,9 @@ print(real.body.writes)  # the targets that reached the "bus"
 Extra keywords go to the driver. The Feetech driver takes `robot_id=` and `baud=`. A misspelt option raises a
 `TypeError` that lists the valid ones.
 
+A Feetech read asks each servo for its position only (2 bytes), as LeRobot does, so `velocities` and `efforts` are
+NaN. `read_motion=True` reads velocity and load too (6 bytes per servo on every read).
+
 Name cameras by device name, not index. Indexes change when you plug in another camera.
 
 ```python

@@ -28,6 +28,7 @@ from .bus import (
     encode_sm,
     word,
 )
+from .readout import MOTION_BYTES, POSITION_BYTES, joint_state
 from .sweep import sweep_ranges
 
 
@@ -50,11 +51,14 @@ class FeetechDriver:
         bus: FeetechBus | None = None,
         max_speed: float | None = MAX_SPEED,
         disable_torque_on_disconnect: bool = False,
+        read_motion: bool = False,
     ) -> None:
-        """``max_speed`` (rad/s) caps one write's move from the last goal (``slew.Slew``); ``None``: as given."""
+        """``max_speed`` (rad/s) caps one write's move from the last goal (``slew.Slew``); ``None``: as given.
+        ``read_motion``: every read also asks for velocity and load (6 bytes per servo, not 2); else they are NaN."""
         if port is None and bus is None:
             raise ValueError("FeetechDriver needs port= (e.g. /dev/tty.usbmodem...)")
         self.slew = Slew(max_speed)
+        self.read_motion = read_motion
         self.description = description
         self.names = description.action_keys
         # motor ids: the registry labels model joints "1".."6" -> the label; fall back to 1..n in action order
@@ -122,17 +126,11 @@ class FeetechDriver:
     # Body
 
     def read(self) -> JointState:
-        raw = self.bus.sync_read(REG_PRESENT_POSITION, 6, self.ids, retries=self.num_read_retries)
-        pos, vel, load = [], [], []
-        for name, mid in zip(self.names, self.ids, strict=True):
-            r = raw[mid]
-            counts = decode_sm(r[0:2], 15)
-            pos.append(self.counts_to_rad(name, counts))
-            cmin, cmax, lo, hi, rev = self._span(name)
-            vel.append(decode_sm(r[2:4], 15) * (hi - lo) / (cmax - cmin) * (-1 if rev else 1))
-            load.append(decode_sm(r[4:6], 10) / 1000.0)  # fraction of max torque, signed
-        self.slew.seen(np.array(pos))
-        return JointState(self.names, np.array(pos), np.array(vel), np.array(load))
+        """Present_Position only (2 bytes per servo); with ``read_motion`` velocity and load too (6 bytes)."""
+        n = MOTION_BYTES if self.read_motion else POSITION_BYTES
+        js = joint_state(self, self.bus.sync_read(REG_PRESENT_POSITION, n, self.ids, retries=self.num_read_retries))
+        self.slew.seen(np.array(js.positions))
+        return js
 
     def write(self, targets: np.ndarray) -> None:
         # K8: every goal is computed (a non-finite target refused) BEFORE torque comes on, so a refused write stays limp
@@ -157,6 +155,7 @@ class FeetechDriver:
         return {
             "torque": self._torque_on,
             "max_speed": self.slew.max_speed,
+            "read_motion": self.read_motion,
             "slewed": self.slew.count,
             "calibration": self.calibration_source or "none (raw full-turn counts)",
             "calibration_sha256": self.calibration.digest() if self.calibration is not None else None,

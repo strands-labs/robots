@@ -1,13 +1,13 @@
 """A mounted device's state and events, published on its keys for every subscriber on the mesh.
 
-State is the in-process ``state`` payload (``<joint>.pos/.vel/.effort``, ``t``, ``seq``), sampled once on the
-device at ``state_hz`` and published to every transport, however many peers listen. A subscriber sees gaps in
-``seq`` as drops. Events (``estop``, ``fault``, ``run.started``, ``run.stopped``) are forwarded as they happen.
+State is the in-process ``state`` payload (``<joint>.pos/.vel/.effort``, ``t``, ``seq``; an unmeasured reading is
+``None``), sampled once on the device at ``state_hz`` and published to every transport, however many peers listen.
+A subscriber sees gaps in ``seq`` as drops. Events (``estop``, ``fault``, ``run.started``, ``run.stopped``) are
+forwarded as they happen.
 """
 
 from __future__ import annotations
 
-import math
 from collections.abc import Callable, Sequence
 from typing import Any
 
@@ -17,18 +17,12 @@ from .transports.base import Transport, Unsubscribe
 EVENTS: tuple[str, ...] = ("state", "fault", "estop", "run.started", "run.stopped")
 
 
-def _unmeasured(key: str, value: Any) -> bool:
-    return key.endswith((".vel", ".effort")) and isinstance(value, float) and not math.isfinite(value)
-
-
 def publish(transports: Sequence[Transport], tenant: str, robot: Any, device_id: str, state_hz: float) -> Unsubscribe:
     """Start publishing ``robot``'s state and events. Returns the undo."""
     seq = [0]
 
     def send(slot: str, kind: str, name: str, payload: dict[str, Any]) -> None:
         seq[0] += 1
-        if slot == "state":  # an unmeasured velocity or effort is null on the wire, as in an observe reply (codec)
-            payload = {k: None if _unmeasured(k, v) else v for k, v in payload.items()}
         env = wire.envelope(tenant, device_id, kind, name, seq=seq[0], result=payload)
         k = wire.key(slot, tenant, device_id, name if slot == "event" else "")
         for t in transports:

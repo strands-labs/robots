@@ -38,6 +38,8 @@ With `seconds=`, the robot moves smoothly from its current pose and returns the 
 | `close()` | Remove the robot from its world |
 
 On a Feetech arm each write is capped at `max_speed` (default 2 rad/s). Pass `max_speed=None` to turn the cap off.
+Each read asks the servos for position only, as LeRobot does, so `velocities` and `efforts` are NaN (not measured).
+Pass `read_motion=True` to read velocity and load too, at 4 more bytes per servo on every read.
 
 ## run()
 

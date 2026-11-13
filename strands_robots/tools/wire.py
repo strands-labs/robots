@@ -22,8 +22,9 @@ def json_safe(x: Any) -> Any:
     """numpy, dataclasses, an Observation -> plain JSON; an image -> its shape (the pixels go as a block)."""
     if isinstance(x, Observation):
         out = {"t": x.t, "joints": x.joints.as_dict(), "pose": json_safe(x.pose), "extras": json_safe(x.extras)}
-        if x.joints.velocities is not None:
-            out["velocities"] = dict(zip(x.joints.names, json_safe(x.joints.velocities), strict=True))
+        if x.joints.velocities is not None:  # an unmeasured velocity (NaN) is null, as on the mesh: strict JSON
+            vel = [float(v) if np.isfinite(v) else None for v in x.joints.velocities]
+            out["velocities"] = dict(zip(x.joints.names, vel, strict=True))
         out["images"] = {k: list(v.shape) for k, v in x.images.items()}
         return out
     if isinstance(x, JointState):
