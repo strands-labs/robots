@@ -81,6 +81,11 @@ router cannot see traffic inside one process, and cannot defend a compromised ro
 
 If the server stops answering, the robot holds its last target for 1 s. Then the run stops with a fault.
 
+A server off the LAN gets 30 s timeouts and JPEG frames instead of LeRobot's 5 s and raw frames. An address that
+looks local (`127.0.0.1`, a LAN address) is measured first: a tunnel such as `ssh -L` to a far machine is `127.0.0.1`
+too, so a round trip above 20 ms counts as off the LAN. `policy.network` and `policy.rtt_s` show what was decided.
+This never changes which links a real robot may use.
+
 If the server goes away (its presence on the link is lost), the robot holds its last target and the session is
 reopened in the background, retrying with backoff for `reconnect_s` (default 10 s). The new session must be the same
 checkpoint on the same channel, with the same features, semantics and rate; anything else ends the run with a fault
@@ -94,6 +99,7 @@ that names what changed. Once it is back, the policy starts from the current fra
 | `tasks=[...]` | Refuse instructions the policy was not trained on |
 | `zenoh_config="robot.json5"` | The session's zenoh config (the `robot-client` role from `zenoh-config`) |
 | `trusted=True` | Let a real robot take actions over a link without the robot role (see above) |
+| `network="wan"` | Use the internet's settings (30 s timeouts, JPEG frames); `"lan"` keeps LeRobot's; `"auto"` (default) measures a local-looking address |
 | `reconnect_s=10` | Hold and reopen the session for this long when the server goes away (0: fault at once) |
 | `start_pose={...}` | Move here before the first step, over `start_seconds` (default 3) |
 | `norm={...}` | Set the units a checkpoint was trained in |

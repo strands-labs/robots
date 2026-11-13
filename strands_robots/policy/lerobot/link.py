@@ -182,24 +182,26 @@ def server_zenoh(endpoint: str, config: str | None) -> Any:
     return ZenohConfig(listen_endpoints=[endpoint], config_file=path)
 
 
-def wan_defaults(endpoint: str, settings: dict[str, Any], descriptor: dict[str, Any] | None = None) -> dict[str, Any]:
+def wan_defaults(
+    endpoint: str, settings: dict[str, Any], descriptor: dict[str, Any] | None = None, far: bool | None = None
+) -> dict[str, Any]:
     """LeRobot client settings a link implies, under anything the caller set by name.
 
-    Off the LAN: handshake/action/startup timeouts >= 30 s and JPEG frames. A ``tls``/``quic``/``ws`` link is a
-    router, so ``zenoh_mode="client"``. Once the server has spoken, the action timeout also covers its own
-    ``action_deadline_s`` (the hello's ``limits``) — a server allowed 5 s to answer is not a client fault at 5 s.
+    Off the LAN (``far``; None: judged from the endpoint as written): handshake/action/startup timeouts >= 30 s and
+    JPEG frames. A ``tls``/``quic``/``ws`` link is a router, so ``zenoh_mode="client"``. Once the server has spoken,
+    the action timeout also covers its own ``action_deadline_s`` (the hello's ``limits``) — a server allowed 5 s to
+    answer is not a client fault at 5 s.
     """
     out: dict[str, Any] = {}
+    far = not is_local(endpoint) if far is None else far
     if routed(endpoint):
         out["zenoh_mode"] = "client"
-    if not is_local(endpoint):
+    if far:
         out.update(handshake_timeout_s=WAN_TIMEOUT_S, action_timeout_s=WAN_TIMEOUT_S, startup_timeout_s=WAN_TIMEOUT_S)
         out["encoding"] = "jpeg"
     if descriptor is not None:
         deadline = float((descriptor.get("limits") or {}).get("action_deadline_s") or 0.0)
         if deadline:
-            out["action_timeout_s"] = max(
-                out.get("action_timeout_s", 5.0), deadline + (0.0 if is_local(endpoint) else 5.0)
-            )
+            out["action_timeout_s"] = max(out.get("action_timeout_s", 5.0), deadline + (5.0 if far else 0.0))
     out.update(settings)  # the caller's word wins
     return out
