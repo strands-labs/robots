@@ -242,7 +242,7 @@ def test_a_sequential_session_asks_only_when_its_queue_is_empty(deployment, monk
 
 
 def test_execution_is_the_servers_word_then_the_contracts():
-    from strands_robots.policy.lerobot.remote import execution_of
+    from strands_robots.policy.lerobot.session import execution_of
 
     plain = {"capabilities": {"rtc_horizon": 0}, "execution_contracts": ["chunk_v1"]}
     assert execution_of(plain, "auto") == "sequential"
@@ -342,14 +342,14 @@ def test_a_remote_policy_starts_its_run_from_its_start_pose(deployment, monkeypa
         assert np.sign(arm.observe(images=False).joints["shoulder_pan"]) < 0
 
 
-def test_a_lost_server_ends_the_run_as_a_fault_and_the_arm_holds(deployment):
+def test_a_lost_server_with_reconnect_off_ends_the_run_as_a_fault_and_the_arm_holds(deployment):
     cfg, server = deployment(name="doomed")
     ctx = server.__enter__()
     arm = _arm()
     stopper = threading.Timer(1.5, lambda: server.__exit__(None, None, None))
     stopper.start()
     t = time.perf_counter()
-    r = arm.run(Policy(ctx, action_starvation_grace_s=0.5), seconds=20)
+    r = arm.run(Policy(ctx, action_starvation_grace_s=0.5, reconnect_s=0), seconds=20)
     wall = time.perf_counter() - t
     assert r.stopped_by == "fault" and r.fault, r
     assert wall < 1.5 + 5.0 + 1.0  # action_timeout (5 s) bounds the outstanding request

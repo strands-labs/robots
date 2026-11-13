@@ -81,6 +81,12 @@ router cannot see traffic inside one process, and cannot defend a compromised ro
 
 If the server stops answering, the robot holds its last target for 1 s. Then the run stops with a fault.
 
+If the server goes away (its presence on the link is lost), the robot holds its last target and the session is
+reopened in the background, retrying with backoff for `reconnect_s` (default 10 s). The new session must be the same
+checkpoint on the same channel, with the same features, semantics and rate; anything else ends the run with a fault
+that names what changed. Once it is back, the policy starts from the current frame; no old plan is replayed.
+`policy.reconnects` lists each recovered drop. `reconnect_s=0` ends the run with a fault at once.
+
 ## Options
 
 | Option | Does |
@@ -88,6 +94,7 @@ If the server stops answering, the robot holds its last target for 1 s. Then the
 | `tasks=[...]` | Refuse instructions the policy was not trained on |
 | `zenoh_config="robot.json5"` | The session's zenoh config (the `robot-client` role from `zenoh-config`) |
 | `trusted=True` | Let a real robot take actions over a link without the robot role (see above) |
+| `reconnect_s=10` | Hold and reopen the session for this long when the server goes away (0: fault at once) |
 | `start_pose={...}` | Move here before the first step, over `start_seconds` (default 3) |
 | `norm={...}` | Set the units a checkpoint was trained in |
 
