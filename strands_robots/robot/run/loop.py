@@ -17,7 +17,7 @@ from ..clock import MONOTONIC
 from ..safety import apply_on_disconnect
 from .bind import Bound, bind, install_gains, looks, release
 from .common import announce, approve_run, emit, label, rate
-from .pace import OnMiss, Pacer
+from .pace import OnMiss, Pacer, spin_for
 from .pin import files_digest, pinned
 from .result import RunResult, StoppedBy
 from .source import RunPlan, is_agent, is_confirmed, refuse_agent_spec
@@ -148,7 +148,7 @@ def _loop(
     if robot.sim is None or realtime or bound.realtime:  # hardware (or a watched world): pace on the body's clock
         clock = robot.clock if robot.sim is None else MONOTONIC
         sleep = robot.estop_latch.wait if clock is MONOTONIC else clock.sleep  # an e-stop never waits out a period
-        pacer = Pacer(dt, on_miss=on_miss, now=clock.now, sleep=sleep)
+        pacer = Pacer(dt, on_miss=on_miss, now=clock.now, sleep=sleep, spin=spin_for(clock))
     t0, wall0 = robot.clock.now(), _time.monotonic()
     ep.open(lambda: robot.observe(images=True))  # before tick 1: a dataset's setup is no tick's lateness
     held = install_gains({robot: bound})  # after the rate, the step count, the pacer and the dataset: the last checks
