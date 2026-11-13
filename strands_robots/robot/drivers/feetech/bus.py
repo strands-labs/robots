@@ -150,16 +150,26 @@ class FeetechBus:
         return self._sync_read(reg, n, ids)
 
     def _sync_read(self, reg: int, n: int, ids: list[int]) -> dict[int, bytes]:
+        """The servos answer in the order asked, one frame each; a frame is filed under the ID it carries.
+
+        A silent servo is named by its own ID (the frame after it is its neighbour's, not its own), and the read
+        goes on to the last servo so every silent one is named. Only a silent last servo costs the ``timeout``."""
         packet = frame(BROADCAST, SYNC_READ, bytes([reg, n]) + bytes(ids))
         out: dict[int, bytes] = {}
         with self.wire:
             self.serial.reset_input_buffer()
             self.serial.write(packet)
-            for mid in ids:  # the servos answer in id order, one frame each
-                raw = self._echoed(packet, self._frame()) if mid == ids[0] else self._frame()
-                if not raw.startswith(HEADER):
-                    raise ProtocolError(f"sync_read: no reply from servo {mid} (got {len(out)} of {len(ids)})")
+            raw = self._echoed(packet, self._frame())
+            while raw.startswith(HEADER) and len(raw) >= 3:
+                mid = raw[2]
+                if mid not in ids or mid in out:
+                    raise ProtocolError(f"sync_read: a reply from servo {mid}, which was not asked or answered twice")
                 out[mid] = parse_status(raw, mid, n)[1]
+                if mid == ids[-1]:
+                    break
+                raw = self._frame()
+        if missing := [i for i in ids if i not in out]:
+            raise ProtocolError(f"sync_read: no reply from servo(s) {missing} (got {len(out)} of {len(ids)})")
         return out
 
     def sync_write(self, reg: int, per: int, items: Mapping[int, bytes]) -> None:
