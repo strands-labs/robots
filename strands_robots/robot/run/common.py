@@ -6,12 +6,11 @@ from collections.abc import Iterable
 from os import PathLike
 from typing import TYPE_CHECKING, Any
 
-from .bind import Bound
-from .result import RunResult
-from .source import RunPlan
-
 if TYPE_CHECKING:
     from ..robot import Robot
+    from .bind import Bound
+    from .result import RunResult
+    from .source import RunPlan
 
 
 def emit(robot: Robot, event: str, payload: dict[str, Any]) -> None:
