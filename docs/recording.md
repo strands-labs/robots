@@ -33,6 +33,29 @@ directory has the sticky bit, like `/tmp`). The error names the directory, its o
 directory only you can change (`chmod go-w`). Missing parent directories are created for you. When a take that
 created its dataset is dropped, only that directory is deleted. If its path now leads somewhere else, it is kept.
 
+## Frame timing
+
+LeRobot's `timestamp` column is always `frame_index / fps`, and its video frames are found by it, so a slow tick
+can't show there. Each frame also stores `time.measured`: when that frame was read on the robot's clock, in seconds
+from the episode's first frame. On a real robot a stalled tick shows as a gap longer than `1 / fps` after it, and a
+skipped tick as a gap of about `2 / fps`. In a simulation that isn't paced in real time, the clock is sim time, so the
+gaps are exactly `1 / fps`. The key starts with neither `observation` nor `action`, so no LeRobot policy takes it as
+an input.
+
+<!-- test: skip, reads a dataset recorded above -->
+```python
+import numpy as np
+from lerobot.datasets.lerobot_dataset import LeRobotDataset
+
+ds = LeRobotDataset("local/so101-wave", root="datasets/so101-wave")
+t = np.asarray(ds.hf_dataset["time.measured"], dtype=float).ravel()
+gaps = np.diff(t)
+late = np.flatnonzero(gaps > 1.5 / ds.fps)  # frames read after a stall (compare within one episode)
+print(f"worst gap {gaps.max() * 1e3:.1f} ms; {late.size} late frames")
+```
+
+A dataset recorded before frames carried `time.measured` keeps taking episodes, written without it.
+
 ## Record from the dashboard
 
 The dashboard's **Record** tab does the same without code. See [Dashboard](dashboard.md) to start one. The tab

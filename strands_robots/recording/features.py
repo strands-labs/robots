@@ -1,4 +1,5 @@
-"""LeRobot features for one robot: ``<action key>.pos`` state and action, one video feature per camera."""
+"""LeRobot features for one robot: ``<action key>.pos`` state and action, one video feature per camera, and the
+measured capture time of every frame."""
 
 from __future__ import annotations
 
@@ -11,6 +12,9 @@ from ..types import Observation
 from ..units import Units
 
 STATE, ACTION, IMAGES = "observation.state", "action", "observation.images."
+# LeRobot's own ``timestamp`` is frame_index / fps by construction (its video frames are found by it). This one is when
+# each frame was read, so a stalled or skipped tick shows. No ``observation``/``action`` prefix: never a policy input.
+TIME = "time.measured"
 
 
 def lerobot_names(keys: tuple[str, ...] | list[str]) -> list[str]:
@@ -22,6 +26,7 @@ def features_from(first: Observation, action_keys: tuple[str, ...]) -> dict[str,
     feats: dict[str, dict[str, Any]] = {
         STATE: {"dtype": "float32", "shape": (len(first.joints.names),), "names": lerobot_names(first.joints.names)},
         ACTION: {"dtype": "float32", "shape": (len(action_keys),), "names": lerobot_names(action_keys)},
+        TIME: {"dtype": "float64", "shape": (1,), "names": ["seconds"]},  # seconds from the episode's first frame
     }
     for cam, img in first.images.items():
         if img.ndim != 3 or img.shape[2] != 3 or img.dtype != np.uint8:
