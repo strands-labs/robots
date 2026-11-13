@@ -13,7 +13,7 @@ from ..safety import apply_on_disconnect
 from .bind import Bound, bind, install_gains, looks, release
 from .common import announce, declared, emit
 from .loop import start_pose
-from .pace import Pacer
+from .pace import Pacer, spin_for
 from .result import RunResult, StoppedBy
 from .source import is_agent
 from .tick import Tick, commit, decided, stopped
@@ -77,7 +77,7 @@ def _lockstep(
     per = max(1, round(dt / sim.physics.timestep))
     total = steps if steps is not None else int(round(float(seconds or 0.0) / dt))
     paced = any(b.realtime for b in bound.values())
-    pacer = Pacer(dt, now=MONOTONIC.now, sleep=MONOTONIC.sleep) if paced else None
+    pacer = Pacer(dt, now=MONOTONIC.now, sleep=MONOTONIC.sleep, spin=spin_for(MONOTONIC)) if paced else None
     held = install_gains(bound)  # after the rate, the step count and the pacer, the loop's last checks
     limit: StoppedBy = "steps" if steps is not None else "seconds"  # the limit the caller gave
     why = limit

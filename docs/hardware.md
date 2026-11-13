@@ -101,6 +101,10 @@ Every refusal raises `RequestRefused`. If a run faults, each joint goes to its d
 Each step of `run()` reads the bus once and writes once. A late step counts in `RunResult.deadline_misses`.
 Pass `on_miss="fault"` to stop the run at the first late step.
 
+Between steps the run sleeps until 2 ms before the next one and spins the rest, because the operating system
+often wakes a sleeper a millisecond or two late (macOS more than Linux). The spin costs at most 2 ms of one core
+per step, and an e-stop still ends the wait at once. A robot built with its own `clock=` waits on that clock only.
+
 ## Acceptance test
 
 Run the hardware tests on a real SO-101:
