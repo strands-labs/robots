@@ -7,21 +7,32 @@ measure (a ROS position-only joint does the same; the mesh sends it as ``null``)
 
 from __future__ import annotations
 
-from collections.abc import Mapping
-from typing import TYPE_CHECKING
+from collections.abc import Mapping, Sequence
+from typing import Protocol
 
 import numpy as np
 
 from ....types import JointState
 from .bus import decode_sm
 
-if TYPE_CHECKING:
-    from .driver import FeetechDriver
-
 POSITION_BYTES, MOTION_BYTES = 2, 6
 
 
-def joint_state(drv: FeetechDriver, raw: Mapping[int, bytes]) -> JointState:
+class _Calibrated(Protocol):
+    """The part of ``FeetechDriver`` a readout needs (structural, so this module never imports the driver)."""
+
+    @property
+    def names(self) -> tuple[str, ...]: ...
+
+    @property
+    def ids(self) -> Sequence[int]: ...
+
+    def counts_to_rad(self, name: str, counts: int) -> float: ...
+
+    def _span(self, name: str) -> tuple[float, float, float, float, bool]: ...
+
+
+def joint_state(drv: _Calibrated, raw: Mapping[int, bytes]) -> JointState:
     """Radians (and rad/s, signed fraction of max torque) in ``drv.names`` order from per-servo register bytes."""
     pairs = list(zip(drv.names, drv.ids, strict=True))
     pos = np.array([drv.counts_to_rad(name, decode_sm(raw[mid][0:2], 15)) for name, mid in pairs])
