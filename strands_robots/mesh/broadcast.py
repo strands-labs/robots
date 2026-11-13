@@ -17,12 +17,12 @@ from .device import Device, Selector
 from .transports.base import Transport, Unsubscribe
 
 if TYPE_CHECKING:
-    from .mesh import Mesh
+    from .protocol import MeshView
 
 COMMANDS = ("estop", "resume", "hold", "stop")
 
 
-def broadcast(mesh: Mesh, command: str, selector: str, deadline: float, approved_by: str | None) -> list[str]:
+def broadcast(mesh: MeshView, command: str, selector: str, deadline: float, approved_by: str | None) -> list[str]:
     """Send ``command`` to every device matching ``selector``; return the ids that acked within ``deadline`` s."""
     if command not in COMMANDS:
         raise ValueError(f"cannot broadcast {command!r}; commands are {list(COMMANDS)}")
@@ -55,7 +55,7 @@ def broadcast(mesh: Mesh, command: str, selector: str, deadline: float, approved
         return sorted(acked)
 
 
-def publish_estop(mesh: Mesh, selector: str, args: dict[str, Any]) -> None:
+def publish_estop(mesh: MeshView, selector: str, args: dict[str, Any]) -> None:
     """The tenant-wide e-stop: every mesh in the tenant latches its devices matching ``selector`` on hearing it."""
     env = wire.envelope(mesh.tenant, mesh.peer_id, "event", "estop", args={**args, "selector": selector})
     for t in mesh.transports:  # signed where the transport has identities; heard by every listener regardless

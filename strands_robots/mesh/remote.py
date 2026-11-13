@@ -14,7 +14,7 @@ import numpy as np
 from ..types import JointState, Observation, Pose
 
 if TYPE_CHECKING:
-    from .mesh import Mesh
+    from .protocol import MeshView
 
 
 class RemoteBody:
@@ -22,7 +22,7 @@ class RemoteBody:
 
     drives_here = False  # the device's own process drives the body and its chain decides every write (serve.py)
 
-    def __init__(self, mesh: Mesh, device_id: str, names: tuple[str, ...], *, images: bool = False) -> None:
+    def __init__(self, mesh: MeshView, device_id: str, names: tuple[str, ...], *, images: bool = False) -> None:
         self.where = f"remote on {mesh.tenant}"  # Robot's repr: a peer's body, whatever drives it there
         self.supports_position_hold = False  # the registry decides via its type; a peer's manifest cannot grant a hold
         self.calibration, self.resolution = None, None  # the device's own bus owns its calibration
@@ -65,7 +65,7 @@ class RemoteBody:
         self._last = None
 
 
-def connect(mesh: Mesh, device_id: str, images: bool) -> Any:
+def connect(mesh: MeshView, device_id: str, images: bool) -> Any:
     """``Mesh.connect``: a ``Robot`` driven by the device ``device_id``, shaped by its announced manifest."""
     from ..robot import Robot
 
