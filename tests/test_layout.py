@@ -91,3 +91,22 @@ def test_no_robot_name_string_literal_in_package_code():
                 if node.value.strip().lower().replace("-", "_") in names:
                     bad.append((str(p.relative_to(PKG)), node.lineno, node.value))
     assert not bad, f"robot-name string literals in package code: {bad}"
+
+
+def test_targets_does_not_import_the_robot_module():
+    """``robot/targets.py`` is a leaf on every write path: it coerces an Action against a structural
+    ``Targetable`` protocol, not ``Robot``, so it imports nothing from ``robot/robot.py`` (even under
+    ``TYPE_CHECKING``). Keeping it a leaf is what breaks the ``targets <-> robot`` import cycle."""
+    tree = ast.parse((PKG / "robot" / "targets.py").read_text())
+    offenders = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom):
+            if node.level == 1 and node.module == "robot":  # from .robot import ...
+                offenders.append(ast.dump(node))
+            if node.level == 1 and node.module is None and any(a.name == "robot" for a in node.names):
+                offenders.append(ast.dump(node))  # from . import robot
+            if node.module == "strands_robots.robot.robot":
+                offenders.append(ast.dump(node))
+        if isinstance(node, ast.Import) and any(a.name == "strands_robots.robot.robot" for a in node.names):
+            offenders.append(ast.dump(node))
+    assert not offenders, f"targets.py imports the robot module (cycle): {offenders}"
