@@ -61,6 +61,11 @@ cameras = {"front": "Logi 4K", "wrist": {"index": 1, "width": 640, "height": 480
 
 The dict keys are the image keys the policy sees. A camera that delivers a different size than asked is refused.
 
+`Robot(..., cameras=...)` opens every camera at connect, all at once, and refuses a camera that cannot open or sends
+no frame within 10 s. Each camera then has its own capture thread, so a step takes each camera's latest frame without
+waiting for the device. A camera whose latest frame is more than 1 s old has stopped delivering: it is left out of
+the observation. `arm.body.cameras.ages()` gives the age in seconds of each frame the last step took.
+
 {{drawing:d17_driver_options}}
 
 ## Calibration

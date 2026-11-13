@@ -12,44 +12,21 @@ from __future__ import annotations
 
 import platform
 import re
+import threading
 import time
+import weakref
 from collections.abc import Mapping
-from dataclasses import dataclass, replace
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
 import numpy as np
 
-_PATH = re.compile(r"^(/|\\\\|[A-Za-z]:\\)")  # a device path, never a name
+from .camera_spec import CameraSpec
+from .capture import Grabber, stop_all
+from .devices import _AVCapture, _CVCapture, av_options
 
-
-@dataclass(frozen=True)
-class CameraSpec:
-    index: int | str | None = None  # a device number or path; None until a name is resolved
-    width: int | None = None
-    height: int | None = None
-    fps: float | None = None
-    name: str | None = None  # the device's own name (or a unique part of it)
-
-    @classmethod
-    def of(cls, cam: str, v: Any) -> CameraSpec:
-        if isinstance(v, CameraSpec):
-            return v
-        if isinstance(v, int):
-            return cls(v)
-        if isinstance(v, str):
-            return cls(v) if v.isdigit() or _PATH.match(v) else cls(name=v)
-        if isinstance(v, Mapping):
-            unknown = set(v) - {"index", "index_or_path", "name", "width", "height", "fps"}
-            if unknown:
-                raise TypeError(
-                    f"camera {cam!r}: unknown field(s) {sorted(unknown)}; use index, name, width, height, fps"
-                )
-            idx, name = v.get("index", v.get("index_or_path")), v.get("name")
-            if idx is None and name is None:
-                raise TypeError(f"camera {cam!r}: needs index= (a device number or path) or name= (the device's name)")
-            return cls(idx, v.get("width"), v.get("height"), v.get("fps"), name)
-        raise TypeError(f"camera {cam!r}: give a device name, an index, a path or {{index|name, width, height, fps}}")
+__all__ = ["Cameras", "CameraSpec", "av_options", "list_cameras", "resolve"]
 
 
 def list_cameras() -> list[tuple[str, int | str]]:
@@ -118,124 +95,85 @@ def resolve(name: str, devices: list[tuple[str, int | str]]) -> tuple[str, int |
 
 
 class Cameras:
-    """The cameras of one hardware body, opened lazily, read as HxWx3 uint8 RGB.
+    """The cameras of one hardware body, read as HxWx3 uint8 RGB: one capture thread each (``capture.Grabber``).
 
-    A named camera on macOS is read through PyAV's AVFoundation input (the backend that takes names); everything else
-    through OpenCV. Either way ``read`` returns the latest frame of each camera.
+    ``open`` starts every camera at once and waits for each first frame; ``Robot`` calls it at connect (``make_driver``)
+    and ``read`` calls it for a body used bare. ``read`` then returns each camera's latest frame without waiting on a
+    device; ``stamps`` holds when each returned frame was captured (``time.monotonic()``), and a camera whose latest
+    frame is older than ``max_age_s`` (it stopped delivering) is left out, as a failed read is. A named camera on
+    macOS is read through PyAV's AVFoundation input (the backend that takes names); everything else through OpenCV.
     """
 
-    def __init__(self, cfg: Mapping[str, Any] | None) -> None:
+    def __init__(self, cfg: Mapping[str, Any] | None, *, max_age_s: float = 1.0, open_timeout_s: float = 10.0) -> None:
         self.specs = {n: CameraSpec.of(n, v) for n, v in (cfg or {}).items()}
         self.resolved: dict[str, str] = {}  # camera -> the device name it resolved to
-        self._caps: dict[str, Any] = {}
+        self.stamps: dict[str, float] = {}  # camera -> capture time of the frame ``read`` last returned
+        self.max_age_s, self.open_timeout_s = max_age_s, open_timeout_s
+        self._caps: dict[str, Grabber] = {}
+        self._lock = threading.RLock()  # one caller at a time starts, reads, refits or stops the capture threads
+        weakref.finalize(self, stop_all, self._caps)  # a body dropped unclosed releases its devices
 
     def fit(self, sizes: Mapping[str, tuple[int, int] | None]) -> None:
         """Adopt a policy's camera sizes for every camera that declared none; an open camera reopens at them.
 
-        The rate stays the device's own: a camera read at the policy's (slower) rate would make each read wait a
-        whole camera period for a fresh frame."""
-        for cam, size in sizes.items():
-            s = self.specs.get(cam)
-            if s is None or size is None:
-                continue
-            want = replace(s, width=s.width or size[0], height=s.height or size[1])
-            if want != s:
-                self.specs[cam] = want
-                if (cap := self._caps.pop(cam, None)) is not None:
-                    cap.close()
+        The rate stays the device's own: the capture thread reads at it, and the policy takes the latest frame."""
+        with self._lock:
+            for cam, size in sizes.items():
+                s = self.specs.get(cam)
+                if s is None or size is None:
+                    continue
+                want = replace(s, width=s.width or size[0], height=s.height or size[1])
+                if want != s:
+                    self.specs[cam] = want
+                    if (cap := self._caps.pop(cam, None)) is not None:
+                        cap.stop()
 
-    def _open(self, cam: str) -> Any:
+    def _open(self, cam: str) -> Grabber:
         s = self.specs[cam]
-        cap: _AVCapture | _CVCapture
-        if s.name is not None and s.index is None:
+        if s.name is not None and s.index is None:  # resolved here, on the caller's thread: a bad name fails at once
             name, index = resolve(s.name, list_cameras())
             self.resolved[cam] = name
-            cap = _AVCapture(name, s) if platform.system() == "Darwin" else _CVCapture(index, s)
+            mac = platform.system() == "Darwin"
+            grabber = Grabber(cam, lambda: _AVCapture(name, s) if mac else _CVCapture(index, s))
         else:
-            cap = _CVCapture(s.index, s)
-        self._caps[cam] = cap
-        return cap
+            grabber = Grabber(cam, lambda: _CVCapture(s.index, s))
+        self._caps[cam] = grabber
+        return grabber
+
+    def open(self) -> None:
+        """Start every camera not yet started (their opens run side by side), then wait for each one's first frame."""
+        with self._lock:
+            try:
+                started = [self._open(cam) for cam in self.specs if cam not in self._caps]
+                for grabber in started:
+                    grabber.wait(self.open_timeout_s)
+            except BaseException:
+                self.close()
+                raise
 
     def read(self) -> dict[str, np.ndarray]:
-        out: dict[str, np.ndarray] = {}
-        for cam, s in self.specs.items():
-            cap = self._caps.get(cam) or self._open(cam)
-            rgb = cap.read()
-            if rgb is None:
-                continue
-            h, w = rgb.shape[:2]
-            if (s.width is not None and w != s.width) or (s.height is not None and h != s.height):
-                raise ValueError(f"camera {cam!r} delivers {w}x{h}, asked for {s.width}x{s.height}")
-            out[cam] = rgb
-        return out
+        with self._lock:
+            self.open()
+            out: dict[str, np.ndarray] = {}
+            now = time.monotonic()
+            for cam, s in self.specs.items():
+                got = self._caps[cam].latest()
+                if got is None or now - got[1] > self.max_age_s:
+                    continue
+                rgb, self.stamps[cam] = got
+                h, w = rgb.shape[:2]
+                if (s.width is not None and w != s.width) or (s.height is not None and h != s.height):
+                    raise ValueError(f"camera {cam!r} delivers {w}x{h}, asked for {s.width}x{s.height}")
+                out[cam] = rgb
+            return out
+
+    def ages(self) -> dict[str, float]:
+        """Seconds since each frame ``read`` last returned was captured."""
+        now = time.monotonic()
+        return {cam: now - t for cam, t in self.stamps.items()}
 
     def close(self) -> None:
-        for cap in self._caps.values():
-            cap.close()
-        self._caps.clear()
-
-
-class _CVCapture:
-    def __init__(self, index: Any, s: CameraSpec) -> None:
-        try:
-            import cv2
-        except ImportError as exc:
-            raise ImportError("cameras need opencv: pip install opencv-python") from exc
-        self.cap = cv2.VideoCapture(index)
-        for prop, v in ((cv2.CAP_PROP_FRAME_WIDTH, s.width), (cv2.CAP_PROP_FRAME_HEIGHT, s.height),
-                        (cv2.CAP_PROP_FPS, s.fps)):  # fmt: skip
-            if v is not None:
-                self.cap.set(prop, v)
-
-    def read(self) -> np.ndarray | None:
-        ok, bgr = self.cap.read()
-        return np.ascontiguousarray(bgr[:, :, ::-1]) if ok else None
-
-    def close(self) -> None:
-        self.cap.release()
-
-
-AV_DEFAULT_SIZE = (640, 480)  # what an undeclared, unfitted camera opens at; ``Cameras.fit`` overrides it
-AV_DEFAULT_FPS = 30.0
-
-
-def av_options(s: CameraSpec) -> dict[str, str]:
-    """ffmpeg avfoundation options for a spec: ALWAYS a size and a rate.
-
-    Measured on two USB cameras (Logi 4K Pro, USB2.0_CAM1, macOS 26): without ``framerate`` the indev fails every
-    open with ``OSError(5, 'Input/output error')`` whatever the size; with a rate but no size it asks for the device's
-    native mode, which hangs ``av.open`` (USB2.0_CAM1, 1920x1080 uyvy @30 is not a mode it has) or costs the full
-    sensor (Logi: 4096x2160). A declared or fitted size wins; a camera that declared none opens at ``AV_DEFAULT_SIZE``.
-    """
-    w, h = (s.width, s.height) if s.width and s.height else AV_DEFAULT_SIZE
-    return {"pixel_format": "uyvy422", "video_size": f"{w}x{h}", "framerate": f"{s.fps or AV_DEFAULT_FPS:g}"}
-
-
-class _AVCapture:
-    """AVFoundation by device name through PyAV; ffmpeg's indev keeps only the latest frame, so a read is fresh."""
-
-    def __init__(self, name: str, s: CameraSpec) -> None:
-        import av
-
-        self.container = av.open(name, format="avfoundation", options=av_options(s))
-        self.stream = self.container.streams.video[0]
-
-    def read(self, wait_s: float = 0.5) -> np.ndarray | None:
-        """The next frame; the indev answers EAGAIN until one is ready, so poll for up to ``wait_s``.
-
-        A fresh ``demux`` generator per attempt: one that raised EAGAIN is finished and would yield nothing after."""
-        import av
-
-        deadline = time.monotonic() + wait_s
-        while time.monotonic() <= deadline:
-            try:
-                for packet in self.container.demux(self.stream):
-                    for frame in packet.decode():
-                        if isinstance(frame, av.VideoFrame):
-                            return np.ascontiguousarray(frame.to_ndarray(format="rgb24"))
-            except av.BlockingIOError:
-                time.sleep(0.001)
-        return None
-
-    def close(self) -> None:
-        self.container.close()
+        with self._lock:
+            for cap in self._caps.values():
+                cap.stop()
+            self._caps.clear()
