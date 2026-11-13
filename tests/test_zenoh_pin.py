@@ -1,4 +1,4 @@
-"""The zenoh range the extras declare is the one LeRobot main resolves, so installing both never fights."""
+"""The zenoh range the extras declare is the one LeRobot 0.7 resolves, so installing both never fights."""
 
 from pathlib import Path
 
@@ -19,8 +19,8 @@ def _zenoh(extra: str) -> Requirement:
     ("version", "admitted"),
     [("1.9.0", True), ("1.10.0", True), ("1.10.2", True), ("1.8.0", False), ("1.11.0", False)],
 )
-def test_the_zenoh_range_matches_lerobot_main(extra: str, version: str, admitted: bool) -> None:
-    # LeRobot main's `remote` extra: eclipse-zenoh>=1.9.0,<1.11.0 (it resolves 1.10.2 today).
+def test_the_zenoh_range_matches_lerobot(extra: str, version: str, admitted: bool) -> None:
+    # LeRobot 0.7.0's `remote` extra: eclipse-zenoh>=1.9.0,<1.11.0 (it resolves 1.10.2 today).
     assert _zenoh(extra).specifier.contains(Version(version)) is admitted
 
 
