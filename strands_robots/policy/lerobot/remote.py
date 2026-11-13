@@ -25,26 +25,15 @@ from ..base import PolicyFault
 from ..requirements import Requirements
 from .contract import Contract, lerobot
 from .link import check_channel, wan_defaults, zenoh_config
-from .sequential import Sequential, ledgered
+from .redial import Redial
+from .session import Session, open_session
+from .session import execution_of as execution_of  # re-exported: the execution a session runs
 
 if TYPE_CHECKING:
     from ...description import Description
 
 Execution = Literal["auto", "sequential", "splice"]
 EXECUTIONS = ("auto", "sequential", "splice")
-
-
-def execution_of(descriptor: dict[str, Any], asked: str) -> str:
-    """The execution a session runs: the caller's word, else the server's, else what its contract implies."""
-    if asked != "auto":
-        return asked
-    said = descriptor.get("execution")
-    if isinstance(said, str) and said in ("sequential", "splice"):
-        return said
-    caps = descriptor.get("capabilities") or {}
-    contracts = descriptor.get("execution_contracts") or ()
-    rtc = int(caps.get("rtc_horizon") or 0) > 0 or "rtc_model_space_v1" in contracts
-    return "splice" if rtc else "sequential"
 
 
 class ZenohPolicy:
@@ -73,6 +62,7 @@ class ZenohPolicy:
         tasks: Sequence[str] | None = None,
         trusted: bool = False,
         zenoh_config: str | None = None,
+        reconnect_s: float = 10.0,
         **settings: Any,
     ) -> None:
         """``execution``: see the module docstring. ``start_pose`` (the deployment's units; a mapping of joint -> value
@@ -80,10 +70,14 @@ class ZenohPolicy:
         out, the server's descriptor may say (``start_pose``); else the run begins where the body is. ``tasks``: the
         instructions it was trained on — any other ``run(instruction=)`` is refused naming them before a frame goes
         out; left out, the descriptor may say (``tasks``); else any instruction is sent. ``zenoh_config`` (or
-        ``STRANDS_LEROBOT_ZENOH_CONFIG``): the session's zenoh config file. ``trusted``: see ``link.check_channel``."""
+        ``STRANDS_LEROBOT_ZENOH_CONFIG``): the session's zenoh config file. ``trusted``: see ``link.check_channel``.
+        ``reconnect_s``: when the server goes away, hold and reopen the session for this long (0: fault at once)."""
         if execution not in EXECUTIONS:
             raise ValueError(f"execution must be one of {', '.join(map(repr, EXECUTIONS))}, got {execution!r}")
+        if not reconnect_s >= 0:
+            raise ValueError(f"reconnect_s must be a number of seconds >= 0, got {reconnect_s!r}")
         self.endpoint, self.deployment, self.settings, self.trusted = endpoint, deployment, settings, trusted
+        self.reconnect_s = float(reconnect_s)
         self.zenoh_config = zenoh_config or settings.pop("zenoh_config_path", None)  # LeRobot's own name, same file
         self._wire = endpoint  # what the session opens: the endpoint, pinned at attach for a real robot
         self.asked: Execution = execution
@@ -95,9 +89,11 @@ class ZenohPolicy:
         self.contract: Contract | None = None
         self.hz: float | None = None
         self.calls: list[dict[str, Any]] = []  # every chunk a session received (wall s, rows, server, instruction)
-        self._engine: Any = None  # splice: LeRobot's engine
-        self._seq: Sequential | None = None  # sequential: ours
-        self._client: Any = None
+        self.reconnects: list[dict[str, Any]] = []  # every lost server the run got back (down s, attempts)
+        self._s: Session | None = None
+        self._redial: Redial | None = None
+        self._resume: str | None = None  # the instruction a reopened session carries on with
+        self._robot: Any = None
         self._last: np.ndarray | None = None
         self._task: str | None = None
 
@@ -116,72 +112,43 @@ class ZenohPolicy:
         kw.update(forced)
         return RemoteInferenceConfig(endpoint=self._wire, deployment=self.deployment, semantics=semantics, **kw)
 
-    def _connect(self) -> Any:
+    def _connect(self, **forced: Any) -> Any:
         lerobot()
         from lerobot.remote_inference import RemoteClient
 
-        return RemoteClient.connect(self._config())
+        return RemoteClient.connect(self._config(**forced))
 
     def attach(self, robot: Any) -> None:
         self.detach()
         mode = self.settings.get("zenoh_mode")  # the caller's word over wan_defaults' client
         self._wire = check_channel(repr(self), self.endpoint, robot, self.trusted, self.zenoh_config, mode)
-        client = self._connect()
-        try:
-            caps, sem = client.capabilities, client.descriptor["semantics"]
-            contract = Contract(robot.description, tuple(caps.features), caps.action_feature, sem)
-            contract.check()
-            contract.units()  # unknown semantics -> refused by name, before a session exists
-            contract.requirements().check(robot.observe(), who=repr(self))
-            execution = execution_of(client.descriptor, self.asked)
-            if execution == "sequential":  # whole chunks, appended: an aligned session would demand RTC cursors
-                from lerobot.inference import chunk_settings
-
-                config = self._config(sem, client.descriptor, mode="chunk", chunk_merge="append")
-                client.chunk_settings = chunk_settings(  # the client derived them from the describe-time config
-                    config.chunk_merge, config.blend_steps, config.blend_weight, config.blend_components
-                )
-            else:
-                config = self._config(sem, client.descriptor)  # the hello's limits widen the action timeout
-            client.config = config
-            client.admit(
-                features=caps.features,
-                action_feature=caps.action_feature,
-                semantics=sem,
-                action_interval=caps.action_interval,
-                mode=config.mode,
-            )
-        except BaseException:
-            client.close()
-            raise
-        self.contract, self._client, self.hz = contract, client, 1.0 / caps.action_interval
-        self.execution = execution
+        s = open_session(self, robot, check=lambda c: c.requirements().check(robot.observe(), who=repr(self)))
+        self._adopt(s, robot)
         if self._tasks is None:  # the server's word on what it was trained to do, when it has one
-            said = client.descriptor.get("tasks")
+            said = s.client.descriptor.get("tasks")
             self.tasks = tuple(str(t) for t in said) if isinstance(said, list | tuple) else ()
         if self._start_pose is None:  # the server's word on where its episodes begin, when it has one
-            said = client.descriptor.get("start_pose")
+            said = s.client.descriptor.get("start_pose")
             self.start_pose = said if isinstance(said, Mapping | list | tuple) and len(said) else None
-        if execution == "sequential":  # no engine: ``act`` asks for a chunk only when the queue is empty
-            self._seq = Sequential(client, contract, repr(self), self.calls)
-            return
-        from lerobot.remote_inference import RemoteInferenceEngine
-        from lerobot.utils.action_interpolator import ActionInterpolator
 
-        client.infer = ledgered(client.infer, contract, self.calls)  # LeRobot's engine asks; the ledger is ours
-        self._engine = RemoteInferenceEngine(client, config, task="")
-        self._interp = ActionInterpolator(multiplier=1)
-        self._engine.start()
-        self._engine.resume()
+    def _adopt(self, s: Session, robot: Any) -> None:
+        self._s, self._robot, self.contract, self.execution = s, robot, s.contract, s.execution
+        self.hz = 1.0 / s.interval
+
+    @property
+    def _seq(self) -> Any:
+        return None if self._s is None else self._s.seq
+
+    @property
+    def _engine(self) -> Any:
+        return None if self._s is None else self._s.engine
 
     def detach(self) -> None:
-        if self._seq is not None:
-            self._seq.close()  # a reply still in flight belongs to the old session
-        if self._engine is not None:
-            self._engine.stop()
-        elif self._client is not None:
-            self._client.close()
-        self._engine = self._seq = self._client = None
+        if self._redial is not None:
+            self._redial.stop()
+        if self._s is not None:
+            self._s.close()
+        self._s = self._redial = None
         self._last = self._task = None  # a new session starts with the engine's empty task
 
     def _need(self) -> Contract:
@@ -214,6 +181,39 @@ class ZenohPolicy:
 
     def act(self, obs: Observation, *, instruction: str | None = None) -> Action | None:
         c = self._need()
+        if self._redial is not None and not self._redialled():
+            return None  # the server is gone: hold while the session is reopened
+        try:
+            return self._act(c, obs, instruction)
+        except PolicyFault:
+            assert self._s is not None
+            if self.reconnect_s <= 0 or self._s.present:  # a fault of a live server is not a lost link
+                raise
+        lost = self._s
+        self._resume = self._task if lost.seq is None else lost.seq.task
+        lost.close()
+        self._s = None  # closed: detach must not close it again
+        self._redial = Redial(lambda: open_session(self, self._robot, like=lost), self.reconnect_s, repr(self))
+        return None
+
+    def _redialled(self) -> bool:
+        """Adopt the reopened session once it is there; False while still trying. The window's end raises."""
+        assert self._redial is not None
+        s = self._redial.poll()
+        if s is None:
+            return False
+        task, r = self._resume, self._redial
+        self._adopt(s, self._robot)
+        self._redial, self._last = None, None
+        self.reconnects.append({"down_s": round(r.down_s, 3), "attempts": r.attempts})
+        if s.seq is not None:
+            s.seq.retarget(task)
+        elif task:
+            s.engine.set_task(task)
+        self._task = task if s.seq is None else None
+        return True
+
+    def _act(self, c: Contract, obs: Observation, instruction: str | None) -> Action | None:
         if self._seq is not None:
             if instruction is not None and instruction != self._seq.task:  # a new instruction drops the old plan
                 self.check_task(instruction)
@@ -227,7 +227,7 @@ class ZenohPolicy:
     def _act_splice(self, c: Contract, obs: Observation, instruction: str | None) -> Action:
         from lerobot.inference import dispatch_tick
 
-        engine = self._engine
+        engine, interp = self._engine, self._s.interp  # type: ignore[union-attr]
         if instruction is not None and instruction != self._task:
             self.check_task(instruction)
             if error := engine.text_input_error(instruction, instruction=True):
@@ -236,7 +236,7 @@ class ZenohPolicy:
             self._task = instruction
         engine.submit_observation(c.frame(obs), capture_time=time.monotonic())
         sent: list[Any] = []
-        target = dispatch_tick(engine, self._interp, send=sent.append, hold=lambda: None)
+        target = dispatch_tick(engine, interp, send=sent.append, hold=lambda: None)
         if engine.failed:
             raise PolicyFault(f"{self!r}: {engine.runtime.failure or engine.failure_traceback or 'LeRobot fault'}")
         if target is not None:

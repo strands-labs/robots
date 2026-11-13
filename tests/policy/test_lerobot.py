@@ -342,14 +342,14 @@ def test_a_remote_policy_starts_its_run_from_its_start_pose(deployment, monkeypa
         assert np.sign(arm.observe(images=False).joints["shoulder_pan"]) < 0
 
 
-def test_a_lost_server_ends_the_run_as_a_fault_and_the_arm_holds(deployment):
+def test_a_lost_server_with_reconnect_off_ends_the_run_as_a_fault_and_the_arm_holds(deployment):
     cfg, server = deployment(name="doomed")
     ctx = server.__enter__()
     arm = _arm()
     stopper = threading.Timer(1.5, lambda: server.__exit__(None, None, None))
     stopper.start()
     t = time.perf_counter()
-    r = arm.run(Policy(ctx, action_starvation_grace_s=0.5), seconds=20)
+    r = arm.run(Policy(ctx, action_starvation_grace_s=0.5, reconnect_s=0), seconds=20)
     wall = time.perf_counter() - t
     assert r.stopped_by == "fault" and r.fault, r
     assert wall < 1.5 + 5.0 + 1.0  # action_timeout (5 s) bounds the outstanding request
