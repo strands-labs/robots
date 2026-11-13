@@ -16,6 +16,7 @@ WEB_FILES = {
     "dashboard/auth/guard.py",
     "dashboard/auth/routes.py",
     "dashboard/connect_routes.py",
+    "dashboard/errors.py",
     "dashboard/guard.py",
     "dashboard/record_routes.py",
     "dashboard/server.py",
@@ -61,3 +62,26 @@ def test_importing_the_dashboard_does_not_start_a_web_framework() -> None:
     )
     out = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, check=True)
     assert out.stdout.strip() == "[]", out.stdout + out.stderr
+
+
+# The module that holds the Dashboard class (dashboard.py) is imported back by every route and helper only for a
+# type annotation; CodeQL flags that even when the import is TYPE_CHECKING-only. So the routes and helpers type
+# against DashboardLike (protocols.py), and only the class itself, the package export and the `python -m` entry
+# point name the concrete module.
+_DASHBOARD_KNOWERS = {"dashboard/dashboard.py", "dashboard/__init__.py", "dashboard/__main__.py"}
+
+
+def _imports_the_dashboard_module(path: Path) -> bool:
+    for node in ast.walk(ast.parse(path.read_text())):
+        if isinstance(node, ast.ImportFrom) and node.level == 1 and node.module == "dashboard":
+            return True  # `from .dashboard import ...`, anywhere, TYPE_CHECKING included
+    return False
+
+
+def test_routes_and_helpers_never_import_the_dashboard_module() -> None:
+    offenders = sorted(
+        str(p.relative_to(PKG))
+        for p in (PKG / "dashboard").rglob("*.py")
+        if str(p.relative_to(PKG)) not in _DASHBOARD_KNOWERS and _imports_the_dashboard_module(p)
+    )
+    assert offenders == []

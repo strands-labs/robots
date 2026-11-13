@@ -15,11 +15,11 @@ from fastapi.responses import JSONResponse
 from .record import Recorder
 
 if TYPE_CHECKING:
-    from .dashboard import Dashboard
+    from .protocols import DashboardLike
 
 
-def add(app: FastAPI, dash: Dashboard) -> None:
-    from .app import http_error
+def add(app: FastAPI, dash: DashboardLike) -> None:
+    from .errors import http_error
 
     rec = app.state.recorder = Recorder(dash)
 

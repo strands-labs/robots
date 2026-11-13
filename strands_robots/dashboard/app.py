@@ -11,40 +11,25 @@ import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 
 from . import cameras, confirm, connect_routes, record_routes, runs, voice_routes
 from . import vendor as _vendor
 from .auth import routes as auth_routes
+from .errors import http_error
 from .guard import SameOrigin
 
 if TYPE_CHECKING:
-    from .dashboard import Dashboard
+    from .protocols import DashboardLike
 
 STATIC = Path(__file__).parent / "static"
 _FEATURE_MODULES = ("connect.js", "record.js", "voice.js")
 _MEDIA = {".stl": "model/stl", ".obj": "text/plain", ".png": "image/png", ".xml": "application/xml"}
 
 
-def http_error(exc: Exception) -> HTTPException:
-    from ..robot.safety.estop import EStopped
-
-    if isinstance(exc, EStopped):
-        return HTTPException(409, str(exc))
-    if isinstance(exc, PermissionError):
-        return HTTPException(403, str(exc))
-    if isinstance(exc, KeyError):
-        return HTTPException(404, str(exc.args[0]) if exc.args else "not found")
-    if isinstance(exc, (ValueError, TypeError)):
-        return HTTPException(400, str(exc))
-    if isinstance(exc, RuntimeError):
-        return HTTPException(409, str(exc))
-    return HTTPException(500, f"{type(exc).__name__}: {exc}")
-
-
-def build_app(dash: Dashboard) -> FastAPI:
+def build_app(dash: DashboardLike) -> FastAPI:
     app = FastAPI(title="strands-robots dashboard", docs_url=None, redoc_url=None)
     auth_routes.install(app, dash.auth)  # RequireSession on /api/* and /ws/*, then the /auth/* ceremony routes
     app.add_middleware(SameOrigin)  # added last, so it runs first
@@ -102,7 +87,7 @@ def build_app(dash: Dashboard) -> FastAPI:
 
     @app.get("/api/chat")
     async def chat_info() -> JSONResponse:
-        from .dashboard import NO_CHAT
+        from .chat import NO_CHAT
 
         on = dash.model is not None or dash._agent is not None
         return JSONResponse({"enabled": on, "hint": None if on else NO_CHAT})

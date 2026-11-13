@@ -12,6 +12,8 @@ from typing import Any
 
 from strands import Agent
 
+NO_CHAT = "chat is off: start the dashboard with --model <bedrock model id>, or pass Dashboard(sim, model=...)"
+
 SYSTEM_PROMPT = (
     "You operate robots that share one simulated world (and possibly real ones). Use the robot_* tools "
     "to observe and act, the sim_* tool for the world. Observe before you act. Be brief."

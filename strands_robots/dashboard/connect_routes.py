@@ -14,11 +14,11 @@ from fastapi.responses import JSONResponse, Response
 from . import cameras, confirm
 
 if TYPE_CHECKING:
-    from .dashboard import Dashboard
+    from .protocols import DashboardLike
 
 
 async def _call(fn: Callable[[], Any], status: int = 200) -> JSONResponse:
-    from .app import http_error
+    from .errors import http_error
 
     try:
         return JSONResponse(await asyncio.to_thread(fn), status_code=status)
@@ -35,7 +35,7 @@ async def _body(request: Request) -> dict[str, Any]:
     return body
 
 
-def register(app: FastAPI, dash: Dashboard) -> None:
+def register(app: FastAPI, dash: DashboardLike) -> None:
     """Add the Connect routes to ``app`` (before the static mount, which answers every other path)."""
 
     @app.get("/api/connect/peers")
@@ -98,7 +98,7 @@ def register(app: FastAPI, dash: Dashboard) -> None:
 
     @app.get("/api/robots/{rid}/cameras/{cam}.png")
     async def camera(rid: str, cam: str) -> Response:
-        from .app import http_error
+        from .errors import http_error
 
         try:
             img = await asyncio.to_thread(dash.connections.camera, rid, cam)

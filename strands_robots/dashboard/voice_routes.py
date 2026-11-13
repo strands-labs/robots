@@ -13,12 +13,12 @@ from fastapi import FastAPI, WebSocket
 from fastapi.responses import JSONResponse
 
 if TYPE_CHECKING:
-    from .dashboard import Dashboard
+    from .protocols import DashboardLike
 
 NO_VOICE = 'voice is off: start the dashboard with --voice auto (or openai, nova), or pass Dashboard(sim, voice="auto")'
 
 
-def mount(app: FastAPI, dash: Dashboard) -> None:
+def mount(app: FastAPI, dash: DashboardLike) -> None:
     """Add GET /api/voice (is voice on, which provider) and WS /ws/voice (one conversation per socket)."""
 
     @app.get("/api/voice")
