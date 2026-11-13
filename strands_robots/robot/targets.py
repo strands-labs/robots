@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import weakref
 from collections.abc import Mapping
 from dataclasses import replace
 from typing import TYPE_CHECKING
@@ -39,14 +40,27 @@ def _bounded(lim: tuple[float, float] | None) -> bool:
     return lim is not None and bool(np.isfinite(lim).all()) and lim[0] < lim[1]
 
 
+_BOUNDS: dict[int, tuple[weakref.ref[Description], np.ndarray, np.ndarray]] = {}
+
+
+def _bounds(description: Description) -> tuple[np.ndarray, np.ndarray]:
+    """(low, high) per action key, computed once per Description (frozen: ``replace`` makes a new one). A joint
+    with no limits, or a NaN end, bounds nothing on that side, as the per-joint ``min``/``max`` it replaces did."""
+    hit = _BOUNDS.get(id(description))
+    if hit is not None and hit[0]() is description:
+        return hit[1], hit[2]
+    lims = [description.limits.get(k) or (-np.inf, np.inf) for k in description.action_keys]
+    lo = np.nan_to_num(np.array([lim[0] for lim in lims], dtype=float), nan=-np.inf, posinf=np.inf, neginf=-np.inf)
+    hi = np.nan_to_num(np.array([lim[1] for lim in lims], dtype=float), nan=np.inf, posinf=np.inf, neginf=-np.inf)
+    key = id(description)
+    _BOUNDS[key] = (weakref.ref(description, lambda _: _BOUNDS.pop(key, None)), lo, hi)
+    return lo, hi
+
+
 def clip_to_limits(description: Description, targets: np.ndarray) -> np.ndarray:
-    """A copy of ``targets`` with every joint that has limits clipped into them."""
-    out = np.array(targets, dtype=float)
-    for i, k in enumerate(description.action_keys):
-        lim = description.limits.get(k)
-        if lim is not None:
-            out[i] = min(max(out[i], lim[0]), lim[1])
-    return out
+    """A copy of ``targets`` with every joint that has limits clipped into them (a NaN target stays NaN)."""
+    lo, hi = _bounds(description)
+    return np.minimum(np.maximum(np.array(targets, dtype=float), lo), hi)
 
 
 def coerce(robot: Robot, action: Action, *, clip: bool = True, measured: np.ndarray | None = None) -> np.ndarray:
@@ -83,7 +97,7 @@ def coerce(robot: Robot, action: Action, *, clip: bool = True, measured: np.ndar
         q = np.asarray(base, dtype=float).reshape(-1)
         if q.shape != (len(keys),):
             raise ValueError(f"measured has {q.size} values; {robot.id} has {len(keys)} action keys {list(keys)}")
-        targets = clip_to_limits(desc, q)
+        targets = clip_to_limits(desc, q) if not clip else q.copy()  # clip=True: the final clip covers the base
         for k, v in action.items():
             targets[keys.index(k)] = float(v)
     else:
