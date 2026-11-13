@@ -1,5 +1,7 @@
 """Hardware cameras by the device's own name: resolved against what the OS lists, sized by the policy."""
 
+import time
+
 import numpy as np
 import pytest
 
@@ -43,6 +45,7 @@ class _Fake:
         _Fake.opened.append(self)
 
     def read(self):
+        time.sleep(0.002)  # a device read waits for its next frame
         w, h = self.spec.width or 1280, self.spec.height or 720
         return np.zeros((h, w, 3), np.uint8)
 
@@ -80,7 +83,7 @@ def test_a_declared_size_wins_and_a_fit_after_open_reopens_only_what_changed(fak
 
 
 def test_a_camera_that_delivers_another_size_is_refused_naming_both(fake, monkeypatch):
-    monkeypatch.setattr(_Fake, "read", lambda self: np.zeros((360, 640, 3), np.uint8))
+    monkeypatch.setattr(_Fake, "read", lambda self: time.sleep(0.002) or np.zeros((360, 640, 3), np.uint8))
     c = Cameras({"wrist": {"name": "USB2.0_CAM1", "width": 640, "height": 480}})
     with pytest.raises(ValueError, match=r"camera 'wrist' delivers 640x360, asked for 640x480"):
         c.read()

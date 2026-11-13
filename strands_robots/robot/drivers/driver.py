@@ -106,7 +106,7 @@ def make_driver(
                 f"{type(driver).__name__}.names {list(driver.names)} must be {description.name}'s action_keys "
                 f"{list(description.action_keys)}, in order"
             )
-        return driver
+        return _cameras_open(driver, built=False)
     kind = driver or driver_kind(description)
     if kind is None:
         raise ValueError(
@@ -124,7 +124,24 @@ def make_driver(
     unknown = sorted(set(kw) - set(accepted))
     if unknown:  # D3/D4: a misspelt option is an error naming what the driver takes, never silently dropped
         raise TypeError(f"the {kind} driver takes no {unknown}; it takes {sorted(accepted)}{_where(unknown)}")
-    return cls(description, port=port, cameras=cameras or {}, **kw)
+    return _cameras_open(cls(description, port=port, cameras=cameras or {}, **kw), built=True)
+
+
+def _cameras_open(drv: Driver, *, built: bool) -> Driver:
+    """Open the body's cameras at connect, side by side (``Cameras.open``), so no tick and no first ``observe``
+    waits for a device to start; a camera that cannot open refuses the Robot, closing a driver built here."""
+    from .cameras import Cameras
+
+    cams = getattr(drv, "cameras", None)
+    if not isinstance(cams, Cameras) or not cams.specs:
+        return drv
+    try:
+        cams.open()
+    except BaseException:
+        if built:
+            drv.close()
+        raise
+    return drv
 
 
 def driver_parameters(cls: Any) -> tuple[str, ...]:
