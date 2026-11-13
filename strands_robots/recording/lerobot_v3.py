@@ -12,7 +12,7 @@ from typing import TYPE_CHECKING, Any
 
 from .._extras import LEROBOT
 from ..types import Observation
-from .features import features_from, units_meta
+from .features import TIME, features_from, units_meta
 
 UNITS_FILE = "units.json"
 
@@ -83,6 +83,8 @@ def open_dataset(ep: Episode, first: Observation) -> tuple[Any, bool]:
     if (root / "meta" / "info.json").is_file():
         _same_units(ep, root, said)
         ds = LeRobotDataset.resume(ep.repo_id, root=root)
+        if TIME not in ds.meta.features:  # recorded before frames carried their time: append as the dataset is
+            del features[TIME]
         _same(ep, ds, features)
         return ds, False
     ds = LeRobotDataset.create(

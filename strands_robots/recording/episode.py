@@ -11,7 +11,7 @@ import numpy as np
 from ..description import Description
 from ..types import Observation
 from ..units import Units
-from .features import ACTION, IMAGES, STATE
+from .features import ACTION, IMAGES, STATE, TIME
 from .place import Place, claim
 from .target import is_repo_id, locate
 
@@ -24,6 +24,8 @@ class Episode:
     ``stop()`` keeps its frames. Only an integer ``hz`` can record (a LeRobot dataset has an integer fps).
     Nothing is uploaded unless ``push=True``, which needs an ``hf://owner/name`` target and runs LeRobot's
     ``push_to_hub`` after the episode. ``wants_images``: every frame needs the cameras, whatever the policy looks at.
+    Each frame's ``time.measured`` is its observation's read time on the robot's clock, from the episode's first frame
+    (``timed``: False when appending to a dataset recorded without it).
     """
 
     wants_images = True
@@ -54,6 +56,8 @@ class Episode:
         self.units = units
         self.push = push
         self.frames = 0
+        self.timed = False  # set by ``open``: whether the dataset has ``time.measured``
+        self._t0: float | None = None
         self._writer: Any = None
         self._created = False
         self._place: Place | None = None
@@ -74,6 +78,7 @@ class Episode:
             self._place = claim(self.root if self.root is not None else hub_cache(self.repo_id).resolve())
             with quiet():
                 self._writer, self._created = open_dataset(self, first)
+            self.timed = TIME in self._writer.meta.features
             self._place.bind()
 
     def add(self, obs: Observation, action: Any) -> None:
@@ -83,6 +88,9 @@ class Episode:
             ACTION: self._in_units(action),
             "task": self.task,
         }
+        if self.timed:
+            self._t0 = obs.t if self._t0 is None else self._t0
+            frame[TIME] = np.array([obs.t - self._t0], dtype=np.float64)
         for cam, img in obs.images.items():
             frame[IMAGES + cam] = np.ascontiguousarray(img)
         self._writer.add_frame(frame)

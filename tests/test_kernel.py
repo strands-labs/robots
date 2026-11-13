@@ -347,7 +347,7 @@ class _Dataset:
     def __init__(self, root) -> None:
         from types import SimpleNamespace
 
-        self.root, self.frames, self.meta = root, 0, SimpleNamespace(total_episodes=0)
+        self.root, self.frames, self.meta = root, 0, SimpleNamespace(total_episodes=0, features={"time.measured": {}})
         root.mkdir(parents=True)
 
     def add_frame(self, frame) -> None:
