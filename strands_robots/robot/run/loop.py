@@ -143,7 +143,7 @@ def _loop(
     n, holds, stops0, fault = 0, 0, robot.estop_latch.count, None
     last: np.ndarray | None = None  # the latest written targets: what a held tick records as its action
     why: StoppedBy = "steps" if steps is not None else "seconds"  # the limit the caller gave, when it is the one hit
-    always = robot.sim is None or stop_when is not None or ep.wants_images  # a recorded step keeps its cameras
+    always = stop_when is not None or ep.wants_images  # a recorded step keeps its cameras; else the policy says
     pacer = None
     if robot.sim is None or realtime or bound.realtime:  # hardware (or a watched world): pace on the body's clock
         clock = robot.clock if robot.sim is None else MONOTONIC

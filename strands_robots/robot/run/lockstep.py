@@ -134,7 +134,7 @@ def _tick(
     on any of them (even one resumed since) while they decide, ends the run with this tick written for none."""
     ticks: list[tuple[Robot, Tick]] = []
     for r, b in bound.items():
-        step = decided(r, b, instruction, images=r.sim is None or looks(b, instruction), gated=gated)
+        step = decided(r, b, instruction, images=looks(b, instruction), gated=gated)
         if step.ended is not None:  # the robots after it do not decide, and none has written this tick
             return _stop(r, step, faults)
         pressed = [x for x in bound if stopped(x, stops0[x])]
