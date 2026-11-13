@@ -34,3 +34,25 @@ def test_every_module_imports_alone() -> None:
     assert not out["failed"], json.dumps(out["failed"], indent=1)
     assert len(out["ok"]) > 50, out
     assert "strands_robots.robot.run.loop" in out["ok"] and "strands_robots.dashboard.dashboard" in out["ok"]
+
+
+def test_run_common_imports_nothing_from_its_own_package() -> None:
+    """``run/common.py`` holds the tick helpers ``loop`` and ``lockstep`` both import by name.
+
+    If it took a module-level relative import, importing it would enter the ``run`` package and, under
+    some import order, re-enter ``loop`` before a helper's ``def`` ran, leaving that name undefined
+    (an unsafe cyclic import). Its type-only imports live under ``TYPE_CHECKING``, so it is a leaf and
+    the import order of ``run/*`` never matters.
+    """
+    import ast
+    from pathlib import Path
+
+    src = (Path(__file__).resolve().parent.parent / "strands_robots" / "robot" / "run" / "common.py").read_text()
+    relative = [
+        f"line {node.lineno}: from {'.' * node.level}{node.module or ''} import ..."
+        for node in ast.parse(src).body
+        if isinstance(node, ast.ImportFrom) and node.level >= 1
+    ]
+    assert not relative, "run/common.py must import nothing from its own package at module level:\n" + "\n".join(
+        relative
+    )
