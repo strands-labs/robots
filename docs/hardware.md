@@ -65,6 +65,9 @@ The dict keys are the image keys the policy sees. A camera that delivers a diffe
 no frame within 10 s. Each camera then has its own capture thread, so a step takes each camera's latest frame without
 waiting for the device. A camera whose latest frame is more than 1 s old has stopped delivering: it is left out of
 the observation. `arm.body.cameras.ages()` gives the age in seconds of each frame the last step took.
+A step whose policy answers `needs_observation()` with `False` (a `ChunkedPolicy` replaying its chunk, say) takes no
+frame, as in simulation; the capture threads keep draining the cameras meanwhile. A recording or a `stop_when` still
+gets every step's frames.
 
 {{drawing:d17_driver_options}}
 

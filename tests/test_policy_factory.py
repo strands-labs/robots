@@ -122,15 +122,40 @@ def test_stop_when_still_sees_a_frame_on_every_step():
         assert seen == [["wrist"]] * 8
 
 
-def test_a_hardware_camera_is_drained_on_every_step_even_while_a_chunk_replays():
+def test_a_hardware_camera_is_drained_by_its_capture_thread_while_a_chunk_replays_without_a_frame(monkeypatch):
+    import threading
+    import time
+
     from test_drivers import make_driver
 
+    from strands_robots.robot.drivers import cameras
+
+    drained = threading.Event()
+
+    class Device:  # a V4L2 ring goes stale when nobody dequeues: the capture thread dequeues every frame
+        def __init__(self, index, spec):
+            self.reads = 0
+
+        def read(self):
+            time.sleep(0.002)
+            self.reads += 1
+            if self.reads > 20:
+                drained.set()
+            return np.zeros((480, 640, 3), np.uint8)
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(cameras, "_CVCapture", Device)
     d, _ = make_driver()
+    d.cameras = cameras.Cameras({"wrist": {"index": 0, "width": 640, "height": 480}})
     arm = Robot("so101", driver=d, twin=False, confirm=lambda a: True)
-    reads, images = [], d.images
-    d.images = lambda: reads.append(1) or images()  # a V4L2 ring goes stale when nobody dequeues
+    steps, images = [], d.images
+    d.images = lambda: steps.append(1) or images()
     arm.run(ChunkedPolicy(_Count()), steps=8)
-    assert len(reads) >= 8
+    assert len(steps) < 8  # the replayed steps took no frame
+    assert drained.wait(2)  # and the device was read all the same
+    arm.close()
 
 
 class _LeRobotUnits:
