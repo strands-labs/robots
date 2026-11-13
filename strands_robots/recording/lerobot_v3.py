@@ -8,7 +8,7 @@ import os
 from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Protocol
 
 from .._extras import LEROBOT
 from ..types import Observation
@@ -17,7 +17,20 @@ from .features import TIME, features_from, units_meta
 UNITS_FILE = "units.json"
 
 if TYPE_CHECKING:
-    from .episode import Episode
+    from ..description import Description
+    from ..units import Units
+
+
+class Recording(Protocol):
+    """What the writer reads from the run's episode to resume or create its dataset: a structural protocol so this
+    adapter never imports the episode it serves (the one edge is ``episode -> lerobot_v3``)."""
+
+    repo_id: str
+    root: Path | None
+    fps: int
+    target: str | Path
+    description: Description
+    units: Units | None
 
 
 def require_lerobot() -> Any:
@@ -55,7 +68,7 @@ def quiet() -> Iterator[None]:
         (hf.enable_progress_bar if bars else hf.disable_progress_bar)()
 
 
-def check_target(ep: Episode) -> None:
+def check_target(ep: Recording) -> None:
     """Refuse an existing dataset with another fps, robot or units before step one (no observation needed)."""
     root = ep.root if ep.root is not None else hub_cache(ep.repo_id)
     info = root / "meta" / "info.json"
@@ -70,11 +83,11 @@ def check_target(ep: Episode) -> None:
     _same_units(ep, root, units_meta(ep.units, ep.description))
 
 
-def _robot_type(ep: Episode) -> str:
+def _robot_type(ep: Recording) -> str:
     return ep.description.hardware.lerobot_type or ep.description.name
 
 
-def open_dataset(ep: Episode, first: Observation) -> tuple[Any, bool]:
+def open_dataset(ep: Recording, first: Observation) -> tuple[Any, bool]:
     """``(dataset, created)``: resume the one already at the target (same features, fps, units) or create it."""
     LeRobotDataset = require_lerobot()
     features = features_from(first, ep.description.action_keys)
@@ -94,7 +107,7 @@ def open_dataset(ep: Episode, first: Observation) -> tuple[Any, bool]:
     return ds, True
 
 
-def _same_units(ep: Episode, root: Path, said: dict[str, Any]) -> None:
+def _same_units(ep: Recording, root: Path, said: dict[str, Any]) -> None:
     path = root / "meta" / UNITS_FILE
     have = json.loads(path.read_text()) if path.is_file() else None
     if have is not None and have != said:
@@ -133,7 +146,7 @@ def hub_cache(repo_id: str) -> Path:
     return Path(HF_LEROBOT_HOME) / repo_id
 
 
-def _same(ep: Episode, ds: Any, features: dict[str, dict[str, Any]]) -> None:
+def _same(ep: Recording, ds: Any, features: dict[str, dict[str, Any]]) -> None:
     have = {k: (tuple(v["shape"]), list(v.get("names") or [])) for k, v in ds.meta.features.items() if k in features}
     want = {k: (tuple(v["shape"]), list(v["names"])) for k, v in features.items()}
     if have != want:
