@@ -61,13 +61,18 @@ class Redial:
 
     def poll(self) -> Any:
         """The reopened session, None while still trying, or ``PolicyFault`` once the window has closed."""
+        # Liveness BEFORE the result, never after (as in ``Sequential.step``): a thread that has exited has already
+        # stored its session or refusal under the lock, so "not alive => _result/_final are final" holds in this order
+        # only. Read the other way round, a thread that stores and exits between the two reads is a reconnect that
+        # succeeded reported as the window's timeout. Alive at the check and storing after it is picked up next tick.
+        alive = self._thread.is_alive()
         with self._lock:
             result, final = self._result, self._final
         if result is not None:
             return result
         if final is not None:
             raise final
-        if self._thread.is_alive():
+        if alive:
             return None
         last = "" if self._error is None else f"; last attempt: {type(self._error).__name__}: {self._error}"
         raise PolicyFault(
