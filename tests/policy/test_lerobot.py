@@ -242,7 +242,7 @@ def test_a_sequential_session_asks_only_when_its_queue_is_empty(deployment, monk
 
 
 def test_execution_is_the_servers_word_then_the_contracts():
-    from strands_robots.policy.lerobot.remote import execution_of
+    from strands_robots.policy.lerobot.session import execution_of
 
     plain = {"capabilities": {"rtc_horizon": 0}, "execution_contracts": ["chunk_v1"]}
     assert execution_of(plain, "auto") == "sequential"

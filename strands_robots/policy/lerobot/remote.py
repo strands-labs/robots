@@ -27,7 +27,6 @@ from .contract import Contract, lerobot
 from .link import check_channel, wan_defaults, zenoh_config
 from .redial import Redial
 from .session import Session, open_session
-from .session import execution_of as execution_of  # re-exported: the execution a session runs
 
 if TYPE_CHECKING:
     from ...description import Description
