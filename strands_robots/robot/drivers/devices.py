@@ -3,13 +3,37 @@ for the device's next frame; ``capture.Grabber`` makes that wait a capture threa
 
 from __future__ import annotations
 
+import contextlib
 import re
+import threading
 import time
+from collections.abc import Iterator
 from typing import Any
 
 import numpy as np
 
 from .camera_spec import CameraSpec
+
+# PyAV's log level and ``av.logging.Capture(local=False)`` are process-wide, and each camera opens on its own capture
+# thread while ``Cameras.open`` may still be listing devices by name: unserialised, one restore silences the other's
+# listing and one camera's "Supported modes" lines land in the other's refusal. Only AVFoundation opens take it.
+_AV_LOG = threading.Lock()
+
+
+@contextlib.contextmanager
+def av_log(at_least: int) -> Iterator[list[tuple[str, int, str]]]:
+    """libav's log lines while held (level raised to ``at_least``), then PyAV's level put back; one holder at a time."""
+    import av.logging
+
+    with _AV_LOG:
+        level = av.logging.get_level()
+        if level is None or level < at_least:
+            av.logging.set_level(at_least)
+        try:
+            with av.logging.Capture(local=False) as logs:
+                yield logs
+        finally:
+            av.logging.set_level(level)
 
 
 class _CVCapture:
@@ -79,17 +103,11 @@ class _AVCapture:
         import av.logging
 
         options = av_options(s)
-        level = av.logging.get_level()
-        if level is None or level < av.logging.ERROR:  # the indev's "Supported modes" lines are ERROR lines
-            av.logging.set_level(av.logging.ERROR)
-        try:
-            with av.logging.Capture(local=False) as logs:
-                try:
-                    self.container = av.open(name, format="avfoundation", options=options)
-                except OSError as exc:
-                    raise refused(name, options, exc, [msg for _, _, msg in logs]) from exc
-        finally:
-            av.logging.set_level(level)
+        with av_log(av.logging.ERROR) as logs:  # the indev's "Supported modes" lines are ERROR lines
+            try:
+                self.container = av.open(name, format="avfoundation", options=options)
+            except OSError as exc:
+                raise refused(name, options, exc, [msg for _, _, msg in logs]) from exc
         self.stream = self.container.streams.video[0]
 
     def read(self, wait_s: float = 0.5) -> np.ndarray | None:

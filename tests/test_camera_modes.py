@@ -4,6 +4,8 @@ the device lacks is refused naming the mode asked and the modes it has."""
 from __future__ import annotations
 
 import sys
+import threading
+import time
 import types
 
 import pytest
@@ -97,3 +99,74 @@ def test_a_mode_the_camera_lacks_is_refused_naming_it_and_the_cameras_modes(monk
         "by the device. Its modes: 640x480@30fps, 1280x720@10fps, 1280x720@30fps"
     )
     assert levels == [16, None]  # the indev's ERROR lines are captured, then PyAV's own level is put back
+
+
+def _process_wide_av(monkeypatch):
+    """PyAV's logging as it behaves: one level for the process (None drops every line) and one stack of captures,
+    the newest getting each line. Listing devices takes ~60 ms; opening the first camera is refused in ~20 ms."""
+    state = {"level": None, "stack": []}
+
+    class Capture(list):
+        def __init__(self, local=True):
+            super().__init__()
+
+        def __enter__(self):
+            state["stack"].append(self)
+            return self
+
+        def __exit__(self, *exc):
+            state["stack"].remove(self)
+            return False
+
+    def emit(level, line):
+        if state["level"] is not None and level >= state["level"] and state["stack"]:
+            state["stack"][-1].append(("libav.avfoundation", level, line))
+
+    def open_(name, format, options):
+        if options.get("list_devices"):
+            for line in [
+                "AVFoundation video devices:",
+                "[0] Logi 4K",
+                "[1] USB2.0_CAM1",
+                "AVFoundation audio devices:",
+            ]:
+                time.sleep(0.015)
+                emit(32, line)
+            raise OSError(5, "Input/output error")
+        time.sleep(0.02)
+        for line in SUPPORTED:
+            emit(16, line)
+        raise OSError(5, "Input/output error")
+
+    log = types.ModuleType("av.logging")
+    log.ERROR, log.INFO = 16, 32
+    log.get_level = lambda: state["level"]
+    log.set_level = lambda v: state.__setitem__("level", v)
+    log.Capture = Capture
+    av = types.ModuleType("av")
+    av.open, av.logging = open_, log
+    monkeypatch.setitem(sys.modules, "av", av)
+    monkeypatch.setitem(sys.modules, "av.logging", log)
+    return state
+
+
+def test_a_refused_open_on_a_capture_thread_does_not_cut_the_next_cameras_name_lookup(monkeypatch):
+    from strands_robots.robot.drivers import cameras
+
+    state = _process_wide_av(monkeypatch)
+    for _ in range(5):
+        errors: list[OSError] = []
+
+        def open_first(errors=errors):
+            try:
+                devices._AVCapture("Logi 4K", CameraSpec(name="Logi 4K", width=1280, height=720, fps=60))
+            except OSError as exc:
+                errors.append(exc)
+
+        grabber = threading.Thread(target=open_first)  # Cameras.open: the first camera opens on its capture thread
+        grabber.start()
+        listed = cameras._avfoundation()  # ... while the caller resolves the next camera's name
+        grabber.join()
+        assert listed == [("Logi 4K", 0), ("USB2.0_CAM1", 1)]
+        assert str(errors[0]).endswith("Its modes: 640x480@30fps, 1280x720@10fps, 1280x720@30fps")
+        assert state["level"] is None and state["stack"] == []  # PyAV left as it was found

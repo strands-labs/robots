@@ -24,7 +24,7 @@ import numpy as np
 
 from .camera_spec import CameraSpec
 from .capture import Grabber, stop_all
-from .devices import _AVCapture, _CVCapture, av_options
+from .devices import _AVCapture, _CVCapture, av_log, av_options
 
 __all__ = ["Cameras", "CameraSpec", "av_options", "list_cameras", "resolve"]
 
@@ -45,17 +45,11 @@ def _avfoundation() -> list[tuple[str, int | str]]:
         import av.logging
     except ImportError as exc:
         raise ImportError("cameras by name on macOS need PyAV: pip install av") from exc
-    level = av.logging.get_level()
-    if level is None or level < av.logging.INFO:  # PyAV ships with libav's log off; the list is an INFO line each
-        av.logging.set_level(av.logging.INFO)
-    try:
-        with av.logging.Capture(local=False) as logs:
-            try:
-                av.open("", format="avfoundation", options={"list_devices": "true"})
-            except Exception:  # noqa: BLE001  (listing always "fails" to open: the list is in the log)
-                pass
-    finally:
-        av.logging.set_level(level)
+    with av_log(av.logging.INFO) as logs:  # PyAV ships with libav's log off; the list is an INFO line each
+        try:
+            av.open("", format="avfoundation", options={"list_devices": "true"})
+        except Exception:  # noqa: BLE001  (listing always "fails" to open: the list is in the log)
+            pass
     out: list[tuple[str, int | str]] = []
     video = False
     for _, _, msg in logs:
