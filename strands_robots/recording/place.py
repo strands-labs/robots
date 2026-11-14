@@ -13,7 +13,8 @@ from __future__ import annotations
 import os
 import shutil
 import stat
-from contextlib import ExitStack, suppress
+from collections.abc import Iterator
+from contextlib import ExitStack, contextmanager, suppress
 from pathlib import Path
 
 _POSIX = hasattr(os, "getuid") and hasattr(os, "O_NOFOLLOW")
@@ -70,8 +71,7 @@ def _walk(path: Path, *, create: bool) -> tuple[int, int]:
         st = os.stat(path)
         return st.st_dev, st.st_ino
     with ExitStack() as fds:
-        fd = os.open("/", _DIR)
-        fds.callback(os.close, fd)
+        fd = fds.enter_context(_opendir("/"))  # every fd closes when the walk unwinds, on any path out
         st = _trusted(os.fstat(fd), Path("/"))
         here = Path("/")
         for name in path.parts[1:]:
@@ -80,15 +80,23 @@ def _walk(path: Path, *, create: bool) -> tuple[int, int]:
                 with suppress(FileExistsError):  # an existing directory is checked below like a new one
                     os.mkdir(name, 0o755, dir_fd=fd)
             try:
-                child = os.open(name, _DIR, dir_fd=fd)
+                fd = fds.enter_context(_opendir(name, dir_fd=fd))
             except OSError:
                 if os.path.islink(here):
                     raise PermissionError(f"{here} is a symlink: a dataset path may not go through one") from None
                 raise
-            fds.callback(os.close, child)
-            fd = child
             st = _trusted(os.fstat(fd), here)
         return st.st_dev, st.st_ino
+
+
+@contextmanager
+def _opendir(name: str, *, dir_fd: int | None = None) -> Iterator[int]:
+    """A directory fd opened with ``O_NOFOLLOW``, always closed when its context leaves."""
+    fd = os.open(name, _DIR, dir_fd=dir_fd)
+    try:
+        yield fd
+    finally:
+        os.close(fd)
 
 
 def _trusted(st: os.stat_result, where: Path) -> os.stat_result:

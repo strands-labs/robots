@@ -148,7 +148,8 @@ class Robot(DeviceVerbs):
         if kp.shape != (n,) or kd.shape != (n,):
             raise ValueError(f"{self.id}: kp {kp.shape} / kd {kd.shape} for {n} actuators {list(self.action_keys)}")
         if self.sim is None:  # a ROS humanoid: kp/kd ride in every command frame
-            return self.body.set_gains(kp, kd)  # type: ignore[attr-defined]
+            self.body.set_gains(kp, kd)  # type: ignore[attr-defined]
+            return
         with self.sim.lock:
             self.sim.backend.set_gains(self.id, kp, kd)
 
@@ -158,9 +159,8 @@ class Robot(DeviceVerbs):
             body = self.body  # under the lock: a world that closed meanwhile has detached it, and this says so
             t = self.clock.now()
             js = body.read()
-            obs = Observation(
-                t=t, joints=js, pose=body.pose(), images=body.images() if images else {}, extras=body.extras()
-            )
+            pose, pics = body.pose(), (body.images() if images else {})  # read in this order, as before
+            obs = Observation(t=t, joints=js, pose=pose, images=pics, extras=body.extras())
         if self.twin is not None:  # the twin shows what the real body measured
             _twin.mirror(self, _targets.clip_to_limits(self.description, js.positions), measured=True)
         return obs
