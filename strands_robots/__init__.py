@@ -12,7 +12,7 @@ classes a program names, and everything else is imported from its package
     g1 = Robot("g1", position=[1, 0, 0])    # the SAME world: arm.sim is g1.sim
     arm.act({"shoulder_pan": 0.3})          # one control step for the world
     arm.run(lambda obs: {"elbow_flex": 0.4}, hz=50, steps=60)   # -> RunResult
-    real = Robot("so101", port="/dev/ttyACM0", confirm=ask)     # a feetech bus; twin=True adds a simulated twin
+    real = Robot("so101", port="/dev/ttyACM0", operator=ask)    # a feetech bus; twin=True adds a simulated twin
     real.act({"shoulder_pan": 0.3})         # writes the bus (and, with a twin, mirrors it in the default world)
     lab = Mesh("zenoh://", tenant="lab-a")                   # every robot on the LAN; lab.mount(real)
 

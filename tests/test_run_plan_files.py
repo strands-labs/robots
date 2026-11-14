@@ -36,7 +36,7 @@ def _positions(robot):
 def test_the_plan_carries_the_digest_of_the_files_and_an_unchanged_run_goes_ahead(recording):
     rec, _ = recording
     plans = []
-    robot = Robot("so101", driver="memory", approve=lambda p: plans.append(p) or True)
+    robot = Robot("so101", driver="memory", operator=lambda p: plans.append(p) or True)
     with from_agent():
         res = robot.run(str(rec), steps=3)
     assert res.steps == 3
@@ -52,7 +52,7 @@ def test_files_changed_while_the_operator_was_asked_refuse_the_run_and_move_noth
         (rec / "a.json").write_text(json.dumps([[0.4] * n] * 3))  # replaced while the dialog is open
         return True
 
-    robot.approve = approve
+    robot.operator = approve
     with from_agent(), pytest.raises(RequestRefused, match="changed on disk after the operator approved"):
         robot.run(str(rec), steps=3)
     assert np.allclose(_positions(robot), before)
@@ -81,7 +81,7 @@ def test_a_spec_that_changes_kind_while_the_operator_was_asked_is_refused(record
     spec = str(rec) if change is _unpin else "org/rec"
     robot = Robot("so101", driver="memory")
     before = _positions(robot)
-    robot.approve = lambda plan: change(rec, cwd) or True
+    robot.operator = lambda plan: change(rec, cwd) or True
     with from_agent(), pytest.raises(RequestRefused, match="changed on disk after the operator approved"):
         robot.run(spec, steps=3)
     assert np.allclose(_positions(robot), before)
@@ -139,7 +139,7 @@ def test_a_file_swapped_only_while_the_policy_loads_never_reaches_the_robot(reco
         return out
 
     monkeypatch.setattr(dataset, "_episode_actions", swap_around_the_read)
-    robot = Robot("so101", driver="memory", approve=lambda p: True)
+    robot = Robot("so101", driver="memory", operator=lambda p: True)
     with from_agent():
         robot.run(str(rec), steps=3)
     assert np.allclose(_positions(robot), 0.0)
@@ -149,7 +149,7 @@ def test_the_private_copy_is_removed_when_the_run_ends(recording, monkeypatch, t
     rec, _ = recording
     monkeypatch.setattr("tempfile.tempdir", str(tmp_path / "t"))
     (tmp_path / "t").mkdir()
-    robot = Robot("so101", driver="memory", approve=lambda p: True)
+    robot = Robot("so101", driver="memory", operator=lambda p: True)
     with from_agent():
         robot.run(str(rec), steps=3)
     assert list((tmp_path / "t").iterdir()) == []
@@ -163,7 +163,7 @@ def test_an_approved_preset_never_runs_a_same_named_folder_in_the_cwd(recording,
     rec.rename(cwd / "microduck")  # a dataset that happens to share a preset's name
     monkeypatch.chdir(cwd)
     assert local_root("microduck") is None and files_digest("microduck") is None
-    robot = Robot("so101", driver="memory", approve=lambda p: True)
+    robot = Robot("so101", driver="memory", operator=lambda p: True)
     before = _positions(robot)
     with from_agent(), pytest.raises(ValueError, match="Microduck"):  # the preset loads (and needs a duck's body)
         robot.run("microduck", steps=3)
@@ -179,7 +179,7 @@ def test_a_file_swapped_while_the_private_copy_is_taken_is_refused(recording, mo
         return listing(folder)
 
     robot = Robot("so101", driver="memory")
-    robot.approve = lambda p: monkeypatch.setattr(pin, "walk", swap_before_the_copy_reads) or True
+    robot.operator = lambda p: monkeypatch.setattr(pin, "walk", swap_before_the_copy_reads) or True
     with from_agent(), pytest.raises(RequestRefused, match="changed on disk"):
         robot.run(str(rec), steps=3)
     assert np.allclose(_positions(robot), 0.0)
@@ -189,7 +189,7 @@ def test_a_fifo_and_a_folder_cycle_are_copied_exactly_as_they_are_hashed(recordi
     rec, _ = recording
     os.mkfifo(rec / "meta" / "pipe")  # not a policy file: neither hashed nor copied, so nothing blocks on it
     (rec / "meta" / "loop").symlink_to(rec, target_is_directory=True)
-    robot = Robot("so101", driver="memory", approve=lambda p: True)
+    robot = Robot("so101", driver="memory", operator=lambda p: True)
     with from_agent():
         assert robot.run(str(rec), steps=3).steps == 3
 
@@ -201,7 +201,7 @@ def test_the_private_copy_is_removed_however_the_run_ends(recording, monkeypatch
     (tmp_path / "t").mkdir()
     if fail == "ctrl-c in the load":
         monkeypatch.setattr(dataset, "_episode_actions", lambda root, ep: (_ for _ in ()).throw(KeyboardInterrupt()))
-    robot = Robot("so101", driver="memory", approve=lambda p: True)
+    robot = Robot("so101", driver="memory", operator=lambda p: True)
     with from_agent(), pytest.raises(KeyboardInterrupt if fail == "ctrl-c in the load" else ValueError):
         robot.run(str(rec), steps=3, hz=10)  # the recording runs at 30 Hz: refused after it is loaded
     assert list((tmp_path / "t").iterdir()) == []
@@ -214,7 +214,7 @@ def test_under_umask_002_the_private_copy_is_still_this_users_alone(recording):
         os.chmod(path, 0o755 if path.is_dir() else 0o644)
     old = os.umask(0o002)
     try:
-        robot = Robot("so101", driver="memory", approve=lambda p: True)
+        robot = Robot("so101", driver="memory", operator=lambda p: True)
         with from_agent():
             assert robot.run(str(rec), steps=3).steps == 3
     finally:
@@ -227,7 +227,7 @@ def test_an_approved_real_run_checks_the_original_folder_not_only_the_copy(recor
     rec, _ = recording
     os.chmod(rec if where == "the folder" else next(p for p in rec.rglob("*") if p.is_dir()), 0o777)
     asked = []
-    robot = Robot("so101", driver="memory", approve=lambda p: asked.append(p) or True)
+    robot = Robot("so101", driver="memory", operator=lambda p: asked.append(p) or True)
     with from_agent(), pytest.raises(PermissionError, match="writable by group or others"):
         robot.run(str(rec), steps=3)
     assert asked == []  # refused before the operator is asked

@@ -30,7 +30,7 @@ def scene() -> Scene:
     s.box(560, 246, 150, 70, "safe", "soft bound: ask once", size=13, subsize=11)
     s.box(730, 246, 140, 70, "interlocks", "other values agree", size=13, subsize=11)
     s.box(390, 332, 230, 70, "validators", "pure checks, refusal verbatim", size=13, subsize=11)
-    s.box(640, 332, 230, 70, "operator gate", "confirm= on a real body", size=13, subsize=11)
+    s.box(640, 332, 230, 70, "operator gate", "operator= on a real body", size=13, subsize=11)
     s.arrow([(540, 281), (560, 281)], id="c1")
     s.arrow([(710, 281), (730, 281)], id="c2")
     s.arrow([(620, 367), (640, 367)], id="c3")

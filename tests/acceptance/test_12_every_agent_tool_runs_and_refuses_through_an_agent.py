@@ -106,7 +106,7 @@ def test_every_agent_tool_runs_and_refuses_through_an_agent(hold_policy):
     from strands_robots.mesh.tool import use_mesh
 
     asked: list = []  # the operator allows the agent's mesh run (asked once, with its plan)
-    tools = [arm.sim.tool, arm.tool, use_mesh(ctl, approve=lambda plan: asked.append(plan) or True)]
+    tools = [arm.sim.tool, arm.tool, use_mesh(ctl, operator=lambda plan: asked.append(plan) or True)]
     agent = Agent(tools=tools, callback_handler=None)
     try:
         _walk(agent, tools[0], SIM, lambda v, a: {"rpc": v, **({v: a} if a else {})})

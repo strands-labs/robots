@@ -1,6 +1,6 @@
 """The safety chain every control write from an agent or a dashboard passes: range -> safe -> interlocks
--> validators -> operator gate. The developer's own ``robot.act`` skips it (they are the operator); the
-e-stop bypasses it entirely.
+-> validators -> operator gate (``Robot(operator=)``, asked with a ``Move``). The developer's own ``robot.act``
+skips it (they are the operator); the e-stop bypasses it entirely.
 """
 
 from __future__ import annotations
@@ -31,10 +31,12 @@ class SafetyChain:
         source: str = "agent",
         approved_run: bool = False,
         measured: np.ndarray | None = None,
+        seconds: float | None = None,
     ) -> np.ndarray:
         """``approved_run``: a step of an agent run the operator approved as a whole (``RunPlan``, K6): the operator
-        gate is not asked again, and a target outside ``safe`` is REFUSED instead of asked per tick."""
-        from ..gate import operator_gate
+        gate is not asked again, and a target outside ``safe`` is REFUSED instead of asked per tick. ``source`` and
+        ``seconds`` (a ramp) are what the operator reads on the ``Move`` it is asked with."""
+        from ..gate import ask, operator_gate
 
         robot.estop_latch.check(robot.id)
         targets = robot.coerce(action, clip=False, measured=measured)
@@ -57,10 +59,9 @@ class SafetyChain:
         if approved_run:
             confirmed = True  # the operator approved this run once, for its whole plan
         if soft and not confirmed:
-            if robot.confirm is None or not robot.confirm(request.targets):
-                raise RequestRefused(f"{robot.id}: {'; '.join(soft)}: needs the operator's yes (confirm=)")
+            ask(robot, request.targets, source=source, seconds=seconds, reason="; ".join(soft))
             confirmed = True  # the operator was asked once, for exactly these targets
         for v in (*robot.interlocks, *self.validators, *robot.validators):
             v(robot, request)
-        operator_gate(robot, request.targets, confirmed=confirmed)
+        operator_gate(robot, request.targets, confirmed=confirmed, source=source, seconds=seconds)
         return request.targets

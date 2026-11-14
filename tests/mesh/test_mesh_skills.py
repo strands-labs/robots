@@ -11,6 +11,7 @@ import pytest
 
 from strands_robots import Policy, Robot
 from strands_robots.mesh import Mesh, RequestRefused
+from strands_robots.robot.run import Move
 
 
 class Hold(Policy):
@@ -151,7 +152,7 @@ def test_a_caller_that_vanishes_mid_skill_ends_it_and_the_device_holds(mesh_pair
 def test_a_real_robot_asks_its_own_operator_on_the_device(mesh_pair):
     a, b = mesh_pair
     plans: list = []
-    arm = Robot("so101", id="arm", driver="memory", confirm=lambda t: True, approve=lambda p: plans.append(p) or True)
+    arm = Robot("so101", id="arm", driver="memory", operator=lambda r: isinstance(r, Move) or plans.append(r) or True)
     a.mount(arm, skills={"pan": lambda o: {"shoulder_pan": 0.2}}, watchdog_ms=2000)
     assert b.discover("arm", min_count=1, timeout=3.0)
     b.invoke("arm", "skill", name="pan", seconds=0.3)
@@ -162,7 +163,7 @@ def test_a_real_robot_asks_its_own_operator_on_the_device(mesh_pair):
 
 def test_a_real_robot_whose_operator_declines_reports_the_skill_refused(mesh_pair):
     a, b = mesh_pair
-    arm = Robot("so101", id="arm", driver="memory", confirm=lambda t: True, approve=lambda p: False)
+    arm = Robot("so101", id="arm", driver="memory", operator=lambda r: isinstance(r, Move))
     a.mount(arm, skills={"pan": lambda o: {"shoulder_pan": 0.2}}, watchdog_ms=2000)
     assert b.discover("arm", min_count=1, timeout=3.0)
     b.invoke("arm", "skill", name="pan", seconds=0.3)
@@ -171,12 +172,12 @@ def test_a_real_robot_whose_operator_declines_reports_the_skill_refused(mesh_pai
     arm.close()
 
 
-def test_a_real_robot_without_approve_refuses_a_skill_at_once(mesh_pair):
+def test_a_real_robot_without_operator_refuses_a_skill_at_once(mesh_pair):
     a, b = mesh_pair
-    arm = Robot("so101", id="arm", driver="memory", confirm=lambda t: True)
+    arm = Robot("so101", id="arm", driver="memory")
     a.mount(arm, skills={"pan": lambda o: {"shoulder_pan": 0.2}}, watchdog_ms=2000)
     assert b.discover("arm", min_count=1, timeout=3.0)
-    with pytest.raises(RequestRefused, match="pass approve="):
+    with pytest.raises(RequestRefused, match="pass operator="):
         b.invoke("arm", "skill", name="pan", seconds=0.3)
     arm.close()
 
@@ -253,10 +254,10 @@ def test_a_real_robot_on_another_machine_without_skills_is_not_driven_over_the_n
 
     a = Mesh(f"zenoh://?listen=tcp/127.0.0.1:{port}&trusted=1", tenant=tenant)
     b = Mesh(f"zenoh://?connect=tcp/127.0.0.1:{port}", tenant=tenant)
-    arm = Robot("so101", id="arm", driver="memory", confirm=lambda t: True)
+    arm = Robot("so101", id="arm", driver="memory", operator=lambda t: True)
     a.mount(arm, watchdog_ms=2000)
     assert b.discover("arm", min_count=1, timeout=5.0)
-    tool = use_mesh(b, approve=lambda plan: True)
+    tool = use_mesh(b, operator=lambda plan: True)
     status, text = _call(tool, action="run", device_id="arm", run={"policy": "noop", "steps": 3})
     assert status == "error" and "offers no skills" in text and "skills={name: policy}" in text
     assert not b.tasks
@@ -269,7 +270,7 @@ def test_a_skill_the_operator_refuses_leaves_the_watchdog_disarmed(mesh_pair):
     """A refused skill moved nothing, so its quiet caller must not make the device apply on_disconnect, the same as a
     refused act (review on #4938: the run armed the watchdog before the operator was asked, and was never disarmed)."""
     a, b = mesh_pair
-    arm = Robot("so101", id="arm", driver="memory", confirm=lambda t: True, approve=lambda p: False)
+    arm = Robot("so101", id="arm", driver="memory", operator=lambda r: isinstance(r, Move))
     holds: list[float] = []
     real_hold = arm.body.hold
     arm.body.hold = lambda: (holds.append(time.monotonic()), real_hold())

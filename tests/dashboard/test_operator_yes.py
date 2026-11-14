@@ -19,7 +19,7 @@ YES = {"X-Confirm": "yes"}
 
 def _real(asked: list[object]) -> tuple[Robot, object]:
     d, serial = test_drivers.make_driver()  # a fake serial bus: nothing leaves this process
-    return Robot("so101", driver=d, id="real_arm", twin=False, confirm=lambda a: asked.append(a) or False), serial
+    return Robot("so101", driver=d, id="real_arm", twin=False, operator=lambda a: asked.append(a) or False), serial
 
 
 def test_with_sign_in_off_x_confirm_does_not_stand_in_for_the_operator() -> None:
@@ -31,6 +31,7 @@ def test_with_sign_in_off_x_confirm_does_not_stand_in_for_the_operator() -> None
         r = httpx.post(f"{server.url}/api/robots/real_arm/act", json={"targets": {"shoulder_pan": 0.2}}, headers=YES)
         assert r.status_code == 403, r.text
         assert asked and len(goal_writes(serial)) == before  # the robot's own callback was asked, and said no
+        assert asked[0].source == "dashboard"  # the operator reads where the command came from
         r = httpx.post(f"{server.url}/api/robots/real_arm/run", json={"policy": "hold"}, headers=YES)
         assert r.status_code == 403
     finally:

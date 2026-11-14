@@ -172,7 +172,7 @@ print("estopped:", arm.estopped)
 # An SO-101 on a Feetech bus. There is no arm on this machine, so the bus is the test suite's byte-level fake of six
 # STS3215 servos; the `Robot` code path is the real one. Nothing reaches the bus without the operator's say.
 #
-# With a real arm the only change is the first line: `Robot("so101", port="/dev/tty.usbmodem...", confirm=...)`.
+# With a real arm the only change is the first line: `Robot("so101", port="/dev/tty.usbmodem...", operator=...)`.
 
 # %%
 sys.path.insert(0, str(_nb.ROOT / "tests"))
@@ -180,6 +180,7 @@ from test_drivers import CAL, FakeSerial  # noqa: E402
 
 from strands_robots import Description  # noqa: E402
 from strands_robots.robot.drivers import feetech as ft  # noqa: E402
+from strands_robots.robot.run import Move  # noqa: E402
 
 
 def hardware_arm(**gates):
@@ -197,7 +198,7 @@ def hw_agent(robot):
     return Agent(model=os.environ["STRANDS_MODEL_ID"], tools=[robot.tool(policies={"wave": wave})], callback_handler=None)
 
 # %% [markdown]
-# No `confirm=`: the model's `act` is refused, and the refusal is what it reads.
+# No `operator=`: the model's `act` is refused, and the refusal is what it reads.
 
 # %%
 real, bus = hardware_arm()
@@ -206,30 +207,30 @@ print("goal frames on the bus:", goal_writes(bus))
 real.close()
 
 # %% [markdown]
-# A `confirm=` callable sees the full target vector (radians, `action_keys` order) and answers yes or no. This one
-# allows `shoulder_pan` within ±0.5 rad.
+# An `operator=` callable is asked with a `Move` for each command: the targets by joint name (radians here), who
+# sent it, and a one-line `str`. It answers yes or no. This one allows `shoulder_pan` within ±0.5 rad.
 
 # %%
 asked = []
 
 
-def confirm(targets):
-    asked.append(np.round(targets, 3).tolist())
-    return abs(targets[0]) <= 0.5
+def operator(req):
+    asked.append(str(req))
+    return isinstance(req, Move) and abs(req.targets["shoulder_pan"]) <= 0.5
 
 
-real, bus = hardware_arm(confirm=confirm)
+real, bus = hardware_arm(operator=operator)
 turn("move shoulder_pan to 0.3, then to 1.2", of=hw_agent(real))
 print("operator asked", len(asked), "times; goal frames on the bus:", goal_writes(bus))
 print("shoulder_pan now", round(real.observe(images=False)["shoulder_pan"], 3))
 real.close()
 
 # %% [markdown]
-# A policy run from an agent on hardware asks a different gate once, `approve=`, with the whole plan.
+# A policy run from an agent on hardware asks the same `operator=` once, with the whole plan (a `RunPlan`).
 
 # %%
 plans = []
-real, bus = hardware_arm(approve=lambda plan: plans.append(plan) or False)
+real, bus = hardware_arm(operator=lambda req: plans.append(req) or False)
 turn("run the wave policy for 1 second", of=hw_agent(real))
 print("plans the operator saw:", plans, "| goal frames:", goal_writes(bus))
 real.close()

@@ -12,6 +12,7 @@ from test_drivers import make_driver
 
 from strands_robots import Robot
 from strands_robots.robot.drivers import feetech as ft
+from strands_robots.robot.run import Move
 
 
 def goal_writes(serial: object) -> list[bytes]:
@@ -32,12 +33,12 @@ def test_direct_act_is_the_developers_call_and_needs_no_gate():
 
 @pytest.mark.parametrize(
     "confirm, match",
-    [(None, "pass confirm="), (lambda action: False, "refused")],
+    [(None, "pass operator="), (lambda action: False, "refused")],
     ids=["no-callable", "operator-says-no"],
 )
 def test_a_refused_hold_writes_nothing(confirm, match):
     d, s = make_driver()
-    real = Robot("so101", driver=d, confirm=confirm, twin=True)
+    real = Robot("so101", driver=d, operator=confirm, twin=True)
     before = real.observe().joints.positions
     s.frames.clear()
     with pytest.raises(PermissionError, match=match):
@@ -50,7 +51,7 @@ def test_a_refused_hold_writes_nothing(confirm, match):
 def test_an_allowed_hold_writes_and_the_twin_mirrors_it():
     d, s = make_driver()
     asked: list[np.ndarray] = []
-    real = Robot("so101", driver=d, confirm=lambda action: asked.append(np.array(action)) or True, twin=True)
+    real = Robot("so101", driver=d, operator=lambda move: asked.append(move.vector) or True, twin=True)
     measured = real.observe().joints
     real.confirm_act(measured.positions)
     assert len(asked) == 1 and len(goal_writes(s)) == 2  # torque on, then one Goal_Position write
@@ -69,7 +70,7 @@ def test_a_servo_resting_past_its_limit_can_still_hold_and_return():
     where it is, or back toward the range; only a target driving it further out is refused (Yin #4774)."""
     d, s = make_driver()
     s.actual[d.ids[3]] = 3072 + 40  # wrist_flex encoder past range_max: it reads outside [lo, hi]
-    real = Robot("so101", driver=d, confirm=lambda action: True, twin=False)
+    real = Robot("so101", driver=d, operator=lambda action: True, twin=False)
     hold = real.observe().joints
     assert hold["wrist_flex"] > real.description.limits["wrist_flex"][1]  # genuinely past its hard limit
     s.frames.clear()
@@ -90,8 +91,8 @@ def test_confirmed_out_of_band_and_sim_bodies_are_ungated():
     real.confirm_act({"shoulder_pan": 0.3}, confirmed=True)  # an operator said yes elsewhere (a dashboard dialog)
     assert real.observe()["shoulder_pan"] == pytest.approx(0.3, abs=1e-2)
     Robot("so101").confirm_act({"shoulder_pan": 0.3})  # simulated: no gate
-    with pytest.raises(TypeError, match="confirm"):
-        Robot("so101", confirm=lambda a: True)  # a gate on a simulated body is a mistake worth naming
+    with pytest.raises(TypeError, match="operator= are hardware"):
+        Robot("so101", operator=lambda a: True)  # a gate on a simulated body is a mistake worth naming
 
 
 class OneWire(test_drivers.FakeSerial):
@@ -116,7 +117,7 @@ class OneWire(test_drivers.FakeSerial):
 
 def test_two_threads_on_one_hardware_robot_take_turns_on_the_bus():
     d, s = make_driver(serial=OneWire())
-    real = Robot("so101", driver=d, confirm=lambda action: True, twin=False)
+    real = Robot("so101", driver=d, operator=lambda action: True, twin=False)
     hold = real.observe().joints.positions
     errors: list[BaseException] = []
 
@@ -149,8 +150,9 @@ def test_k6_agent_run_asks_approve_once_not_confirm_every_tick():
     plans: list = []
     per_tick: list = []
     d, _ = make_driver()
-    real = Robot("so101", driver=d, twin=False, approve=lambda p: plans.append(p) or True,
-                 confirm=lambda t: per_tick.append(t) or True)  # fmt: skip
+    real = Robot(
+        "so101", driver=d, twin=False, operator=lambda r: (per_tick if isinstance(r, Move) else plans).append(r) or True
+    )
     with from_agent():
         res = real.run(lambda obs: {}, steps=4, hz=50, instruction="wave")
     assert res.stopped_by == "steps" and res.steps == 4
@@ -166,7 +168,7 @@ def test_k6_without_approve_an_agent_run_moves_nothing():
     d, s = make_driver()
     real = Robot("so101", driver=d, twin=False)
     s.frames.clear()
-    with from_agent(), pytest.raises(RequestRefused, match="approve="):
+    with from_agent(), pytest.raises(RequestRefused, match="operator="):
         real.run(lambda obs: {}, steps=3, hz=50)
     assert goal_writes(s) == []  # refused before anything was acquired or written
     real.close()
@@ -177,7 +179,7 @@ def test_k6_operator_refuses_the_run():
     from strands_robots.robot.safety import RequestRefused
 
     d, s = make_driver()
-    real = Robot("so101", driver=d, twin=False, approve=lambda p: False)
+    real = Robot("so101", driver=d, twin=False, operator=lambda p: False)
     s.frames.clear()
     with from_agent(), pytest.raises(RequestRefused, match="refused the run"):
         real.run(lambda obs: {}, steps=3, hz=50)
@@ -220,7 +222,7 @@ def test_k6_every_step_still_passes_limits_and_validators(make_policy):
 
     seen: list[np.ndarray] = []
     d, _ = make_driver()
-    real = Robot("so101", driver=d, twin=False, approve=lambda p: True)
+    real = Robot("so101", driver=d, twin=False, operator=lambda p: True)
     real.validators.append(lambda r, req: seen.append(req.targets.copy()))
     pol = make_policy()
 
@@ -249,7 +251,7 @@ def test_k6_start_carries_the_agent_mark_to_its_thread():
     with from_agent():
         task = real.start(lambda obs: {}, steps=3, hz=50)
     task._thread.join(5)
-    with pytest.raises(RequestRefused, match="approve="):
+    with pytest.raises(RequestRefused, match="operator="):
         _ = task.result
     real.close()
 
@@ -263,7 +265,7 @@ def test_k6_two_runs_that_read_one_policy_in_other_units_never_ask_the_operator_
     at = {}
     for units in ("auto", "lerobot"):
         d, _ = make_driver()
-        real = Robot("so101", driver=d, twin=False, approve=lambda p: plans.append(p) or True)
+        real = Robot("so101", driver=d, twin=False, operator=lambda p: plans.append(p) or True)
         with from_agent():
             real.run(lambda obs: {"shoulder_pan": 0.5}, steps=3, hz=50, units=units)
         at[units] = real.observe()["shoulder_pan"]

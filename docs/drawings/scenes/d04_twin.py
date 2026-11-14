@@ -9,7 +9,7 @@ def scene() -> Scene:
         "Robot(port=) drives the bus through the operator gate; with twin=True it mirrors every command into a "
         "twin in Simulation.default().",
         "Left, the one green element: Robot(\"so101\", port=..., twin=True), a hardware robot. A wire runs right through the "
-        "operator gate, confirm= a callable the operator owns, to the Driver: feetech on the STS3215 bus, unitree "
+        "operator gate, operator= a callable the operator owns, to the Driver: feetech on the STS3215 bus, unitree "
         "and microduck observe only. A second wire runs down to so101_twin, a SimBody in Simulation.default(): "
         "act mirrors the targets into the twin, observe() pushes the measured joints into it, so "
         "real.twin.sim.render() shows what the arm does. Right, refused: the operator says no and nothing is "
@@ -22,7 +22,7 @@ def scene() -> Scene:
     s.chips(74, 226, ["is_real", "twin", "calibrate()"])
 
     s.section(460, 122, "the operator gate")
-    s.box(460, 134, 300, 132, "confirm=", "a callable the operator owns; confirm_act() reaches the bus only "
+    s.box(460, 134, 300, 132, "operator=", "a callable the operator owns; confirm_act() reaches the bus only "
                                          "through it", size=14, subsize=12, id="gate")
     s.section(820, 122, "the bus")
     s.box(820, 134, 320, 132, "Driver: feetech", "read() and write() on the STS3215 servos; calibration is "

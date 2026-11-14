@@ -58,7 +58,7 @@ def hub(monkeypatch):
 
 def _arm(approve):
     plans = []
-    return Robot("so101", driver="memory", approve=lambda p: plans.append(p) or approve(p)), plans
+    return Robot("so101", driver="memory", operator=lambda p: plans.append(p) or approve(p)), plans
 
 
 def test_a_registered_checkpoint_rewritten_after_the_yes_is_refused_and_never_loads(loads, ckpt):

@@ -151,7 +151,7 @@ def test_a_remote_hold_on_a_real_arm_asks_the_operator_first(mesh_pair, operator
     a, b = mesh_pair
     names = Robot("so101").description.action_keys
     bus = _LimpBus(names)
-    real = Robot("so101", driver=bus, confirm=lambda targets: operator, twin=False)
+    real = Robot("so101", driver=bus, operator=lambda targets: operator, twin=False)
     a.mount(real, device_id="real-arm")
     assert b.discover("real-arm", min_count=1, timeout=3.0)
     if operator:

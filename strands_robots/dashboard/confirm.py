@@ -2,7 +2,7 @@
 
 ``X-Confirm: yes`` is a header any client can type, so it is the operator's yes only on a request that also carries a
 signed-in session (the passkey cookie or ``Authorization: Bearer``, checked by ``auth/guard.py``). With sign-in off
-it counts for nothing: a real robot then asks its own ``confirm`` callback, as it does for a script.
+it counts for nothing: a real robot then asks its own ``operator=`` callback (with a ``Move``), as it does for a script.
 """
 
 from __future__ import annotations

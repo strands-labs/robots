@@ -50,7 +50,7 @@ def _stalling(at: int):
 
 
 def _arm() -> Robot:
-    return Robot("so101", driver="memory", confirm=lambda action: True)
+    return Robot("so101", driver="memory", operator=lambda action: True)
 
 
 def test_a_stalled_tick_is_a_gap_in_measured_time_while_timestamp_stays_on_the_grid(tmp_path):

@@ -8,6 +8,7 @@ import pytest
 
 from strands_robots import Robot
 from strands_robots.robot.drivers import Driver, MemoryDriver
+from strands_robots.robot.run import Move
 from strands_robots.robot.run.source import from_agent
 from strands_robots.robot.safety import RequestRefused, Watchdog
 
@@ -28,7 +29,7 @@ def test_driver_memory_is_a_real_body_whose_reads_return_its_writes():
 
 @pytest.mark.parametrize(("confirm", "written"), [(None, 0), (lambda targets: False, 0), (lambda targets: True, 1)])
 def test_the_operator_gate_decides_what_reaches_the_memory_bus(confirm, written):
-    robot, bus = _real(confirm=confirm)
+    robot, bus = _real(operator=confirm)
     if written:
         robot.confirm_act({"shoulder_pan": 0.3})
     else:
@@ -54,7 +55,7 @@ def test_estop_reaches_the_memory_bus_and_the_watchdog_takes_it_as_hardware():
 @pytest.mark.parametrize(("answer", "written"), [(False, 0), (True, 3)])
 def test_approve_decides_whether_an_agent_run_reaches_the_memory_bus(answer, written):
     plans = []
-    robot, bus = _real(confirm=lambda targets: True, approve=lambda plan: plans.append(plan) or answer)
+    robot, bus = _real(operator=lambda r: isinstance(r, Move) or plans.append(r) or answer)
     with from_agent():
         if answer:
             robot.run(lambda obs: {"shoulder_pan": 0.1}, steps=3)

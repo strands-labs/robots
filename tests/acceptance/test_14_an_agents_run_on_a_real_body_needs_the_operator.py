@@ -32,7 +32,7 @@ def test_an_agents_run_on_a_real_body_needs_the_operator(hold_policy, rpc):
     from strands_robots import Robot
 
     d, serial = make_driver()
-    real = Robot("so101", driver=d, confirm=None, twin=False)
+    real = Robot("so101", driver=d, operator=None, twin=False)
     agent = Agent(tools=[real.tool], callback_handler=None)
     serial.frames.clear()
     result = getattr(agent.tool, real.tool.tool_name)(rpc=rpc, **{rpc: {"policy": HOLD, "steps": 3}})
@@ -41,4 +41,4 @@ def test_an_agents_run_on_a_real_body_needs_the_operator(hold_policy, rpc):
     real.close()
     assert goal_writes(serial) == [], "an agent's run wrote goal frames with no operator"
     if rpc == "run":  # K6: an agent's run on a real arm needs the operator's one yes for the whole run (approve=)
-        assert result["status"] == "error" and "approve=" in result["content"][0]["text"], result
+        assert result["status"] == "error" and "operator=" in result["content"][0]["text"], result

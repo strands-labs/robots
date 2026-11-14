@@ -138,7 +138,7 @@ def _real_arm():
     names = Robot("so101").description.action_keys
     bus = _LimpArm(names)
     # the operator approves every write: only the missing watchdog may refuse it
-    return Robot("so101", driver=bus, confirm=lambda targets: True, twin=False), bus
+    return Robot("so101", driver=bus, operator=lambda targets: True, twin=False), bus
 
 
 def test_a_hardware_device_without_a_watchdog_is_served_observe_only(mesh_pair):

@@ -31,13 +31,11 @@ def label(policy: object) -> str:
 def approve_run(robot: Robot, plan: RunPlan) -> None:
     """The operator's one yes for an agent's run on a real body; ``RequestRefused`` names the fix otherwise (K6)."""
     from ..safety import RequestRefused
+    from ..safety.move import HINT
 
-    if robot.approve is None:
-        raise RequestRefused(
-            f"{robot.id} is a real robot and this run came from an agent: pass approve=<callable(RunPlan) -> bool> "
-            "to Robot(...) so an operator can allow it"
-        )
-    if not robot.approve(plan):
+    if robot.operator is None:
+        raise RequestRefused(f"{robot.id} is a real robot and this run came from an agent: {HINT}")
+    if not robot.operator(plan):
         raise RequestRefused(f"{robot.id}: the operator refused the run {plan}")
 
 

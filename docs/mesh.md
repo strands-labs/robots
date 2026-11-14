@@ -37,7 +37,7 @@ the caller disappears, the robot does what `on_disconnect` says.
 A real robot mounted with `watchdog_ms=None` only answers `observe` and `describe`. `watchdog_ms` is an argument of
 `Mesh.mount` (500 ms by default; `Robot(..., mesh=lab)` mounts with the default), not of `Robot`:
 `lab.mount(Robot("so101", port="/dev/ttyACM0"), watchdog_ms=250)`. Like a command from an agent or the dashboard, a
-move over the mesh to a real robot also needs the operator's `confirm=` on that `Robot` (see [Safety](safety.md)).
+move over the mesh to a real robot also needs the operator's yes from `operator=` on that `Robot` (its `Move` says `source="mesh"`) (see [Safety](safety.md)).
 A real robot on a mesh any machine may join is observe-only as well (see "Securing the mesh"): there
 the peer id a request carries is only a claim, so any machine could move the robot, or keep its watchdog from
 noticing that the real mover is gone.
@@ -67,7 +67,7 @@ me.invoke("so101", "skill_status")                     # {"name": "walk", "state
 |---|---|
 | What a caller sends | A skill name from the device's own list and `seconds` (at most 60), optionally `instruction` |
 | Where it runs | On the device, as an agent's run: every step passes its safety chain |
-| A real robot | Asks its own `Robot(approve=)` on the device; the caller's reply never waits on a person |
+| A real robot | Asks its own `Robot(operator=)` with the `RunPlan`, on the device; the caller's reply never waits on a person |
 | `stop`, `estop` | End a running skill |
 | The caller goes quiet | The skill carries on; the caller may poll `skill_status` slowly |
 | The caller's mesh vanishes | The device ends the skill and applies `on_disconnect` |

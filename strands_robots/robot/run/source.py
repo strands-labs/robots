@@ -67,8 +67,8 @@ class RunPlan:
     the units its numbers are read in (``"auto"``: the policy's own), and ``files``: the SHA-256 of a policy read
     from this machine's disk (a checkpoint or dataset path), so the run is refused if they change after the yes.
 
-    An agent's run on hardware asks ``Robot(approve=callable(RunPlan) -> bool)`` once, with this whole plan, before
-    anything is acquired (K6); every step then still passes the safety chain, without asking the operator again.
+    An agent's run on hardware asks ``Robot(operator=callable(Move | RunPlan) -> bool)`` once, with this whole plan,
+    before anything is acquired (K6); every step then still passes the safety chain, without asking the operator again.
     """
 
     robot: str

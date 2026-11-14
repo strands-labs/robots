@@ -41,7 +41,7 @@ def world(lab, tenant):
     query of the operator reaches the insider's queryables and the insider reaches the device."""
     pd, pi = _ports(2)
     dev = Mesh(f"zenoh://?identity={lab['device']}&listen=tls/127.0.0.1:{pd}", tenant=tenant)
-    arm = Robot("so101", driver="memory", confirm=lambda action: True)
+    arm = Robot("so101", driver="memory", operator=lambda action: True)
     holds: list[float] = []
     real_hold = arm.body.hold
     arm.body.hold = lambda: (holds.append(time.monotonic()), real_hold())[1]
@@ -146,7 +146,7 @@ def test_a_real_robot_is_observe_only_without_an_identity_even_with_a_config_fil
     path.write_text('{mode: "peer"}')
     dev = Mesh(f"zenoh://?config={path}&listen=tcp/127.0.0.1:{port}", tenant=tenant)
     op = Mesh(f"zenoh://?connect=tcp/127.0.0.1:{port}", tenant=tenant)
-    arm = Robot("so101", driver="memory", confirm=lambda action: True)
+    arm = Robot("so101", driver="memory", operator=lambda action: True)
     try:
         dev.mount(arm, device_id="arm")
         assert op.discover("arm", min_count=1, timeout=3.0)

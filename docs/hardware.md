@@ -13,7 +13,7 @@ digital twin shows it in simulation.
 ```python
 from strands_robots import Robot
 
-real = Robot("so101", port="/dev/ttyACM0", twin=True, confirm=lambda a: input(f"move to {a}? ") == "y")
+real = Robot("so101", port="/dev/ttyACM0", twin=True, operator=lambda req: input(f"{req}? ") == "y")
 real.calibrate(interactive=False)  # loads the LeRobot calibration file
 obs = real.observe()               # measured joints, in radians
 real.confirm_act({"gripper": 1.0}, seconds=1.5)
@@ -40,7 +40,7 @@ The `memory` driver acts like a real robot, so the gate and e-stop behave as the
 ```python
 from strands_robots import Robot
 
-real = Robot("so101", driver="memory", confirm=lambda targets: True)
+real = Robot("so101", driver="memory", operator=lambda req: True)
 real.confirm_act({"shoulder_pan": 0.3})
 print(real.body.writes)  # the targets that reached the "bus"
 ```
@@ -97,10 +97,27 @@ refused too, at connect and by `calibrate()` before it saves. A real SO-101 sits
 
 ## The operator gate
 
-Your own code calls `act()`. Agents and the dashboard call `confirm_act()`, which asks your `confirm=` function
-first. If it returns false, nothing is written. A real robot without `confirm=` refuses `confirm_act()`.
+Your own code calls `act()`. Agents, the dashboard, mesh peers and ROS topics call `confirm_act()`, which first asks
+your `operator=` function with a `Move`: the robot, the targets by joint name in the robot's units, who sent it
+(`source`: `agent`, `dashboard`, `mesh` or `ros`), the ramp time and, for a target outside `safe`, why it is asked.
+`print(move)` is one line. If the function returns false, nothing is written.
 
-An agent's `run()` asks `approve=` once with the whole plan, not every step. Without `approve=`, the run is refused.
+An agent's `run()` asks the same function once with a `RunPlan` (policy, files, rate, duration), not every step.
+Without `operator=`, a real robot refuses both. One function answers both; tell them apart with `isinstance`:
+
+```python
+from strands_robots import Robot
+from strands_robots.robot.run import Move, RunPlan
+
+def operator(req: Move | RunPlan) -> bool:
+    if isinstance(req, Move):
+        return abs(req.targets["shoulder_pan"]) < 0.5  # small moves only
+    return req.steps is not None and req.steps <= 300  # short runs only
+
+arm = Robot("so101", driver="memory", operator=operator)
+arm.confirm_act({"shoulder_pan": 0.3})  # asked with: move so101 from agent: shoulder_pan=0.300, ...
+```
+
 The safety chain still checks every step. When the policy is a checkpoint or dataset on this machine, the plan's
 `files` is the SHA-256 of the files the loader reads (a preset name stays a preset, even next to a same-named folder).
 The run then loads a private copy of those files, hashed while it is written: if they changed after the yes, the run

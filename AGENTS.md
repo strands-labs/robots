@@ -126,8 +126,8 @@ A real robot moves only through its operator gate. Keep these invariants when yo
 
 - Two paths. The developer's own `robot.act()` / `robot.run()` is the operator: no chain, but still clipped to
   limits and refused on NaN. Agent, tool, mesh and dashboard writes go through `robot/safety/chain.py`: e-stop latch,
-  joint range, the soft `safe` bound, interlocks, validators, then the operator's yes (`confirm=` / `confirm_act`).
-- An agent run on a real body (`with from_agent():`) asks `approve(RunPlan)` once. Every step is still checked, and
+  joint range, the soft `safe` bound, interlocks, validators, then the operator's yes (`Robot(operator=)` asked with a `Move`, via `confirm_act`).
+- An agent run on a real body (`with from_agent():`) asks the same `operator` once with its `RunPlan`. Every step is still checked, and
   an out-of-range step ends the run instead of being clipped. `RunPlan.files` pins a policy read from disk: the run
   loads a private copy hashed as it is written, which must match it (`run/pin.py` `pinned`, removed when the `with`
   ends). What a spec reads from disk is `policy/factory.py` `local_root`, the same rule `make()` loads by.
