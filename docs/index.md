@@ -13,7 +13,7 @@ title: strands-robots
 <div class="sr-hero__actions">
 <a class="sr-btn sr-btn--primary" href="quickstart/">Quickstart</a>
 <a class="sr-btn" href="install/">Installation</a>
-<span class="sr-install">uv pip install "strands-robots[dashboard,mujoco] @ git+https://github.com/strands-labs/robots@main"<button class="sr-copy" data-clipboard-text='uv pip install "strands-robots[dashboard,mujoco] @ git+https://github.com/strands-labs/robots@main"'>copy</button></span>
+<span class="sr-install">uv pip install "strands-robots[dashboard,mujoco]"<button class="sr-copy" data-clipboard-text='uv pip install "strands-robots[dashboard,mujoco]"'>copy</button></span>
 </div>
 </div>
 <div class="sr-hero__stage" markdown>
@@ -76,7 +76,7 @@ Agent(tools=[arm.tool, arm.sim.tool])(
 
 ```bash
 uv venv -p 3.12 && source .venv/bin/activate
-uv pip install "strands-robots[dashboard,mujoco] @ git+https://github.com/strands-labs/robots@main"
+uv pip install "strands-robots[dashboard,mujoco]"
 python -m strands_robots.dashboard
 ```
 

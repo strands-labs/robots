@@ -3,7 +3,7 @@ site_description: "A Python library for building robots: simulation, real hardwa
 repo_url: https://github.com/strands-labs/robots
 repo_name: strands-labs/robots
 site_url: https://strands-labs.github.io/robots/
-edit_uri: edit/dev/docs/
+edit_uri: edit/main/docs/
 strict: true
 docs_dir: docs
 exclude_docs: |
