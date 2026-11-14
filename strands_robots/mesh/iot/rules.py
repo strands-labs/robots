@@ -70,6 +70,17 @@ def _republish(topic: str, role_arn: str, qos: int = 1) -> dict[str, Any]:
     return {"republish": {"topic": topic, "roleArn": role_arn, "qos": qos}}
 
 
+def _error_action(role_arn: str, tenant: str, kind: str, s3_bucket: str | None) -> dict[str, Any]:
+    """The ``errorAction`` for one rule. A rule with none drops an action's failure silently (measured: 0 SNS
+    messages in 90 s after a real e-stop), which for the e-stop and fault rules is the wrong default. Into S3 under
+    an ``errors/<tenant>/<kind>/`` prefix when a bucket is given, else republished to the tenant's ``@error`` topic
+    so the failure is visible to anyone the role lets subscribe. The caller's ``error_action=`` overrides this."""
+    if s3_bucket:
+        return {"s3": {"roleArn": role_arn, "bucketName": s3_bucket,
+                       "key": f"errors/{tenant}/{kind}/${{timestamp()}}.json"}}  # fmt: skip
+    return _republish(wire.key("error", tenant), role_arn)
+
+
 def rules_for(
     tenant: str,
     role_arn: str,
@@ -78,15 +89,24 @@ def rules_for(
     s3_bucket: str | None = None,
     timestream: tuple[str, str] | None = None,
     telemetry: bool = False,
+    error_action: Mapping[str, Any] | None = None,
 ) -> dict[str, dict[str, Any]]:
     """The tenant's rules as ``{name: topicRulePayload}``.
 
     ``estop``: every tenant-wide e-stop republished on ``…/@estop/latest`` (and to SNS when given). ``events``:
     ``fault``/``estop``/``run.*`` events into Timestream ``(database, table)`` and/or S3 ``recordings/<tenant>/…``.
     ``fault``: high-severity faults to SNS. ``telemetry``: the Basic Ingest sink for ``basic_ingest_topic``.
+
+    Every rule carries an ``errorAction`` so a failing action is recorded, not dropped: ``error_action`` when
+    given, else into S3 under ``errors/<tenant>/<kind>/`` when ``s3_bucket`` is set, else republished to the
+    tenant's ``@error`` topic.
     """
     t = wire.check_id(tenant, "tenant")
     out: dict[str, dict[str, Any]] = {}
+
+    def err(kind: str) -> dict[str, Any]:
+        return dict(error_action) if error_action is not None else _error_action(role_arn, t, kind, s3_bucket)
+
     estop_actions = [_republish(f"{wire.key('estop', t)}/latest", role_arn)]
     if sns_topic_arn:
         estop_actions.append(_sns(sns_topic_arn, role_arn))
@@ -94,6 +114,7 @@ def rules_for(
         "sql": f"SELECT *, topic(2) AS tenant, timestamp() AS at FROM '{wire.key('estop', t)}'",
         "description": f"strands-robots tenant {t}: e-stop fan-out",
         "actions": estop_actions,
+        "errorAction": err("estop"),
         "ruleDisabled": False,
         "awsIotSqlVersion": "2016-03-23",
     }
@@ -104,6 +125,7 @@ def rules_for(
             f"FROM '{wire.key('event', t, '*', '*').replace('*', '+')}'",
             "description": f"strands-robots tenant {t}: device events to storage",
             "actions": sinks,
+            "errorAction": err("events"),
             "ruleDisabled": False,
             "awsIotSqlVersion": "2016-03-23",
         }
@@ -114,6 +136,7 @@ def rules_for(
             f"WHERE result.severity = 'high'",
             "description": f"strands-robots tenant {t}: high-severity faults",
             "actions": [_sns(sns_topic_arn, role_arn)],
+            "errorAction": err("fault"),
             "ruleDisabled": False,
             "awsIotSqlVersion": "2016-03-23",
         }
@@ -125,6 +148,7 @@ def rules_for(
             "sql": f"SELECT seq, t, result, '{t}' AS tenant, clientid() AS device_id FROM 'strands/basic-ingest'",
             "description": f"strands-robots tenant {t}: <= 1 Hz state telemetry (Basic Ingest, no messaging charge)",
             "actions": _sinks(role_arn, t, s3_bucket, timestream, device="${clientid()}", event="state"),
+            "errorAction": err("telemetry"),
             "ruleDisabled": False,
             "awsIotSqlVersion": "2016-03-23",
         }
@@ -163,7 +187,11 @@ def apply_rules(iot: Any, rules: Mapping[str, Mapping[str, Any]]) -> dict[str, s
             iot.create_topic_rule(ruleName=name, topicRulePayload=dict(payload))
             out[name] = "created"
             continue
-        same = current.get("sql") == payload["sql"] and _norm(current.get("actions")) == _norm(payload["actions"])
+        same = (
+            current.get("sql") == payload["sql"]
+            and _norm(current.get("actions")) == _norm(payload["actions"])
+            and _norm(current.get("errorAction")) == _norm(payload.get("errorAction"))
+        )
         if same and not current.get("ruleDisabled", False):
             out[name] = "unchanged"
         else:

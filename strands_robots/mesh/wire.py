@@ -25,12 +25,14 @@ KEYS: dict[str, str] = {
     "rpc": "strands/{tenant}/{device_id}/rpc/{name}",
     "presence": "strands/{tenant}/@presence/{device_id}",
     "estop": "strands/{tenant}/@estop",
+    "error": "strands/{tenant}/@error",
     "peer": "strands/{tenant}/@peer/{device_id}",
     "holder": "strands/{tenant}/@holder/{device_id}/{name}",
 }
 """Every key the mesh uses (``peer`` is every Mesh's own liveliness, keyed by its peer id, which the device watchdog
 watches; ``holder`` is each mounting peer's token for a device). Nothing else in the package spells a key.
-``@presence``, ``@holder``, ``@estop`` and ``@peer`` are verbatim segments: only the literal matches them, so a
+``@presence``, ``@holder``, ``@estop``, ``@error`` and ``@peer`` are verbatim segments: only the literal matches
+them, so a
 ``strands/<tenant>/**`` subscriber never receives them."""
 
 _ID = re.compile(r"^[A-Za-z0-9_.:-]+$")
