@@ -69,6 +69,18 @@ A step whose policy answers `needs_observation()` with `False` (a `ChunkedPolicy
 frame, as in simulation; the capture threads keep draining the cameras meanwhile. A recording or a `stop_when` still
 gets every step's frames.
 
+A camera read through OpenCV (an index or a path) asks the device for compressed MJPEG by default, so 1280x720 at
+30 fps fits a USB 2.0 camera. Pass `fourcc="YUYV"` (or `None` for the device's own codec) to change it.
+On macOS a named camera opens through AVFoundation, which picks the device's mode by size and rate. There, `pixel_format` (default `"uyvy422"`;
+`"nv12"` copies less) only sets the frames' format in memory. A size or rate the camera lacks is refused with the mode
+asked and the modes the camera has:
+
+```python
+cameras = {"wrist": {"index": "/dev/video0", "width": 1280, "height": 720, "fps": 30, "fourcc": "MJPG"}}
+# OSError: camera 'USB2.0_CAM1' refused 1280x720 @ 60 fps (uyvy422): Selected framerate (60.000000) is not
+# supported by the device. Its modes: 640x480@30fps, 1280x720@10fps, 1280x720@30fps
+```
+
 {{drawing:d17_driver_options}}
 
 ## Calibration

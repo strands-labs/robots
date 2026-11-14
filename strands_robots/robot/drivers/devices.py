@@ -3,12 +3,51 @@ for the device's next frame; ``capture.Grabber`` makes that wait a capture threa
 
 from __future__ import annotations
 
+import contextlib
+import re
+import threading
 import time
+from collections.abc import Iterator
 from typing import Any
 
 import numpy as np
 
 from .camera_spec import CameraSpec
+
+# PyAV's log level is process-wide and ``av.open`` can block forever (an AVFoundation device with no matching mode;
+# see ``av_options``). ``_AV_LOG`` guards only a ref-counted bump of that level: held while the level is raised or put
+# back, NEVER across ``av.open``. Holding it across the open let a camera stalled on its capture thread block the next
+# camera's name lookup (which also raises the level), so ``Cameras.open`` never reached ``grabber.wait(open_timeout_s)``
+# and hung instead of refusing. While any caller holds, the level is the most verbose asked; it is put back only when
+# the last leaves. ``Capture(local=True)`` is thread-local, so each open sees its own device's lines, not a neighbour's.
+_AV_LOG = threading.Lock()
+_av_level_users = 0  # how many ``av_log`` contexts are open; the process level is restored when this returns to zero
+_av_saved_level: int | None = None  # the level found before the first; restored when the last leaves
+
+
+@contextlib.contextmanager
+def av_log(at_least: int) -> Iterator[list[tuple[str, int, str]]]:
+    """libav's log lines for THIS thread while held, the process level raised to ``at_least`` for as long as any caller
+    needs it; the lock is never held across the blocking ``av.open``, so a stalled open cannot block another camera."""
+    global _av_level_users, _av_saved_level
+    import av.logging
+
+    with _AV_LOG:
+        if _av_level_users == 0:
+            _av_saved_level = av.logging.get_level()
+        _av_level_users += 1
+        level = av.logging.get_level()
+        if level is None or level < at_least:
+            av.logging.set_level(at_least)
+    try:
+        with av.logging.Capture(local=True) as logs:
+            yield logs
+    finally:
+        with _AV_LOG:
+            _av_level_users -= 1
+            if _av_level_users == 0:
+                av.logging.set_level(_av_saved_level)
+                _av_saved_level = None
 
 
 class _CVCapture:
@@ -18,6 +57,8 @@ class _CVCapture:
         except ImportError as exc:
             raise ImportError("cameras need opencv: pip install opencv-python") from exc
         self.cap = cv2.VideoCapture(index)
+        if s.fourcc is not None:  # first: V4L2 lists sizes and rates per codec (a no-op on macOS' AVFoundation)
+            self.cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*s.fourcc))
         for prop, v in ((cv2.CAP_PROP_FRAME_WIDTH, s.width), (cv2.CAP_PROP_FRAME_HEIGHT, s.height),
                         (cv2.CAP_PROP_FPS, s.fps)):  # fmt: skip
             if v is not None:
@@ -33,6 +74,7 @@ class _CVCapture:
 
 AV_DEFAULT_SIZE = (640, 480)  # what an undeclared, unfitted camera opens at; ``Cameras.fit`` overrides it
 AV_DEFAULT_FPS = 30.0
+AV_DEFAULT_PIXEL_FORMAT = "uyvy422"  # opened on both bench cameras (2026-10-28); a spec's ``pixel_format`` wins
 
 
 def av_options(s: CameraSpec) -> dict[str, str]:
@@ -42,9 +84,29 @@ def av_options(s: CameraSpec) -> dict[str, str]:
     open with ``OSError(5, 'Input/output error')`` whatever the size; with a rate but no size it asks for the device's
     native mode, which hangs ``av.open`` (USB2.0_CAM1, 1920x1080 uyvy @30 is not a mode it has) or costs the full
     sensor (Logi: 4096x2160). A declared or fitted size wins; a camera that declared none opens at ``AV_DEFAULT_SIZE``.
+    The indev picks the device's mode (and with it the USB codec, MJPEG or raw) by size and rate alone;
+    ``pixel_format`` is only the frames' format in memory, so ``nv12`` (12 bits a pixel) copies less than ``uyvy422``.
     """
     w, h = (s.width, s.height) if s.width and s.height else AV_DEFAULT_SIZE
-    return {"pixel_format": "uyvy422", "video_size": f"{w}x{h}", "framerate": f"{s.fps or AV_DEFAULT_FPS:g}"}
+    fmt = s.pixel_format or AV_DEFAULT_PIXEL_FORMAT
+    return {"pixel_format": fmt, "video_size": f"{w}x{h}", "framerate": f"{s.fps or AV_DEFAULT_FPS:g}"}
+
+
+def refused(name: str, options: dict[str, str], exc: OSError, log: list[str]) -> OSError:
+    """The open's error naming the mode asked and the modes the device has (the indev logs them, PyAV drops them)."""
+    asked = f"{options['video_size']} @ {options['framerate']} fps ({options['pixel_format']})"
+    modes = sorted({_mode(m) for m in log if _MODE.match(m)}, key=lambda m: tuple(map(float, re.findall(r"[\d.]+", m))))
+    why = next((m.strip() for m in log if "not supported" in m), str(exc))
+    have = ", ".join(modes) if modes else "none listed"
+    return OSError(exc.errno, f"camera {name!r} refused {asked}: {why} Its modes: {have}")
+
+
+_MODE = re.compile(r"\s*(\d+)x(\d+)@\[([\d.]+) ([\d.]+)\]fps")  # the indev's "  1280x720@[1.000000 30.000000]fps"
+
+
+def _mode(line: str) -> str:
+    w, h, _, top = _MODE.match(line).groups()  # type: ignore[union-attr]
+    return f"{w}x{h}@{float(top):g}fps"
 
 
 class _AVCapture:
@@ -52,8 +114,14 @@ class _AVCapture:
 
     def __init__(self, name: str, s: CameraSpec) -> None:
         import av
+        import av.logging
 
-        self.container = av.open(name, format="avfoundation", options=av_options(s))
+        options = av_options(s)
+        with av_log(av.logging.ERROR) as logs:  # the indev's "Supported modes" lines are ERROR lines
+            try:
+                self.container = av.open(name, format="avfoundation", options=options)
+            except OSError as exc:
+                raise refused(name, options, exc, [msg for _, _, msg in logs]) from exc
         self.stream = self.container.streams.video[0]
 
     def read(self, wait_s: float = 0.5) -> np.ndarray | None:
