@@ -97,7 +97,8 @@ Docs (`docs/*.md`, `README.md`, `mkdocs.yml`, `overrides/`):
   allowed placeholder.
 - Front matter is YAML with a string `description` (`tests/test_docs_front_matter.py`).
 - No emoji, and no references to planning issues or status pages (`tests/test_docs_no_emoji.py`).
-- Every user install line ends in `@ git+https://github.com/strands-labs/robots@main` (`tests/test_install_lines.py`).
+- A user install line installs the PyPI release (`uv pip install "strands-robots[all]"`), not a git ref. Only
+  `docs/install.md`'s "Install the development version" section installs `main` (`tests/test_install_lines.py`).
 - `mkdocs build --strict` fails on any broken link or nav entry.
 
 Pins and versions: the `mesh` and `lerobot` extras pin the same `eclipse-zenoh>=1.9.0,<1.11.0`

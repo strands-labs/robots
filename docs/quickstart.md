@@ -9,7 +9,7 @@ First install the library. See [Installation](install.md) for details.
 
 ```bash
 uv venv -p 3.12 && source .venv/bin/activate
-uv pip install "strands-robots[all] @ git+https://github.com/strands-labs/robots@main"
+uv pip install "strands-robots[all]"
 ```
 
 ## Walk a robot

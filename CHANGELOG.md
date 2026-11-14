@@ -5,10 +5,755 @@ All notable behavioural changes to `strands-robots` are logged here. Follows
 
 ## [Unreleased]
 
-## [0.6.0] - 2026-11-02
+## [0.6.0] - 2026-11-14
 
 0.6.0 is a new package. `Simulation`, `Robot` and `Policy` replace the 0.5.x API, which is removed; code written
 for 0.5.x needs to be ported. The entries below are the changes that make up 0.6.0.
+
+### Changed: one operator hook, `Robot(operator=)`, replaces `confirm=` and `approve=`
+
+A real robot now takes one callable, `operator=<callable(Move | RunPlan) -> bool>`. A single command from an agent
+tool, the dashboard, a mesh peer or a ROS topic asks it with a `Move`: the robot, the targets by joint name in the
+robot's units, the written vector (read-only), who sent it (`source`: `agent`, `dashboard`, `mesh`, `ros`), the ramp
+time and, for a target outside `safe`, the reason; `str(move)` is one line. An agent's run asks it once with its
+`RunPlan`, as `approve=` did. `Move` and `Operator` are exported from `strands_robots.robot.run` (next to `RunPlan`)
+and `strands_robots.robot.safety`. `use_mesh(mesh, operator=)` and `ros.connect(..., operator=)` follow.
+
+What stays the same: without `operator=` a real robot refuses agent moves and agent runs; a run's yes binds the
+approved files and Hub commit; chat and voice never answer; the e-stop asks nobody and `resume` still needs
+`approved_by`; `operator=` is hardware-only. The dashboard's click (`X-Confirm`) is still the operator's yes over HTTP.
+
+Migration: `Robot(..., confirm=c, approve=a)` becomes
+`Robot(..., operator=lambda r: c(r.vector) if isinstance(r, Move) else a(r))`. The old keywords raise a
+`TypeError` that says `use operator=`. `use_ros(approve=)` (a ROS graph write) is unchanged.
+
+
+### Added: a mesh device serves its own rpcs, and a caller finds them in its manifest
+
+`Mesh.mount(robot, rpcs={name: handler})` adds device rpcs to the built-in ones. Each is advertised in the device's
+manifest with its argument schema, its doc line and whether it writes and arms the watchdog, and `Mesh.invoke`
+resolves rpc names from the discovered manifest instead of a table compiled into the caller, so a process that never
+imported the handler can call it. A plain handler is a write that arms the watchdog; `device_rpc(fn, write=False)`
+marks a read and `arms=False` a write the watchdog need not watch. Writes go through the same gate as the built-in
+ones: refused on an observe-only device (including the open-mesh rule), refused while e-stopped, and refused on an
+id two peers hold. The device refuses unknown, missing or wrongly typed arguments before the handler runs, and a
+name that would shadow a built-in (`estop`, `stop`, `hold` stay built in, `estop` still answered inline) is refused
+at mount.
+
+
+### Fixed: an IoT rule whose action fails no longer drops the message silently
+
+`mesh.iot.rules.rules_for` gave the e-stop, events, fault and telemetry rules no `errorAction`, so when an action
+failed (an SNS publish refused, a deleted bucket, a throttled table) AWS IoT dropped the message and nothing was
+recorded where an operator would look. That is how an earlier SNS misconfiguration stayed invisible: 0 messages
+reached SNS in 90 s after a real e-stop, with no error anywhere. Every generated rule now carries an `errorAction`:
+`rules_for(..., error_action=)` when given, otherwise into S3 under `errors/<tenant>/<kind>/<ms>.json` when a
+`s3_bucket` is set, else republished to the tenant's `strands/<tenant>/@error` topic. `apply_rules` now also
+replaces a rule whose `errorAction` changed.
+
+
+### Changed: LeRobot installs from its PyPI release (`lerobot>=0.7.0,<0.8.0`) instead of its `main` branch
+
+LeRobot 0.7.0 ships `remote_inference`, so the `lerobot` extra is now a normal wheel dependency
+(`lerobot[remote,feetech,dataset]>=0.7.0,<0.8.0 ; python_version >= '3.12'`) rather than a hand-run
+`git+https://github.com/huggingface/lerobot@main` line. `[all]` carries it, so `pip install 'strands-robots[all]'`
+installs the policies, the SO arm bus and the `record=` dataset writer in one step; `remote` pins Zenoh. A separate
+LeRobot install line is no longer printed anywhere. `import strands_robots` still imports no LeRobot.
+
+
+### Internal: the LeRobot v3 writer types its episode against a Protocol instead of importing it
+
+`recording/lerobot_v3.py` read five fields off the `Episode` it serves and imported the class to name them, while
+`episode.py` imports the writer at record time -- a two-module cycle. The writer now declares a `Recording` protocol
+with those fields and drops the `episode` import, so the one edge is `episode -> lerobot_v3`; an import-linter
+contract pins it. No public surface changes; LeRobot stays lazily imported.
+
+
+### Fixed: the dataset-directory walk closes every directory fd it opens, on each path out
+
+`claim()` (and `remove()`'s re-check) walk a dataset path one directory fd at a time with `O_NOFOLLOW`. Each fd is now
+opened through a small context manager and entered on the walk's `ExitStack`, so it is closed when the walk unwinds on
+any path, including the symlink refusal and a missing parent. `Robot.set_gains` now returns `None` on both branches
+instead of returning the body's `set_gains` result on the hardware-gains path; its signature was already `-> None`.
+
+
+### Fixed: the mesh helper modules no longer form an import cycle through `mesh.py`
+
+`remote.py`, `tool.py` and `broadcast.py` each took a `Mesh` and imported it from `mesh.py` only to name the type,
+while `mesh.py` imports those modules back (`connect`, `use_mesh`, the broadcast helpers). They now type against a
+new leaf `MeshView` protocol in `strands_robots/mesh/protocol.py`, so none of them imports `mesh.py`. The public
+surface is unchanged: `Mesh` satisfies `MeshView` structurally and nothing new is exported.
+
+
+### Internal: the dashboard's routes and helpers type against a Protocol, not the Dashboard class
+
+`http_error` moved to a leaf `dashboard.errors` module and the route and helper modules now type their `dash`
+parameter against a `DashboardLike` Protocol (`dashboard.protocols`) instead of importing the `dashboard` module
+back for an annotation. The dashboard package no longer has an import cycle: only the class itself, the package
+export and the `python -m` entry point name the concrete `Dashboard`. The page's behaviour and public surface
+(`strands_robots.dashboard.Dashboard`) are unchanged.
+
+
+### Internal: the action-to-target coercion no longer imports back into the Robot class
+
+`robot/targets.py`, the one coercion every write path runs an `Action` through, typed its single public
+function against `Robot` under `TYPE_CHECKING`, closing an import cycle with `robot/robot.py`. It now types
+against a small `Targetable` protocol declared in the module itself (the five attributes the coercion reads),
+so it imports nothing from `robot.py`. Behaviour is unchanged; a layout test keeps the module a leaf.
+
+
+### Internal: the run loop's shared tick helpers live in a leaf module, so the import order of `robot/run/*` never matters
+
+`robot/run/common.py` (the `emit`, `announce`, `approve_run`, `declared`, `rate` and `label` helpers that
+`loop.py` and `lockstep.py` both import) now takes its `Bound`, `RunResult` and `RunPlan` names only under
+`TYPE_CHECKING`. It imports nothing from its own package at load time, so no import order can enter `loop.py`
+before a helper is defined. Behaviour and the public surface are unchanged.
+
+
+### Changed: a hardware step reads the cameras only when its policy looks
+
+`Robot.run` on hardware now follows `needs_observation()` as it does in simulation: a step whose policy will not look
+(a `ChunkedPolicy` replaying its chunk, or a policy that answers `False`) gets an observation without frames instead
+of copying every camera into it. Each camera's capture thread keeps draining the device meanwhile, so the next step
+that looks gets a fresh frame. Recording and `stop_when` still read the cameras on every step.
+
+
+### Fixed: a remote policy reached through a tunnel at 127.0.0.1 gets the internet's settings
+
+A LeRobot policy server reached at a local-looking address (`127.0.0.1`, a LAN address) is now measured after the
+handshake: when the round trip is above 20 ms, as through an `ssh -L` tunnel to a far machine, the session gets the
+same 30 s timeouts and JPEG frames as a server at a public address, instead of LeRobot's 5 s and raw frames.
+`Policy("zenoh://...", network="lan" | "wan")` decides it explicitly; `policy.network` and `policy.rtt_s` show what was
+chosen. Which links a real robot may use is unchanged.
+
+
+### Fixed: a 100 Hz run on hardware no longer misses deadlines because a sleep woke late
+
+Between steps the pacer slept the whole wait in one `sleep`, and the operating system often wakes a sleeper a
+millisecond or two late (more on macOS, with occasional spikes). With a few ms of work per step at 100 Hz that
+late wake alone pushed writes past their deadline: about 1 in 500 ticks on an M-series Mac, up to 9 ms late. The
+pacer now sleeps until 2 ms before the target and spins the rest, yielding to other threads each turn and
+checking the e-stop latch, so an e-stop still ends the wait at once. Only the host's monotonic clock spins; a
+robot built with its own `clock=` waits exactly as before.
+
+
+### Changed: a camera spec chooses its pixel format, and a refused mode lists the camera's modes
+
+A camera read through OpenCV asks for MJPEG by default (`fourcc`, `None` keeps the device's own), so 720p at 30 fps
+fits a USB 2.0 camera instead of falling to 10 fps on raw YUYV. A named macOS camera takes `pixel_format` for the
+frames AVFoundation hands over (default `uyvy422` as before). A size or rate the camera lacks used to raise a bare
+`OSError(5, 'Input/output error')`; it now names the mode asked and lists the modes the camera has.
+
+
+### Fixed: a Feetech servo that does not answer a read is named by its own ID, not the next servo's
+
+A sync_read took the replies in the order asked, so when servo 3 was silent the frame read for it was servo 4's and
+the error said `reply from servo 4, expected 3`: the operator checked the wrong servo. Each reply is now filed under
+the ID it carries, the read continues to the last servo, and the error lists every silent one:
+`sync_read: no reply from servo(s) [3] (got 5 of 6)`. A silent servo before the last costs no timeout, a reply from a
+servo that was not asked is refused, and a reading that lands on a retry is used as before.
+
+
+### Added: a remote LeRobot policy reconnects when its server comes back
+
+When the policy server goes away mid-run, the robot holds its last target and the session is reopened in the
+background with backoff, for `reconnect_s` (default 10 s), instead of the run ending with a fault at once. The new
+session must serve the same checkpoint (LeRobot's `expected_artifact` check) over the same pinned channel with the same
+features, semantics, rate and execution; a different deployment at that address ends the run with a fault naming what
+changed. `policy.reconnects` lists each recovered drop. `reconnect_s=0` keeps the old behaviour.
+
+
+### Added: a recording shows when each frame was read, so stalls and skipped ticks are visible
+
+A recorded dataset had only LeRobot's `timestamp` (`frame_index / fps`), so a 300 ms stall at 30 Hz read back as an
+even 33.3 ms between every frame. Each frame now also stores `time.measured`: its observation's read time on the
+robot's clock, in seconds from the episode's first frame. `timestamp` is unchanged, so video decodes and the dataset
+loads in LeRobot as before, and the key is not an `observation`/`action` feature, so no policy trains on it. A dataset
+recorded without it keeps taking episodes without it.
+
+
+### Changed: each camera is read on its own capture thread and opens at connect
+
+A hardware camera is read on a capture thread of its own, and a step takes each camera's latest frame instead of
+waiting on the control thread for that camera's next one. With two 30 fps cameras in a 30 Hz loop a step no
+longer waits up to a frame period per camera. `Robot(..., cameras=...)` opens all cameras at connect, side by side,
+and refuses one that cannot open or sends no frame in 10 s; before, they opened one after another inside the first
+`observe` or `run`. A camera whose latest frame is older than 1 s is left out, as a failed read was.
+`Cameras.stamps` and `Cameras.ages()` give when each returned frame was captured.
+
+
+### Changed: a mapping action is clipped into the joint limits once per coercion, not twice, and each clip is one vector operation
+
+`coerce` clipped the held or measured joints a mapping leaves out, then clipped the whole vector again: a run's
+`{joint: value}` tick clipped three times (the tick's coercion twice, the write's guard once). The first clip now runs
+only when `clip=False` (an agent run, whose own values must reach the safety chain unclipped), so such a tick clips
+twice. `clip_to_limits` reads bound vectors computed once per `Description` instead of looking each joint up, about
+3x faster (1.4 us to 0.5 us for six joints). Results are unchanged, a NaN target is still refused, and `Robot.command`
+still clips every write.
+
+
+### Changed: a Feetech arm reads servo position only on each tick (2 bytes per servo, as LeRobot does); `read_motion=True` reads velocity and load too
+
+`FeetechDriver.read()` asked every servo for position, velocity and load (6 bytes each) on every read, though the run
+loop, the safety chain, recording and the LeRobot policies use positions only: 24 extra reply bytes per tick on an
+SO-101, about 0.24 ms at 1 Mbaud. It now reads `Present_Position` alone and reports `velocities` and `efforts` as NaN,
+the value a body gives for what it did not measure (the mesh sends it as `null`). `Robot("so101", port=...,
+read_motion=True)` restores the 6-byte read; `extras()["read_motion"]` says which one a robot uses. An agent or voice tool's `observe` result sends an unmeasured velocity as `null`, so it stays
+strict JSON. Every `state` subscriber (mesh stream, IoT
+`state` shadow, Basic Ingest telemetry) gets an unmeasured velocity or effort as `None`.
+
+
+### Changed: refusals say what to change
+
+An agent's refusal of an unlisted Hub checkpoint names the exact setting (`STRANDS_POLICY_REPOS=owner/repo`, or
+`owner/*`). A world change from the dashboard without the operator's yes says it needs `X-Confirm: yes` on a
+signed-in request, instead of asking a signed-in caller to sign in. A real robot's refusal for a missing `confirm=`
+names the mesh as a source too. An option a driver does not take says where it belongs: `watchdog_ms` and the other
+`Mesh.mount` arguments, or `calibration=` (a Feetech bus's). `python -m strands_robots.mesh cert` says when it replaces
+the identity in its `--out` folder, and `python -m strands_robots.dashboard --help` lists the environment it reads.
+Nothing is allowed or refused differently.
+
+
+### Documentation: the steps a first-time user missed
+
+`tools.md` passes the tool `robot.tool(policies=...)` returns to the agent (the call returns a new tool). `mesh.md`
+shows that `watchdog_ms` is an argument of `Mesh.mount`, that a move over the mesh to a real robot needs `confirm=`,
+and that every `cert` runs on the admin machine and is copied over (`cert` replaces the identity in its `--out`).
+`lerobot.md` says where to get `zenohd` and imports `server_config`. `recording.md` says what `my_policy` stands for and
+that every Record route takes a JSON body. `hardware.md` says calibration is Feetech-only, and `dashboard.md` that a
+token is good on every dashboard sharing an auth file.
+
+
+### Fixed: on a mesh without identities, another machine naming the mover's peer id no longer delays its hold
+
+The mesh watchdog counted any request that named the mover's peer id as a sign of life from that mover. Where peer ids
+are only claims (`zenoh://?trusted=1`, `STRANDS_ZENOH_TRUSTED=1`, `mem://`, AWS IoT), another machine could keep a
+silent mover's robot from applying `on_disconnect` by sending requests under its id. Now the reply to the `act` that
+arms the watchdog carries a beat key (envelope field `beat`), the `Mesh` sends it back on every request to that
+device, and only a request carrying it counts as the mover's. A mesh with identities is unchanged: there a signed
+`peer` is enough. Update every machine on such a mesh together: a mover on an older version sends no key, so its robot
+holds `watchdog_ms` after its last `act`.
+
+
+### Fixed: a recording is written and deleted only in a directory no other account can move
+
+A dataset path was checked once, by name, and LeRobot then wrote the take by that name, and a dropped take was
+deleted by it. If a directory on that path could be renamed by another account, a symlink swapped in after the check
+sent the writes, or the delete, to a directory outside the target. Now `Episode.open` walks the dataset's path one
+directory at a time without following symlinks, right before the dataset opens. It refuses (`PermissionError`) a
+symlink on the path, or a directory owned by another account or writable by others without the sticky bit. Missing
+parent directories are created during the walk. A dropped take deletes its directory only if its path still leads
+to the same directory the take created. This applies to `record=` and the dashboard's Record tab, for directories and
+`hf://` targets (LeRobot's cache). Behaviour change: a target under a shared directory that others can write to is now
+refused; record into a directory only you can change (`chmod go-w`), or one with the sticky bit. A directory you may
+search but not list (a `711` `/home`) is walked like `cd` walks it, so it does not refuse.
+
+
+### Changed: an agent loads a policy folder from this disk only if no other user could have written it
+
+- **Why:** an agent may name a local checkpoint or dataset folder, and a checkpoint rebuilds what its own JSON names
+  while a dataset is the motion a robot replays. A folder another local user created or may write (say in `/tmp`)
+  loaded like the operator's own.
+- **Now:** under `from_agent()` (robot and world tools, mesh, dashboard runs), every file the loader reads and every
+  folder down to it must be owned by this user or root and not writable by group or others; a sticky folder such as
+  `/tmp` may sit above it. Symlinks are followed hop by hop and each folder on the way is checked. An approved run on
+  a real robot also checks each file on the open file it hashes and copies. Refused before anything loads.
+- **Unchanged:** your own `Policy(path)` and `robot.run(path)`, handles you register with `tool(policies=...)`, and
+  folders you own under your home folder or `/tmp`.
+- **Migration:** a checkpoint in a group-writable shared folder: `chmod -R go-w` it (or copy it into a folder you own),
+  or register it as a handle.
+
+
+### Fixed: a real robot refuses a model with a driven joint that has no range
+
+The safety chain reads a joint without a range as unconstrained, so on hardware such a joint (`limited="false"`, or
+no range on the joint or its default class) took any goal on every rail. Now `Robot(..., port=/driver=)` raises
+`ValueError` naming those joints before the driver opens the bus, and `JointLimitValidator` refuses a target for a
+real robot's joint without a range instead of skipping it. A joint that turns without end can drive a real robot
+when its registry entry declares a `hardware.safe` bound for it; on hardware that bound is its hard range, so a goal
+past it is refused even when the operator confirms, and `act()` clips into it. `kinova_gen3` declares ±π rad for its
+continuous joints 1, 3, 5 and 7, so it drives hardware again. Every registry robot with a driver has a range on each
+joint, with and without the mujoco extra. Simulated robots are unchanged.
+
+
+### Fixed: a Feetech calibration whose span does not fit the joint's limits is refused, and `extras()` names it
+
+`FeetechDriver` maps each joint's limits onto its calibration's `range_min..range_max`. A span inside the servo's
+counts but much wider than the joint's limits, such as a full turn for a ±100° joint or another joint's span, put a
+goal inside the limits past the end stop and scaled the speed cap with it. Now a span covering more than 1.5× the
+counts the limits take on the servo raises `ValueError` naming the joint, the span and the file, at connect and in
+`calibrate()` before it saves (the servos get their homing offsets back). A real SO-101 calibration sits at
+1.0–1.25×; a narrower span still loads. `extras()["calibration_sha256"]` is the sha256 of the calibration's values,
+the same for a file and `calibration=`, so a changed calibration shows up in a recording. The check is
+`Calibration.check_limits(limits, resolution=, source=, max_scale=1.5)`; the hash is `Calibration.digest()`.
+
+
+### Changed: an approved agent run loads exactly the approved bytes for registered checkpoints and Hub checkpoints
+
+- **Registered checkpoints:** a LeRobot checkpoint passed as a policy object (`tool(policies={"pick": Policy(dir)})`)
+  reads its files when it attaches, after the operator's yes. Its plan now carries the SHA-256 of those files, and
+  the run loads a private, checked copy (as a checkpoint path already did); files changed after the yes refuse the
+  run. The developer's object is not changed.
+- **Hub checkpoints:** the plan's `files` is `owner/repo@<commit>`, resolved when the operator is asked, and the run
+  loads that commit even if the revision moves. A revision that cannot be resolved (offline) refuses the run before
+  anyone is asked; a full 40-character `revision=` needs no lookup.
+- **Order:** an agent's network-address spec, and a Hub checkpoint `STRANDS_POLICY_REPOS` does not list, are refused
+  before the operator is asked (and before any commit lookup), not after.
+
+
+### Changed: an agent loads a Hugging Face Hub checkpoint only if the operator lists it in `STRANDS_POLICY_REPOS`
+
+- **Why:** loading a LeRobot checkpoint rebuilds the processor steps named in its own JSON, and some of them load
+  further repos with remote code enabled, so a Hub repo is code its publisher chose. An agent could name any repo
+  on the simulation rail, where nothing asks the operator.
+- **Now:** under `from_agent()` (robot and world tools, mesh, dashboard runs), a `<owner>/<repo>` spec loads only if
+  `STRANDS_POLICY_REPOS` lists it exactly or lists `<owner>/*`; anything else is refused before anything is
+  downloaded. An operator yes for a run does not lift this. A malformed entry is an error, not a wildcard. The model
+  is told only the allowed repos.
+- **Unchanged:** your own `Policy("owner/repo")` and `robot.run("owner/repo")`, handles you register with
+  `tool(policies=...)`, presets, and local checkpoint and dataset directories.
+- **Migration:** if your agent picks Hub checkpoints itself, set `STRANDS_POLICY_REPOS=lerobot/smolvla_base,myorg/*`
+  or register them as handles.
+
+
+### Fixed: the dashboard's `X-Confirm` counts only on a signed-in request, and every route that changes state waits for it
+
+- With sign-in off (`auth=False` / `unauthenticated_hardware=True`), `X-Confirm` no longer stands in for the operator:
+  a real robot asks its own `confirm` callback.
+- `POST /api/robots/{id}/run` on a real robot is refused before the policy is built, so nothing is dialled.
+- `POST /api/connect/policy` and every `POST /api/world` verb except `describe`, `pose`, `contacts` and `render` need
+  `X-Confirm: yes`; world calls run as a dashboard's (no policy at a network address). The Connect panel asks first.
+- `add_object(path=...)` from `/api/world` loads a file only inside `Dashboard(object_dir=...)` or
+  `$STRANDS_ROBOTS_DASHBOARD_OBJECTS` (none by default).
+
+
+### Changed: every `on_disconnect` applied leaves one structured audit record
+
+- `apply_on_disconnect` writes one `strands_robots.audit` warning for every call, whoever makes it (the mesh
+  watchdog, a local `Watchdog`, a run that faulted): `rpc="on_disconnect"`, tenant, device, the mover's `peer`, the
+  `reason`, what it `applied` (`hold`, `targets`, or nothing while the e-stop is latched) and the `outcome` (`ok`, or
+  the error's type). An apply that fails is recorded too, then raised as before.
+- The mesh watchdog's record names the mover it recalled the arm from and whether it went quiet or vanished.
+
+
+### Added: a mesh device runs a named skill on itself, so no control loop crosses the network
+
+`Mesh.mount(robot, skills={name: policy})` gives a device its own catalogue, and the new `skill` and `skill_status`
+rpcs start a skill on the device by name and report on it. Before, `use_mesh` ran the policy in the caller and drove
+the robot with one observe and one act rpc per control step: 5.7 steps per second over AWS IoT Core for a 50 Hz walk.
+The skill is an agent's run on the device (its safety chain on every step, a real robot's own `approve=`); `stop` and
+`estop` end it; while it runs the caller's watchdog pauses its quiet clock, and a caller whose mesh vanishes ends it
+and the device applies `on_disconnect`. `use_mesh` lists each device's skills, starts one through `run`, reads it
+with a new `status` action, and refuses to drive a real robot on another machine that offers no skills.
+
+
+### Fixed: a move reports success when a joint has no effort or velocity reading
+
+ros2_control reports NaN effort for a joint with no effort state interface. The mesh refuses NaN, so the reply to a
+move that happened arrived as "cannot send NaN or infinity over the mesh", and the state stream sent nothing. An
+unmeasured velocity or effort now crosses the mesh as `null` and decodes back to NaN. A non-finite position or
+command is still refused.
+
+
+### Fixed: a ros2_control arm can be commanded over the mesh
+
+`ros.connect("ros2_control", ...)` reads the model from `/robot_description`, which has no registry `hardware` block,
+so the robot had no `on_disconnect`. A real robot without a proven-safe disconnect behaviour cannot carry a
+watchdog, and the mesh serves such a robot observe-only, so every move was refused. `ros.connect` now applies the
+profile's declared `on_disconnect` (`"hold"` for `ros2_control`) when the model declares none; a registry entry's own
+`hardware.on_disconnect` still wins.
+
+
+### Fixed: the e-stop and fault rules deliver their records to SNS
+
+`rules.rules_for(..., sns_topic_arn=...)` built its SNS actions with `messageFormat: "JSON"`, which makes SNS refuse
+any body without a `"default"` key. Every rule record is such a body, so no e-stop or high-severity fault ever reached
+the topic, and with no error action on the rule nothing reported it. Both SNS actions now send the record as the raw
+message body: a fleet e-stop reached an SQS subscriber of the topic 0.15 s after the broadcast.
+
+
+### Changed: a zenoh mesh with identities runs over mutual TLS, and every peer proves who it is
+
+- **Identities:** `python -m strands_robots.mesh ca`, `cert NAME [--serves IDS]` and `config` make a lab CA, issue
+  each machine an ECDSA certificate and key (written to `~/.strands/mesh/identity` by default), and write zenoh
+  config files for routers or other zenoh clients. A `zenoh://` mesh uses that identity (or `?identity=<dir>`,
+  `STRANDS_MESH_IDENTITY`; `none` opts out). It then speaks only TLS links with client certificates from the lab
+  CA, so a machine without one cannot join, read, answer or query. LAN discovery still needs no endpoints.
+- **Bound to the certificate:** every envelope is signed with the certificate's key. Peer ids are
+  `<certificate name>.<random>`. A robot refuses unsigned requests, requests for a peer id that is not the
+  signer's, repeats and requests more than 30 s off its clock, before its watchdog hears of them, so no machine can
+  send heartbeats for another. A request is answered only on the key it names (tenant, device and rpc), so a captured request for one device cannot be replayed onto another. Replies, announcements and state count only when signed by a certificate whose
+  `--serves` covers that robot. Another machine can't answer for a robot, announce a robot, or make a request
+  fail by answering. The audit record names the signing certificate. An e-stop is never refused for its signature.
+- **Real robots:** a real robot moves over zenoh only on a mesh with identities, or with `?trusted=1` /
+  `STRANDS_ZENOH_TRUSTED=1`. A zenoh config file no longer lifts observe-only by itself: it has to turn on mutual
+  TLS on TLS-only links with PEM certificate, key and CA files (then it is the identity). A file with only user and
+  password authentication needs `?trusted=1`. Every peer of a robot with an identity needs this version.
+
+
+### Changed: a real robot takes remote LeRobot actions only over an authenticated channel
+
+A LeRobot session's frames and action chunks carry no identity, so anyone sharing the link (a zenoh router's
+clients, or whoever answers at the server's address) could read the cameras and answer for the server. A real robot
+now takes actions only over a `tls`/`quic` link whose zenoh config does mutual TLS
+(`Policy("zenoh://tls/host:7447/d", zenoh_config="robot.json5")` or `STRANDS_LEROBOT_ZENOH_CONFIG`), or from a server on
+the same machine, which is connected to at its literal loopback address. `server_config(..., zenoh_config=)` gives
+the server its certificates. Host names and numeric host forms are read consistently (IPv6 zones, IPv4-mapped,
+6to4, trailing dots).
+
+A real robot on a `tls`/`quic` link now also needs LeRobot's robot role: its zenoh config must present a
+certificate named `robot-client` and the session joins as a router client (`zenoh_mode="peer"` is refused).
+`python -m strands_robots.policy.lerobot zenoh-config --deployment D --out DIR [--host H]` writes a CA, the router,
+`policy-server` and `robot-client` certificates and LeRobot's three configs for D: run `zenohd -c DIR/router.json5`
+(mutual TLS, discovery off, deny-by-default ACL by certificate name on `lerobot/inference/v1/deployments/D/**`),
+`server_config(..., endpoint="tls/H:7447", zenoh_config="DIR/server.json5")` joins that router as a client, and the
+robot uses `zenoh_config="DIR/robot.json5"`. Another certificate from the same CA, or a second robot's, can no
+longer answer for the server. The `lerobot` extra now includes `cryptography`.
+
+Migration: a real robot pointed at a plain `zenoh://gpu-box:7447/d` on the LAN is now refused with a
+`PermissionError`. Run `zenoh-config` and a router with its `router.json5`, or keep the old behavior with `trusted=True` or
+`STRANDS_ZENOH_TRUSTED=1`. Simulated robots are unchanged.
+
+
+### Changed: an IoT device can no longer be named like an operator or claim client id
+
+A robot connects to AWS IoT with its thing name as its MQTT client id, and IoT drops the older connection when two
+clients use the same id. A thing named `strands-op-<tenant>-…` could therefore knock that tenant's operator off,
+and one named `strands-claim-…` a robot in the middle of its claim. `mesh.iot.policy.check_device_id` now refuses both
+prefixes, and `provision.register` (also with an HSM CSR, which skipped the name check before), `claim_hook.allow`,
+the claim hook Lambda (`claim_hook.HOOK_SOURCE`; redeploy it), `claim.claim`, `policy.operator_policy(things=)` and
+`lifecycle.clear_presence_rule(things=)` call it. A robot already registered under such a name keeps working until it
+is registered again or listed in an operator policy; rename it with `provision.teardown` + `provision.register`.
+
+`policy.operator_policy(..., all_things=True)` now warns (`UserWarning`) that it grants every thing in the account,
+and refuses to be combined with `things=`. `docs/iot.md` documents it as the single-tenant-account option.
+
+
+### Changed: a dashboard session works only on the dashboard that issued it
+
+Browsers send a `localhost` cookie to every port on the machine, so the dashboard's session cookie also reached any
+other local server the user opened, which could send it back and act as the signed-in user. A browser session now
+has two halves: the cookie (named `strands_robots_session_<port>`, HttpOnly, SameSite=Strict) and a proof the sign-in
+answer hands the page, which the page keeps in its own origin's `localStorage` and sends as `X-Strands-Session` (and
+as the `strands-session.<proof>` subprotocol of a socket). The cookie alone, or the cookie's token sent as a bearer,
+opens nothing, and a session names the Host it was signed in on and is refused on any other. Camera frames load
+through `fetch`. Script tokens from `dashboard.auth.token()` sent as `Authorization: Bearer` are unchanged. Open
+browser sessions from before this change end: sign in again with your passkey.
+
+
+### Fixed: an approved agent run loads exactly the policy files the operator approved
+
+An approved agent `run()` on a real robot checked the policy files against `RunPlan.files` after loading them from
+their original path, so a file replaced only while the loader was reading it (and put back afterwards) passed the
+check. The run now takes a private copy of the files the loader reads, hashing each byte as it is written, refuses
+the run before anything loads if the copy differs from the approved digest, loads the copy, and removes it when the
+run ends, however it ends. Which files a spec reads is decided by the same rule the loader uses
+(`policy.factory.local_root`), so a preset name keeps meaning the preset even next to a same-named folder. FIFOs and
+folder cycles inside a policy folder are skipped or visited once, the same way in the digest and the copy.
+
+
+### Fixed: the microduck and holosoma presets fetch their weights at a pinned commit
+
+The presets pinned each file's sha256 but downloaded it from the Hub repo's `main`. When
+`pollen-robotics/microduck-policies` published a new `velstand.onnx` under the same name, every
+`Policy("microduck?skill=velstand")` refused to load ("refusing to run unknown weights"). Each preset in
+`presets.json` now names the Hub `revision` its hashes were taken at, and `OnnxPolicy(..., revision=)` /
+`resolve_weights(..., revision=)` pass it to `hf_hub_download`.
+
+
+### Fixed: the mujoco extra stays below the engine's next major release
+
+`mujoco 4.0.0` was published to PyPI on 2026-11-06 and the `mujoco` extra, pinned only `>=3.3.4`, resolved straight to
+it. The new major is a breaking release: `mujoco.MjModel.from_xml_path` now rejects a model that includes the same
+asset file twice, so loading a registry robot whose MJCF does that raised `ValueError: XML Error: File ... already
+included` and the test suite went red. The extra now reads `mujoco>=3.3.4,<4`, holding the engine on the 3.x line the
+backend is written against until 4.x is ported, and a pin regression keeps every mujoco requirement capped.
+
+
+### Changed: a real robot takes a remote LeRobot policy from off its own LAN only once you vouch for it
+
+`Policy("zenoh://tls/host:port/<deployment>")` (and `quic`, `ws`, `wss`) reaches the policy server through a zenoh
+router, and a plain `zenoh://host:port/<deployment>` link to an internet host reaches it straight across the network.
+LeRobot's session frames and action chunks carry no identity: any client of the router can read the robot's frames
+and answer for the server, and a plain internet link is reached with no server authentication at all. A real robot
+now refuses any link off its own LAN with a `PermissionError` before any frame goes out, until the operator vouches
+with `Policy(..., trusted=True)` or `STRANDS_ZENOH_TRUSTED=1`. A loopback or LAN link, and simulated robots, are
+unchanged.
+
+
+### Changed: a real robot on a zenoh mesh any machine may join is observe-only
+
+A real robot mounted on a plain `zenoh://` mesh (no config file) used to take `act` and `hold` from any machine on
+the network, with only an audit warning. The peer id in a request is just a claim there, so another machine could
+also keep the robot's watchdog from noticing that its real mover had gone. Such a robot now refuses `act` and `hold`
+with `RequestRefused` (reads, `stop`, `estop` and `resume` are unchanged), and the audit warning says why.
+
+To move it over the mesh, give zenoh a config file that says who may join (`?config=` or `STRANDS_ZENOH_CONFIG`), or
+vouch for the network with `zenoh://?trusted=1` or `STRANDS_ZENOH_TRUSTED=1`. Simulated robots are unchanged.
+
+
+### Fixed: an agent's approved run reads the policy files the operator approved
+
+An agent's `run()` on a real robot asks `approve(RunPlan)` before the policy is loaded, and the plan named a local
+checkpoint or dataset only by its path. If the files at that path changed while the operator was deciding, the run
+used the new files. `RunPlan` now has `files`, the SHA-256 of the names and bytes of every file under a policy path on
+this machine (symlinked folders included). After loading, the run checks the files again and refuses with
+`RequestRefused` before anything moves if they differ. Presets, hub repo ids and callables have `files=None`, as before.
+
+
+### Fixed: a standalone bundle's address and physics text stay text, and the page carries its own script policy
+
+`?standalone=` picked the bundle the page loads with no check, and the standalone notice put the bundle's
+`physics.substeps` and `standalone.hz` into the page unescaped. On a plain file server, which sends no policy header,
+a link naming another site's bundle could run script on that page. `?standalone=` now accepts only a file on the
+page's own address, like `?scene=`, and those values are escaped. `index.html` also carries the server's
+`script-src 'self'` policy as a `<meta>` tag, so it applies wherever the page is served.
+
+
+### Fixed: a zenoh rpc hears every answer, so a second answerer for a device is refused
+
+`invoke` refuses a request that gets two different answers, but on a zenoh mesh it only ever saw one: zenoh's
+default query consolidation keeps a single reply per key, and every answerer replies on the same key. Whichever
+answered first won, so the check never ran. A zenoh query now asks for every reply (`ConsolidationMode.NONE`), and a
+peer that answers for a device it does not hold makes the call raise `RemoteError` instead of being believed.
+
+
+### Fixed: without MuJoCo, a model that attaches another model keeps the attached joints and their limits
+
+The MJCF walk used when the `mujoco` extra is not installed skipped `<attach>`, so LeKiwi read as three wheels with
+no arm: its six arm joints, their actuators and their limits were missing. The walk now reads an attached model where
+it is attached, with that model's own `<compiler>` settings and the attach prefix, and finds the attached file next to
+the file that names it, as MuJoCo does. LeKiwi now gives the same joints, actuators and limits with and without MuJoCo.
+An actuator whose joint the walk cannot find now refuses the model with a hint to install `mujoco`, instead of
+leaving that joint with no limit.
+
+
+### Fixed: a timed move from an agent, the dashboard or the mesh checks every point it writes
+
+`confirm_act(..., seconds=)` used to run the safety chain once, on the target, and then ramp toward it unchecked. A
+joint-space line between two poses inside a `WorkspaceBoundsValidator` box can leave the box. An interlock that
+reads a door or a light curtain was also asked only at the start of a move of up to 10 s. Now the operator is still
+asked once, for the target, and every ramp point passes the interlocks and validators again. A refused point is
+never written: the move stops and the robot holds the last pose it reached.
+
+
+### Fixed: the `use_mesh` agent tool runs as an agent, so a model cannot point a run at a network address
+
+`use_mesh`'s `run` action skipped the agent mark that every other agent tool sets. A model could therefore start a
+run with `policy="zenoh://<host>:<port>/<deployment>"`, which streamed the robot's observations to an address the
+model chose, and the operator was never asked.
+
+- Every `use_mesh` call now runs in `from_agent()`.
+- Its `run` action refuses any `://` policy itself.
+- A run on a mesh device (always treated as a real robot) needs the operator's answer:
+  `use_mesh(mesh, approve=<callable(RunPlan) -> bool>)`. Without it the run is refused when it is asked for,
+  rather than from the run's thread after it reported "started".
+- `mesh.tool` has no `approve`, so it refuses agent runs.
+
+
+### Fixed: the IoT `control` shadow is opt-in, and it follows the mesh's observe-only rule and watchdog
+
+`IotOptions(control=False)` is the new default: a mount keeps its `manifest` and `state` shadows, and only a mount
+that passes `control=True` acts on `control` shadow targets. When it does, a target arms the mount's watchdog the way
+an `act` rpc does (a writer that stops writing for `watchdog_ms` gets the robot's `on_disconnect`) and is logged to
+`strands_robots.audit`. A real robot mounted with `watchdog_ms=None` refuses every `control` target by name, as it
+already refused `act` and `hold` over the mesh. Mounts that drive robots through the `control` shadow must now pass
+`IotOptions(control=True)`.
+
+
+### Fixed: a refused mesh move no longer arms the watchdog, conflicting rpc answers are refused, and a zenoh mesh can require authentication
+
+- **Watchdog:** a mesh `act` the robot refused (an unknown argument, or a refusal from its safety chain) used to arm
+  the watchdog for whatever peer id the request claimed. Its timeout then applied the robot's `on_disconnect` to the
+  hardware. Now a refused motion leaves the watchdog as it was. Arguments are checked before the watchdog hears of
+  the request, and every `on_disconnect` the watchdog applies leaves a `strands_robots.audit` warning. A control-shadow
+  target the safety chain refuses leaves it as it was too, and another peer's refused requests never reset the quiet
+  clock of the peer that last moved the robot.
+- **Conflicting answers:** `invoke` used to take the first reply that matched the request, so a peer that answered
+  first could forge a robot's observation or error. It now raises `RemoteError` when one request gets different
+  answers. `stop` and `estop`, which every holder answers, are unchanged.
+- **Authentication:** a zenoh mesh takes a zenoh config file (`zenoh://?config=<path>` or `STRANDS_ZENOH_CONFIG`) for
+  TLS with client certificates, user and password authentication, or access control. Mounting a real robot on a mesh
+  without one logs an audit warning. The mesh never overrides the file's own scouting settings. TLS guards only `tls/`
+  links, so "Securing the mesh" in `docs/mesh.md` shows a file that allows only `tls` and turns scouting off.
+
+
+### Fixed: IoT storage rules file records under the publishing tenant and thing
+
+The events and fault rules take the tenant and device from the topic, and the Basic Ingest telemetry rule takes
+the tenant from the rule and the device from the MQTT client id. A `tenant` or `device_id` in the message body no
+longer chooses the S3 key or the Timestream dimensions. Re-apply each tenant's rules with `apply_rules`; when
+tenants share a bucket, scope each rule role's `s3:PutObject` to `recordings/<tenant>/*` (see docs/iot.md).
+
+
+### Fixed: fleet provisioning by claim registers only robots the operator approved, in their tenant, once
+
+`claim.create_template` now requires `hook_arn=`. When the template already exists, it also attaches the hook,
+role and `enabled` with `update_provisioning_template`. Before, a template first created without a hook stayed
+hookless on every later run while reporting success.
+
+The hook (now `claim_hook.HOOK_SOURCE`) still requires a new thing whose certificate CN is its name. It now also
+requires an operator approval for that name:
+- `claim_hook.allow(ssm, device_id, tenant=, device_type=)` writes an SSM SecureString under
+  `/strands-robots/claim/` and returns a one-time secret;
+- the request must carry that secret, tenant and device type;
+- the hook overrides the request with the approved values;
+- it deletes the approval, so one approval is good for one robot.
+
+Before, anyone holding the shared claim certificate could register any new name, in any tenant, including the name
+of a robot that had not booted yet. `claim.claim` now takes `secret=`. The hook's role also needs
+`ssm:GetParameter` and `ssm:DeleteParameter` on `/strands-robots/claim/*`.
+
+
+### Fixed: the AWS IoT policies keep every grant inside the tenant, and a robot can no longer beat for an operator
+
+- **Fleet policy:**
+  - a device can no longer publish `@peer` liveliness tokens. A device could keep a dead operator "alive" for every
+    watchdog in the tenant, or fake its goodbye. The controller policy now carries that grant for certificates that
+    command. A certificate `iot://` link therefore sends no `@peer` beat, so the broker never sees a publish the
+    policy refuses; `?peer=1` turns it back on for a certificate that also carries the controller policy.
+  - `RetainPublish` is limited to the device's own keys and shadow.
+  - telemetry goes only to the Basic Ingest rule named by the thing's new `telemetry_rule` attribute, instead of any
+    rule in the account.
+- **Provisioning:** `provision.register` writes `telemetry_rule`, and a label can no longer override `tenant` (or
+  `telemetry_rule`). A claimed robot gets it from its approval (`claim_hook.allow`), for any tenant id.
+- **Operator policy:**
+  - operators connect only as `strands-op-<tenant>-*`, so they no longer collide with another tenant's operators. A
+    tenant other than letters and digits is hashed there as in rule names (`lab-a` → `strands-op-lab_a_<12 hex>-`), so
+    `lab` and `lab-a` never share a prefix;
+  - Direct Messages go only to the tenant's own devices, on `strands/<tenant>/*/rpc/*`;
+  - lifecycle events are delivered only for those devices: `iot:Subscribe` stays wide (`lifecycle.watch` subscribes
+    with `+`, which is literal in a policy) and `iot:Receive` names each device.
+  - One document now fits about seven devices (nine ARNs each).
+- **Client ids:** an IAM `iot://` link of a `Mesh` connects as `strands-op-<tenant>-<random>` and refuses a
+  `client=` outside that prefix.
+- **Rpcs:** a device answers rpcs only on its own tenant's topics.
+- **Disconnect audit rule:** `lifecycle.clear_presence_rule` now needs `things=` and republishes only the tenant's
+  own devices' and operators' disconnects.
+
+Re-provision the fleet and operator policies to apply this, and run `register` again for robots registered earlier:
+until then they keep presence and replies but send no telemetry. A claim approval made with an earlier `allow` has no
+`telemetry_rule` and is refused: approve that robot again.
+
+
+### Fixed: the dashboard's Record tab writes datasets only inside its recordings directory
+
+`POST /api/record/start` used to resolve any `target` the page sent and create or resume a LeRobot dataset there. An
+aborted take deleted that directory. Now a target must be a name or path inside `STRANDS_ROBOTS_RECORDINGS` (default
+`~/strands-robots/recordings`), after `..` and symlinks are resolved, or an `hf://owner/name`. Anything else is
+refused with 403. The page's default target moved from `/tmp/strands-recording-<time>` into that directory. A Hub id's
+owner and name must each look like a Hub name (letters, digits, `_`, `-`, `.`, not starting with `.` and never `..`),
+so `hf://../x` cannot land outside lerobot's cache; this check also applies to library `run(record=...)`.
+
+
+### Fixed: text from the dashboard's address or a scene file can no longer run as script on the page
+
+A `?scene=` value that failed to load was shown in the page's notice as markup, and a scene file's `revision` was put
+into a status chip unescaped, so a crafted link could run script on the dashboard's origin and press its buttons. The
+error and the revision are now text. `?scene=` must be a path on the dashboard's own address, `?cli=` must be a
+loopback `host:port`, and a non-integer `revision` is ignored. Every HTML page the server sends also carries
+`Content-Security-Policy: script-src 'self'` (plus a hash for the one inline colour-scheme script, `object-src 'none'`,
+`base-uri 'none'`), so markup that reaches the page by mistake cannot run. The voice panel's microphone worklet moved
+from a `blob:` URL to `static/voice-worklet.js` for the same reason.
+
+
+### Added: passkey sign-in for the dashboard; every `/api` route and socket needs a session
+
+The dashboard now answers `/api/*` and `/ws/*` only to a signed-in session. You sign in with a passkey (WebAuthn:
+Touch ID, Windows Hello, a phone or a security key). The first start prints a one-time setup link, and the first
+passkey can only be created with it. More passkeys need a signed-in session, and the last one cannot be removed. The
+**Passkeys** tab adds, renames and removes them and signs out. Sessions are an HttpOnly, SameSite=Strict cookie that
+lasts 12 hours (`Auth(ttl=...)`, `STRANDS_ROBOTS_DASHBOARD_SESSION_TTL`). Scripts, notebooks and agents use
+`dash.auth.token()` (or `--print-token`) as `Authorization: Bearer <token>`.
+
+Before, any local process that could reach the port could send `X-Confirm: yes` and release an e-stop or move a real
+robot. `X-Confirm` still asks the operator, but now only a signed-in session can send it. Passkeys need a hostname,
+so the dashboard's address is now `http://localhost:<port>`, and the page on `127.0.0.1` redirects there.
+`Dashboard(sim, auth=False)` (`--no-auth`) turns sign-in off with a warning and is refused while a real robot is
+attached unless `unauthenticated_hardware=True`. The `dashboard` extra now installs `webauthn`.
+`Dashboard.revision` is removed: use `dash.sim.revision`.
+
+
+### Fixed: a Feetech calibration whose counts do not fit the servo is refused at connect
+
+`FeetechDriver` now checks the calibration it loads, from a LeRobot file or from `calibration=`: every joint's
+`range_min` and `range_max` must lie in the encoder's 0..4095 counts, `homing_offset` in -2047..2047 (what the servo's
+register holds and what `calibrate()` writes) and `drive_mode` must be 0 or 1. Anything else raises `ValueError` naming
+the joint, the field and the file. Before, a span such as 0..65535 mapped a target inside the joint's limits to a goal
+many turns past its end stop, and a count outside 16 bits failed mid-run with torque on. The check is
+`Calibration.check_bus(resolution=, max_homing=, source=)`.
+
+
+### Fixed: without MuJoCo, joint limits are read from the model the way MuJoCo reads them
+
+When the `mujoco` extra is not installed (for example a `feetech`-only install driving a real arm), joint limits come
+from a walk of the MJCF file. That walk now matches MuJoCo's compiler: hinge ranges are degrees unless
+`<compiler angle="radian">` says otherwise, ranges set in `<default>` classes apply through `class=` and
+`childclass=`, `limited="false"` and `autolimits="false"` are honoured, `<include>` files are read where they appear,
+and joints declared inside `<default>` are no longer counted as joints. Before, a degree model got limits about 57
+times too wide and joints limited only through a default class (all of `so100`) got no limit at all, so the safety
+chain's range check passed targets far outside the real range. Every MJCF model in the registry now gives the same
+joints, actuators and limits with and without MuJoCo.
+
+
+### Fixed: GitHub-hosted robot models are fetched at a pinned commit and checked against a content digest
+
+The six registry robots whose models live on GitHub (`reachy_mini`, `asimov_v0`, `microduck`, `open_duck_mini`,
+`lekiwi`, `yahboom_m3pro`) now carry `asset.source.commit` and `asset.source.sha256`. The asset fetch downloads that
+commit instead of the default branch head, refuses a tarball whose top directory names another commit, and caches
+nothing unless the kept files hash to the pinned digest (`description.assets.tree_digest`). The joint limits the
+safety chain enforces are read from these files, so they now change only through a registry edit. Tar member names
+that are absolute or contain `..` refuse the whole archive instead of being written. A registry entry without a pin
+raises `ValueError`; a cache fetched at another pin (including every cache made by 0.6.0) is fetched once again.
+
+
+### Fixed: an IAM operator on the `iot://` mesh discovers and commands devices under the generated policy
+
+`mesh.iot.policy.operator_policy` granted `iot:SendDirectMessage` on `connection/*`, but AWS names the target
+client as that action's resource, so every manifest request was refused (403) and `discover()` returned `[]`
+while the device's presence heartbeats arrived. The grant is now `client/*`, kept inside the tenant by an
+`iot:Topic` condition on `strands/<tenant>/*`. A refused manifest request now logs a warning naming the device,
+and an IAM link defaults its client id to `strands-op-<hex>`, the prefix the same policy admits on `iot:Connect`.
+
+
+### Fixed: a run refused for recording no longer ramps the robot to the policy's `start_pose` first
+`run(..., record=...)` built its episode after the start-pose ramp, so a recording refusal (`push=True` without an
+`hf://` target, a non-integer `hz`, no LeRobot, or an existing dataset at another fps, robot or units) raised only
+after the robot had moved to `policy.start_pose`. Every recording check now runs before the ramp: a run that cannot
+be recorded never moves the robot.
+
+
+### Docs: notebook 11, the Hugging Face hub-to-hardware article on this release
+
+The article's companion notebook lived in the 0.5 `examples/` tree, which this release replaced, so its links
+404. `notebooks/11_hub_to_hardware.ipynb` (and its script) carries the same five steps on the current API: an
+agent over `arm.tool` and `sim.tool`, a LeRobot v3 recording through `run(record=...)` (pushed to the Hub with
+`HF_USER`), a Hub ACT checkpoint run by name, the hardware constructor with `confirm=` / `approve=`, and the arm
+mounted on a mesh where an agent reaches it with `use_mesh`.
+
+
+### Added: ROS 2 robots — `Robot(..., driver="ros")`, `ros.connect()` and the `use_ros` tool
+
+A ROS 2 robot is now a hardware `Robot` driven from a JSON profile. The built-in profiles are `ros2_control` (`/joint_states` in, a forward position controller out) and `unitree_g1` (`/lowstate` and `/lowcmd` at 500 Hz with Unitree's CRC; writes are refused until `released=True`). One command stream owns each robot's command topic and runs on a timer or answers every sensor frame; a failed publish drops that frame (counted in `errors`), never the stream, and a stream that has stopped refuses new targets. A late policy gets its last target repeated, a missing one gets the measured pose held, and the stream never damps. `shadow=True` builds every command, publishes none, and reports the gap to a reference topic. kp/kd from `Robot.set_gains` or a policy go out with each command. `use_ros` lets an agent list, echo, call, set parameters, look up TF and record (a timestamped bag under the developer's `use_ros(record_dir=...)`; the model never names the path). A profile without a `command` stream is observe-only: it observes and refuses `act`. Every write needs an exact `STRANDS_ROS_ALLOW` entry or an operator's yes (only publishes to `/rosout`, `/diagnostics` and the marker topics are free); that covers parameter writes (`set_param` is gated as `<node>/set_parameters`) and the controller manager's services, and a topic a `Robot` streams is always refused. The operator's preview of a `publish` shows its `count` and `rate`, so a yes covers every message it sends. Each write is checked on the name it runs on (`publish` its topic, `call` its service, `goal` its action, `set_param` its node), and a second target key is refused. `stop` needs no yes, so it sends only the stop sequence of an installed profile, by name, never a file path. A `Float64MultiArray` command carries no joint names, so its slots follow the controller's `joints` parameter (read at connect, or `command.joints` in the profile); connect refuses without one, or when it is not exactly the model's joints. Robots outside this repo plug in through `STRANDS_ROBOTS_ROS_PROFILES` or the `strands_robots.ros_profiles` entry point, with codecs from `"codec": "pkg.mod:Class"` or `strands_robots.ros_codecs`. rclpy comes from the ROS install, never from pip, and `import strands_robots` never imports it. A URDF is now introspected with the XML walk, because MuJoCo's import gave it no action keys; the walk reads only the `<joint>` elements directly under `<robot>` (not those inside `<ros2_control>`, `<transmission>` or `<gazebo>`) and refuses a joint named twice.
+
+
+### Changed: the dashboard fetches its two browser engines on first use, so the installed package is 2.2 MB instead of 23.8 MB
+
+`mujoco.wasm` and `ort-wasm-simd-threaded.wasm` (20 MB) are no longer in the package. The first page load downloads
+each one at the pinned version, checks its sha256 and caches it in `~/.cache/strands_robots/dashboard`;
+`python -m strands_robots.dashboard --fetch` does it ahead of time for a network with no internet. The notebooks are
+committed without outputs, and their GIFs and screenshots moved to the `media` release.
+
+
+### Changed: a hardware `Robot` has no twin unless `twin=True`, so a hardware-only install needs no MuJoCo; LeRobot installs from its main branch (`lerobot@main`) instead of a pinned commit
+
+
+### Internal: pull requests are checked for changelog fragments again
+
+The required check's first step, `scripts/check_changelog_fragment.py`, refuses a pull request that writes a
+`### ` entry straight into `CHANGELOG.md`'s `[Unreleased]` instead of a `changelog.d/` fragment, or that adds a
+fragment the assembler refuses. It ran on main before 0.6.0 and is back, with its tests.
+
 
 ### Fixed: a Feetech `close()` holds the arm, and a degenerate calibration is refused
 
