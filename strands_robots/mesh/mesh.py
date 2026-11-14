@@ -143,7 +143,7 @@ class Mesh:
         """Call ``rpc`` on a device with its own ``args`` (it refuses others); ``act(seconds=)`` waits that much longer.
         A refusal from the device's safety chain raises ``RequestRefused`` with the device's message verbatim."""
         self._open()
-        write = kind_of(self._present(), device_id, rpc, tuple(ARGS))  # a device rpc: from its manifest
+        write = kind_of(lambda: self.discover(device_id, min_count=1, timeout=timeout), device_id, rpc, tuple(ARGS))
         if rpc == "estop":  # also on the tenant key: a lost or diverted rpc is never the only stop
             args.setdefault("by", self.operator)
             args.setdefault("epoch", uuid.uuid4().hex)

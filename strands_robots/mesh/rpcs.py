@@ -149,12 +149,13 @@ def advertised(manifest: Mapping[str, Any], name: str) -> Mapping[str, Any] | No
     return None
 
 
-def kind_of(devices: Any, device_id: str, name: str, builtin: tuple[str, ...]) -> bool | None:
+def kind_of(devices: Callable[[], Any], device_id: str, name: str, builtin: tuple[str, ...]) -> bool | None:
     """At the caller: ``None`` for a built-in, else whether the device's advertised rpc ``name`` writes (missing flag:
-    a write). ``LookupError`` when the device is present but does not advertise it, or is not present at all."""
+    a write). ``LookupError`` when the device does not advertise it, or no record of it arrives. ``devices`` waits for
+    the record: a presence token seen again (a router reconnect) drops it until it is fetched once more."""
     if name in builtin:
         return None
-    found = [d for d in devices if d.id == device_id]
+    found = [d for d in devices() if d.id == device_id]
     entry = advertised(found[0].manifest, name) if found else None
     if entry is None or name in RESERVED:
         rows = found[0].manifest.get("rpcs") or () if found else ()
