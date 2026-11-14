@@ -152,11 +152,12 @@ def refuse_taken(dirs: list[Directory], did: str, tenant: str) -> None:
         raise ValueError(f"device {did!r} is already on the mesh in tenant {tenant!r}; pass device_id=")
 
 
-def refuse_shared(dirs: list[Directory], did: str, rpc: str, tenant: str) -> None:
+def refuse_shared(dirs: list[Directory], did: str, rpc: str, tenant: str, write: bool | None = None) -> None:
     """Refuse a write (``act``, ``hold``, ``resume``, ``skill``) to an id two peers hold at once (a race
     ``refuse_taken`` cannot see, or a peer gone without a goodbye until its ttl): it would reach both, and two
-    identical acks hide that a second body moved; ``estop``, ``stop`` go to all."""
-    if rpc in ("act", "hold", "resume", "skill") and any(d.holders(did) > 1 for d in dirs):
+    identical acks hide that a second body moved; ``estop``, ``stop`` go to all. ``write``: a device rpc's kind."""
+    write = rpc in ("act", "hold", "resume", "skill") if write is None else write
+    if write and any(d.holders(did) > 1 for d in dirs):
         raise RequestRefused(f"{did!r} is mounted by more than one peer in tenant {tenant!r}; one {rpc} reaches all")
 
 

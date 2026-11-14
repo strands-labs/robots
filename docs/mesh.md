@@ -78,6 +78,35 @@ that offers no skills is refused there, instead of being driven one round trip p
 Measured over AWS IoT Core with the G1 walk (`holosoma?vx=0.5`, 4 s): 9.2 steps per second when the caller drove it,
 the full 200 steps in 2 s as a skill.
 
+## Device rpcs: a device's own commands
+
+A device can answer more than the built-in rpcs. Give `mount` a handler per name; the device advertises each one
+(its argument schema from the signature, its first doc line, and whether it writes) in its manifest, and a caller
+resolves the name from there, so a process that never imported the handler can call it:
+
+<!-- test: skip, needs a second process for the device -->
+```python
+from strands_robots.mesh import device_rpc
+
+lab.mount(arm, rpcs={"gripper": set_gripper, "battery": device_rpc(read_battery, write=False)})
+me.invoke("so101", "battery")               # {"percent": 87}
+me.invoke("so101", "gripper", width=0.5)
+```
+
+| Fact | |
+|---|---|
+| Default kind | A write that arms the watchdog, the same as `act` |
+| A write | Refused on an observe-only device, refused while e-stopped, needs the caller's peer id, refused on an id two peers hold |
+| `device_rpc(fn, write=False)` | A read: answered everywhere, never arms the watchdog |
+| `device_rpc(fn, arms=False)` | A write the watchdog need not watch (a light, a beep) |
+| Arguments | Keyword only, JSON values; the device refuses an unknown, missing or wrongly typed one before the handler runs |
+| `by` | Who asked; reaches the handler only if it names a `by` argument |
+| Names | A mesh id that is not a built-in rpc (`estop`, `stop`, `hold`, ...), `run` or `calibrate`: refused at mount |
+| A name the device does not advertise | `invoke` raises `LookupError` listing the device's rpcs |
+
+The handler is the device owner's code and runs on the device: the safety chain checks what goes through
+`act`, so a handler that moves the body should call `robot.confirm_act` itself rather than drive the bus.
+
 ## Securing the mesh
 
 Give every machine a certificate from one lab CA. A machine with one joins the mesh over mutual TLS only, and signs

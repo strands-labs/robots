@@ -23,6 +23,7 @@ from .iot.options import attach as _iot_attach
 from .presence import Directory, announce, present, refuse_shared, refuse_taken, transport_of
 from .record import RAISE, check_kill_switch, default_operator, default_tenant, record, state_rate
 from .remote import connect
+from .rpcs import check_rpcs, kind_of
 from .serve import ARGS, act_wait, estop_each, serve
 from .skills import Skills, check_catalogue
 from .stream import listen, publish
@@ -78,17 +79,19 @@ class Mesh:
         watchdog_ms: float | None = 500.0,
         iot: Any = None,
         skills: Mapping[str, Any] | None = None,
+        rpcs: Mapping[str, Any] | None = None,
     ) -> Any:
         """Make ``robot`` a device: announce it, answer its rpcs, publish its state and events; a mover silent past
         ``watchdog_ms`` gets ``on_disconnect``. ``iot`` adds shadows. A ``Simulation`` mounts each robot in it.
-        ``skills`` (name -> policy) are runs the device does on itself when asked by name (``mesh/skills.py``)."""
+        ``skills`` (name -> policy) are runs the device does on itself when asked by name (``mesh/skills.py``);
+        ``rpcs`` (name -> handler) are its own commands, advertised in its manifest (``mesh/rpcs.py``)."""
         from ..simulation import Simulation
 
         self._open()
-        catalogue = check_catalogue(skills)
+        catalogue, extras = check_catalogue(skills), check_rpcs(rpcs, tuple(ARGS))
         if isinstance(robot, Simulation):
-            if catalogue:
-                raise TypeError("skills= belongs to one robot: mount each robot of a Simulation with its own")
+            if catalogue or extras:
+                raise TypeError("skills= and rpcs= belong to one robot: mount each robot of a Simulation on its own")
             kw = {"labels": labels, "state_hz": state_hz, "watchdog_ms": watchdog_ms, "iot": iot}
             return [self.mount(r, **kw) for r in robot.robots.values()]  # type: ignore[arg-type]
         did = wire.check_id(device_id or getattr(robot, "id", None) or robot.describe()["name"], "device_id")
@@ -96,16 +99,16 @@ class Mesh:
             if did in self._mounted:
                 raise ValueError(f"device {did!r} is already mounted on this mesh")
             refuse_taken(self._dirs, did, self.tenant)
-            rec = record(robot, did, labels or {}, self.tenant, tuple(ARGS), tuple(sorted(catalogue)))
+            rec = record(robot, did, labels or {}, self.tenant, tuple(ARGS), tuple(sorted(catalogue)), extras)
             lockout = _authority.Lockout()
             undo: list[Unsubscribe] = []
             stack.callback(lambda: [u() for u in reversed(undo)])
-            dog = _watchdog.start(robot, watchdog_ms, self.transports, self.tenant, did)
+            armed = tuple(n for n, r in extras.items() if r.arms)
+            dog = _watchdog.start(robot, watchdog_ms, self.transports, self.tenant, did, armed)
             stack.callback(_watchdog.stopper(dog))  # a failed mount stops it first; close is idempotent
             on_rpc, skilled = getattr(dog, "on_rpc", None), Skills(robot, did, catalogue, dog)
-            undo += [
-                serve(t, self.tenant, robot, did, lockout, self._authority, on_rpc, skilled) for t in self.transports
-            ]
+            args = (self.tenant, robot, did, lockout, self._authority, on_rpc, skilled, extras)
+            undo += [serve(t, *args) for t in self.transports]
             undo.append(_watchdog.stopper(dog))  # the IoT pieces stop first: no shadow target outlives the watchdog
             undo += [] if iot is None else [_iot_attach(self.transports, iot, robot, rec, lockout, on_rpc=on_rpc)]
             if hasattr(robot, "subscribe"):
@@ -140,15 +143,14 @@ class Mesh:
         """Call ``rpc`` on a device with its own ``args`` (it refuses others); ``act(seconds=)`` waits that much longer.
         A refusal from the device's safety chain raises ``RequestRefused`` with the device's message verbatim."""
         self._open()
-        if rpc not in ARGS:
-            raise LookupError(f"{device_id} has no rpc {rpc!r} over the mesh; known: {sorted(ARGS)}")
+        write = kind_of(lambda: self.discover(device_id, min_count=1, timeout=timeout), device_id, rpc, tuple(ARGS))
         if rpc == "estop":  # also on the tenant key: a lost or diverted rpc is never the only stop
             args.setdefault("by", self.operator)
             args.setdefault("epoch", uuid.uuid4().hex)
             publish_estop(self, f"device(id:{device_id})", dict(args))
-        if rpc in ("act", "hold", "stop", "skill"):  # who moved it, for the device's audit record
+        if rpc in ("act", "hold", "stop", "skill") or write:  # who moved it, for the device's audit record
             args.setdefault("by", self.operator)
-        refuse_shared(self._dirs, device_id, rpc, self.tenant)
+        refuse_shared(self._dirs, device_id, rpc, self.tenant, write)
         transport = self._transport_of(device_id)
         if rpc == "resume" and self.resume_key is not None and "assertion" not in args:
             lock = self.invoke(device_id, "lockout", timeout=timeout)
