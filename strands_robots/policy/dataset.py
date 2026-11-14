@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING, Any
 
 import numpy as np
 
-from .._extras import LEROBOT
+from .._extras import hint
 from ..units import Units, lerobot_units
 from ..units.lerobot import norm_hint, unnamed
 from .sequence import SequencePolicy
@@ -102,7 +102,9 @@ def _episode_actions(root: Path, episode: int) -> np.ndarray:
     try:
         import pyarrow.parquet as pq
     except ImportError as e:
-        raise ImportError(f"replaying a dataset reads its parquet files and needs LeRobot: {LEROBOT} ({e})") from e
+        raise ImportError(
+            f"replaying a dataset reads its parquet files and needs LeRobot: {hint('lerobot')} ({e})"
+        ) from e
     files = sorted((root / "data").glob("**/*.parquet"))
     rows = [pq.read_table(f, columns=["episode_index", "frame_index", "action"]).to_pydict() for f in files]
     found = sorted({e for r in rows for e in r["episode_index"]})
