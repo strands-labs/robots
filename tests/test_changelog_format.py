@@ -27,7 +27,7 @@ from pathlib import Path
 # Every git tag that has been published MUST have a dated CHANGELOG section.
 # Append the version here whenever a new tag is cut (and collapse `[Unreleased]`
 # into the matching dated heading in the same change).
-PUBLISHED_RELEASES = frozenset({"0.4.0", "0.4.1"})
+PUBLISHED_RELEASES = frozenset({"0.4.0", "0.4.1", "0.6.0"})
 
 _CHANGELOG = Path(__file__).resolve().parents[1] / "CHANGELOG.md"
 _VERSION_HEADING = re.compile(r"^## \[(?P<ver>\d+\.\d+\.\d+)\] - (?P<date>\d{4}-\d{2}-\d{2})\s*$")
