@@ -219,7 +219,7 @@ class ShadowMirror:
         if action:
             done = (self._on_rpc("act", f"shadow:{self.thing}") if self._on_rpc else None) or (lambda ok: None)
             try:
-                self.robot.confirm_act(action)
+                self.robot.confirm_act(action, source="mesh")
                 self.applied.append(action)
                 reported.update({f"{k}.pos": v for k, v in action.items()})
             except Exception as exc:  # the safety chain's own words travel verbatim

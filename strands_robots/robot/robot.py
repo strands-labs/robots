@@ -7,7 +7,7 @@ The Body is the only thing that differs between a simulated robot (``SimBody``, 
 from __future__ import annotations
 
 import threading
-from collections.abc import Callable, Mapping
+from collections.abc import Mapping
 from typing import TYPE_CHECKING, Any
 
 import numpy as np
@@ -23,12 +23,12 @@ from .clock import Clock, WorldClock, checked
 from .device import DeviceVerbs, Emitter, position_hold_of
 from .run import loop as _run
 from .safety import Latch, Validator, guarded_write
+from .safety.move import Operator, refuse_old_names
 
 if TYPE_CHECKING:
     from ..simulation import Simulation
     from .drivers.calibration import Calibration
     from .run.result import RunResult
-    from .run.source import RunPlan
     from .run.task import Task
 
 
@@ -48,23 +48,22 @@ class Robot(DeviceVerbs):
         driver: str | Any | None = None,
         cameras: Mapping[str, int | str] | None = None,
         twin: bool = False,
-        confirm: Callable[[np.ndarray], bool] | None = None,
+        operator: Operator | None = None,
         calibration: Any = None,
         mesh: Any = None,
         clock: Clock | None = None,
-        approve: Callable[[RunPlan], bool] | None = None,
         **driver_options: Any,  # feetech robot_id=/baud=, unitree timeout=... reach the driver unchanged (D3)
     ) -> None:
         from ..simulation import Simulation
 
+        refuse_old_names("Robot(...)", driver_options)  # confirm=/approve= were one question asked twice
         self.description: Description = Description.load(name)
         self.name = self.description.name
         self.is_real = port is not None or driver is not None or "host" in driver_options  # host=: a networked body
-        hw_only = [n for n, v in (("confirm", confirm), ("approve", approve), ("clock", clock)) if v is not None]
+        hw_only = [n for n, v in (("operator", operator), ("clock", clock)) if v is not None]
         if hw_only and not self.is_real:  # the operator gates and a bus clock are hardware's; a world owns its time
             raise TypeError(f"{', '.join(hw_only)}= are hardware Robot arguments; a simulated body takes none")
-        self.confirm = confirm  # one command from an agent/dashboard: asked for exactly these targets
-        self.approve = approve  # one RUN from an agent on a real body: asked once with its RunPlan (K6)
+        self.operator = operator  # a real body's yes: a Move for one command, a RunPlan once for an agent's run (K6)
         self.sim: Simulation | None = None
         self.twin: Robot | None = None  # on a hardware Robot: the simulated body that mirrors it
         self.twin_of: Robot | None = None  # on that twin: the hardware Robot it mirrors
@@ -165,17 +164,11 @@ class Robot(DeviceVerbs):
             _twin.mirror(self, _targets.clip_to_limits(self.description, js.positions), measured=True)
         return obs
 
-    def gate(
-        self, action: Action, *, confirmed: bool = False, approved_run: bool = False, measured: np.ndarray | None = None
-    ) -> np.ndarray:
-        """The operator gate for commands from an agent tool or dashboard (see ``robot.gate``)."""
-        return _gate.gate(self, action, confirmed=confirmed, approved_run=approved_run, measured=measured)
+    def gate(self, action: Action, *, confirmed: bool = False, approved_run: bool = False, **kw: Any) -> np.ndarray:
+        """The operator gate for commands from an agent tool or dashboard (``robot.gate``; ``measured``/``source``)."""
+        return _gate.gate(self, action, confirmed=confirmed, approved_run=approved_run, **kw)
 
-    def confirm_act(
-        self, action: Action, *, steps: int | None = None, seconds: float | None = None, confirmed: bool = False
-    ) -> Observation:
-        """``act`` through the operator gate (asked once, for the target): what an agent tool and the dashboard call."""
-        return _gate.confirm_act(self, action, steps=steps, seconds=seconds, confirmed=confirmed, ramp=_reach.reach)
+    confirm_act = _gate.act_through_gate  # act through the operator gate: what agent tools, the dashboard, mesh call
 
     def act(self, action: Action, *, steps: int | None = None, seconds: float | None = None) -> Observation:
         """Write targets for THIS body and advance its world (a real body: its twin's) one control step.

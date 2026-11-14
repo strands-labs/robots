@@ -62,8 +62,7 @@ def connect(
     model: str | Path | None = None,
     id: str | None = None,
     mesh: Any = None,
-    confirm: Any = None,
-    approve: Any = None,
+    operator: Any = None,
     timeout: float = 5.0,
     **driver_options: Any,
 ) -> Any:
@@ -72,12 +71,15 @@ def connect(
     from ..description import Description
     from ..robot import Robot
     from ..robot.drivers.ros import RosDriver
+    from ..robot.safety.move import refuse_old_names
+
+    refuse_old_names("ros.connect(...)", driver_options)  # one operator= answers a Move and a RunPlan
 
     prof = _profile.load(profile, overrides=driver_options.get("overrides"))
     src = model_source(prof, model, host=host, timeout=timeout)
     desc = Description.load(src)
     drv = RosDriver(desc, host=host, profile=str(profile), timeout=timeout, **driver_options)
-    robot = Robot(str(src), driver=drv, id=id or prof.name, confirm=confirm, approve=approve)
+    robot = Robot(str(src), driver=drv, id=id or prof.name, operator=operator)
     # Mount only after the profile's on_disconnect is in place: Robot(mesh=) mounts inside the constructor, where the
     # watchdog would see the unpatched description and refuse the body (and a manifest built then would be cached).
     with_profile_on_disconnect(robot, prof)

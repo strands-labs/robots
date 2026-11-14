@@ -18,7 +18,7 @@ def sway(obs):
 
 def hardware(plans: list) -> Robot:
     d, _ = make_driver()
-    return Robot("so101", driver=d, twin=False, approve=lambda plan: plans.append(plan) or False)
+    return Robot("so101", driver=d, twin=False, operator=lambda plan: plans.append(plan) or False)
 
 
 @pytest.mark.parametrize(

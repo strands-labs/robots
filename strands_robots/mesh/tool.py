@@ -108,8 +108,8 @@ def spec(mesh: MeshView) -> dict[str, Any]:
     }
 
 
-def dispatch(mesh: MeshView, inp: Mapping[str, Any], *, approve: Any = None) -> Any:
-    """One ``use_mesh`` call. ``approve`` (``callable(RunPlan) -> bool``) is the operator's answer for an agent's run
+def dispatch(mesh: MeshView, inp: Mapping[str, Any], *, operator: Any = None) -> Any:
+    """One ``use_mesh`` call. ``operator`` (``callable(Move | RunPlan) -> bool``) is asked for an agent's run
     on a device: without it such a run is refused, as for any real robot."""
     action, did = inp.get("action"), inp.get("device_id")
     if action not in ACTIONS:
@@ -150,12 +150,12 @@ def dispatch(mesh: MeshView, inp: Mapping[str, Any], *, approve: Any = None) -> 
         if prev is not None and prev.running:
             raise RuntimeError(f"robot {did!r} already has a running task; call stop() first")
         robot = mesh.connect(did)
-        if robot.is_real and approve is None:  # said now, not from the run's thread after "started"
+        if robot.is_real and operator is None:  # said now, not from the run's thread after "started"
             raise PermissionError(
                 f"{did}: an agent's run on a device needs the operator's yes: build the tool with "
-                "use_mesh(mesh, approve=<callable(RunPlan) -> bool>)"
+                "use_mesh(mesh, operator=<callable(Move | RunPlan) -> bool>)"
             )
-        robot.approve = approve
+        robot.operator = operator
         task = robot.start(args.pop("policy"), **args)
         mesh.tasks[did] = task
         return {"started": did, "status": getattr(task, "status", None)}
@@ -174,7 +174,7 @@ def dispatch(mesh: MeshView, inp: Mapping[str, Any], *, approve: Any = None) -> 
 
 def _run_skill(mesh: MeshView, did: str, offered: Any, args: Mapping[str, Any]) -> Any:
     """``run`` on a device with skills: ``policy`` names one of them; ``seconds`` bounds it (``steps``/``hz`` are the
-    device's own). The operator's yes, if the robot is real, is asked on the device by its own ``approve=``."""
+    device's own). The operator's yes, if the robot is real, is asked on the device by its own ``operator=``."""
     name, seconds = args.get("policy"), args.get("seconds")
     if not isinstance(name, str) or name not in list(offered):
         raise LookupError(f"{did} runs only its own skills {list(offered)}; got policy={name!r}")
@@ -186,9 +186,15 @@ def _run_skill(mesh: MeshView, did: str, offered: Any, args: Mapping[str, Any]) 
     return mesh.invoke(did, "skill", name=name, seconds=seconds, **extra)
 
 
-def use_mesh(mesh: MeshView, *, approve: Any = None) -> Any:
-    """The tool. Every call runs as an agent's (``from_agent``); ``approve`` answers its runs (see ``dispatch``)."""
+def use_mesh(mesh: MeshView, *, operator: Any = None, **old: Any) -> Any:
+    """The tool. Every call runs as an agent's (``from_agent``); ``operator`` answers its runs (see ``dispatch``)."""
     from strands.tools.tools import PythonAgentTool
+
+    from ..robot.safety.move import refuse_old_names
+
+    refuse_old_names("use_mesh(...)", old)
+    if old:
+        raise TypeError(f"use_mesh() takes mesh and operator=, not {sorted(old)}")
 
     def run(tool_use: Any, **_state: Any) -> Any:
         tid = tool_use["toolUseId"]
@@ -196,7 +202,7 @@ def use_mesh(mesh: MeshView, *, approve: Any = None) -> Any:
 
         try:
             with from_agent():  # an agent's call: a real robot's run asks the operator, as through every other tool
-                result = dispatch(mesh, dict(tool_use.get("input") or {}), approve=approve)
+                result = dispatch(mesh, dict(tool_use.get("input") or {}), operator=operator)
         except Exception as exc:  # noqa: BLE001 - the model reads the refusal and corrects its next call
             return {"toolUseId": tid, "status": "error", "content": [{"text": f"{type(exc).__name__}: {exc}"}]}
         return {"toolUseId": tid, "status": "success", "content": [{"text": json.dumps(_json(result))}]}

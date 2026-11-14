@@ -18,7 +18,7 @@ def test_a_real_robot_on_a_mesh_anyone_may_join_is_served_observe_only(tenant, p
     flag = "&trusted=1" if vouched == "url" else ""
     dev = Mesh(f"zenoh://?listen=tcp/127.0.0.1:{port}{flag}", tenant=tenant)
     op = Mesh(f"zenoh://?connect=tcp/127.0.0.1:{port}", tenant=tenant)
-    arm = Robot("so101", driver="memory", confirm=lambda action: True)
+    arm = Robot("so101", driver="memory", operator=lambda action: True)
     try:
         dev.mount(arm, device_id="arm")
         assert op.discover("arm", min_count=1, timeout=3.0)

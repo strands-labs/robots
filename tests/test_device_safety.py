@@ -14,7 +14,7 @@ from test_drivers import CorruptingSerial, make_driver
 from strands_robots import Robot
 from strands_robots.robot.device import manifest_for
 from strands_robots.robot.drivers import feetech as ft
-from strands_robots.robot.safety import RequestRefused, Watchdog
+from strands_robots.robot.safety import Move, RequestRefused, Watchdog
 
 
 def test_out_of_range_write_is_refused_naming_joint_value_and_bound():
@@ -37,7 +37,7 @@ def _saturated_sim_arm():
 def _servo_past_range_min_arm():
     d, s = make_driver()
     s.actual[4] = 1024 - 40  # wrist_flex rests 40 counts below its calibrated sweep
-    return Robot("so101", driver=d, twin=False, confirm=lambda a: True)
+    return Robot("so101", driver=d, twin=False, operator=lambda a: True)
 
 
 @pytest.mark.parametrize("make", [_saturated_sim_arm, _servo_past_range_min_arm])
@@ -191,9 +191,9 @@ def _narrow_safe(robot, key, safe):
 
 def test_outside_safe_inside_range_needs_the_operators_yes():
     d, _ = make_driver()
-    asked: list[np.ndarray] = []
+    asked: list[Move] = []
     answer = {"yes": False}
-    real = Robot("so101", driver=d, twin=False, confirm=lambda a: asked.append(a) or answer["yes"])
+    real = Robot("so101", driver=d, twin=False, operator=lambda a: asked.append(a) or answer["yes"])
     _narrow_safe(real, "shoulder_pan", (-0.5, 0.5))
     with pytest.raises(RequestRefused, match=r"shoulder_pan=0\.8000 rad outside safe \[-0\.5000, 0\.5000\]"):
         real.confirm_act({"shoulder_pan": 0.8})
@@ -201,6 +201,7 @@ def test_outside_safe_inside_range_needs_the_operators_yes():
     answer["yes"] = True
     real.confirm_act({"shoulder_pan": 0.8})
     assert len(asked) == 2  # asked once for this write, not again by the gate
+    assert "shoulder_pan=0.8000 rad outside safe" in (asked[-1].reason or "")  # the operator reads why
     sim = Robot("so101")
     _narrow_safe(sim, "shoulder_pan", (-0.5, 0.5))
     with pytest.raises(RequestRefused, match="outside safe"):

@@ -119,21 +119,28 @@ print("direct act -> shoulder_pan", round(real.observe().joints["shoulder_pan"],
 try:
     real.confirm_act({"shoulder_pan": 0.3})  # what an agent tool or the dashboard sends
 except RequestRefused as e:
-    print("agent write, no confirm=:", e)
+    print("agent write, no operator=:", e)
 
 # %% [markdown]
-# `confirm=` is the operator's yes for one command, asked with exactly the targets. `approve=` is the yes for a whole
-# agent run, asked once with its `RunPlan`. Inside `from_agent()` the run loop gates every step.
+# `operator=` is the operator's yes. One command asks it with a `Move` (exactly the targets, by joint name); a whole
+# agent run asks it once with its `RunPlan`. Inside `from_agent()` the run loop gates every step.
 
 # %%
-from strands_robots.robot.run.source import from_agent
+from strands_robots.robot.run import Move, from_agent
 
 asked = []
-real = Robot("so101", driver="memory", twin=False,
-             confirm=lambda t: asked.append(np.round(t, 3).tolist()) or abs(t[0]) < 0.5,
-             approve=lambda plan: print("operator sees:", plan) or plan.steps <= 30)
+
+
+def operator(req):
+    asked.append(str(req))
+    if isinstance(req, Move):
+        return abs(req.targets["shoulder_pan"]) < 0.5
+    return req.steps <= 30  # a RunPlan
+
+
+real = Robot("so101", driver="memory", twin=False, operator=operator)
 real.confirm_act({"shoulder_pan": 0.3})
-print("confirm asked with", asked[-1], "-> written")
+print("operator asked with", asked[-1], "-> written")
 try:
     real.confirm_act({"shoulder_pan": 0.8})
 except RequestRefused as e:
@@ -356,7 +363,7 @@ for kw in ({"on_disconnect": "apply"}, {"safe": (-3.0, 0.0)}):
 # ```python
 # # needs a real arm: the same verbs on the bench
 # arm = Robot("so101", port="/dev/tty.usbmodem5A7A0185821", id="blue_follower",
-#             confirm=lambda targets: input(f"move to {targets}? ") == "y")
+#             operator=lambda req: input(f"{req}? ") == "y")
 # arm.manifest.real, arm.twin          # True, the simulated twin that mirrors every read
 # arm.estop(by="alice")                # torque stays on at the measured pose (position_hold)
 # arm.resume(approved_by="alice", stop=arm.estop_latch.count)

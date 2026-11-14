@@ -8,11 +8,11 @@ rate, where its cameras and its safety chain are, instead of one observe and one
 caller (measured over AWS IoT Core for a 50 Hz walk: 5.7 steps per second through the caller, full rate here).
 
 The run is an agent's (``from_agent``), so every step passes the device's safety chain and a real body asks its own
-``Robot(approve=)`` once, on the device: an operator answers where the robot is, and the reply to the caller never
-waits on a person. ``stop`` and ``estop`` end a running skill. A skill holds its caller's watchdog for as long as it
-runs: the quiet clock pauses (the device is busy, the caller may poll slowly), but if the caller's Mesh vanishes
-(closed, crashed, network gone) the device ends the skill and applies its ``on_disconnect``. A skill is bounded by
-its own ``seconds``; a robot whose commander is gone stops rather than finishing work nobody is watching.
+``Robot(operator=)`` once, with the ``RunPlan``, on the device: an operator answers where the robot is, and the reply
+to the caller never waits on a person. ``stop`` and ``estop`` end a running skill. A skill holds its caller's watchdog
+for as long as it runs: the quiet clock pauses (the device is busy, the caller may poll slowly), but if the caller's
+Mesh vanishes (closed, crashed, network gone) the device ends the skill and applies its ``on_disconnect``. A skill is
+bounded by its own ``seconds``; a robot whose commander is gone stops rather than finishing work nobody is watching.
 """
 
 from __future__ import annotations
@@ -108,7 +108,7 @@ class Skills:
             TypeError: ``instruction`` is not a string.
             RuntimeError: a skill (or another run) is already running on this robot.
             EStopped: the robot's e-stop is latched.
-            RequestRefused: a real robot was mounted without ``approve=``, so no operator can allow the run.
+            RequestRefused: a real robot was mounted without ``operator=``, so no operator can allow the run.
         """
         if not self.catalogue:
             raise LookupError(f"{self.device_id} offers no skills; mount it with skills={{name: policy}}")
@@ -119,19 +119,20 @@ class Skills:
             raise TypeError(f"skill instruction= must be a string, got {type(instruction).__name__}")
         from ..robot.run.source import from_agent
         from ..robot.safety import RequestRefused
+        from ..robot.safety.move import HINT
 
         latch = getattr(self.robot, "estop_latch", None)
         if latch is not None:  # said now, not from the run's thread after "started"
             latch.check(self.device_id)
-        if getattr(self.robot, "is_real", False) and getattr(self.robot, "approve", None) is None:
+        if getattr(self.robot, "is_real", False) and getattr(self.robot, "operator", None) is None:
             raise RequestRefused(
-                f"{self.device_id} is a real robot and a skill is an agent's run: pass approve=<callable(RunPlan) -> "
-                "bool> to Robot(...) so an operator at the robot can allow it"
+                f"{self.device_id} is a real robot and a skill is an agent's run: {HINT} on the device, so an "
+                "operator at the robot can allow it"
             )
         with self._lock:
             if self._task is not None and self._task.running:
                 raise RuntimeError(f"{self.device_id} is already running skill {self._state['name']!r}")
-            with from_agent():  # an agent's run: the safety chain on every step, the device's own approve= first
+            with from_agent():  # an agent's run: the safety chain on every step, the device's own operator= first
                 self._task = task = self.robot.start(self.catalogue[name], seconds=secs, instruction=instruction)
             release, key = (
                 self.dog.busy(peer, beat, proven) if self.dog is not None and peer is not None else (None, None)

@@ -54,7 +54,7 @@ build the tool with the operator's answer:
 ```python
 from strands_robots.mesh.tool import use_mesh
 
-tool = use_mesh(lab, approve=lambda plan: input(f"allow {plan}? [y/N] ") == "y")
+tool = use_mesh(lab, operator=lambda plan: input(f"allow {plan}? [y/N] ") == "y")
 ```
 
 A device that offers skills (`mesh.mount(robot, skills={...})`, see [Mesh networking](mesh.md)) is different: the

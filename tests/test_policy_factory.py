@@ -149,7 +149,7 @@ def test_a_hardware_camera_is_drained_by_its_capture_thread_while_a_chunk_replay
     monkeypatch.setattr(cameras, "_CVCapture", Device)
     d, _ = make_driver()
     d.cameras = cameras.Cameras({"wrist": {"index": 0, "width": 640, "height": 480}})
-    arm = Robot("so101", driver=d, twin=False, confirm=lambda a: True)
+    arm = Robot("so101", driver=d, twin=False, operator=lambda a: True)
     steps, images = [], d.images
     d.images = lambda: steps.append(1) or images()
     arm.run(ChunkedPolicy(_Count()), steps=8)

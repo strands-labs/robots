@@ -93,7 +93,7 @@ dashboard that shares the same auth file; give a dashboard its own with `Auth(st
 **Turning sign-in off.** `Dashboard(sim, auth=False)` (or `--no-auth`) logs a warning and lets any local program use
 every route. It is refused while a real robot is attached. You can force it with `unauthenticated_hardware=True`; the
 page then shows that robot, but `X-Confirm` counts for nothing without a session, so every command to it waits for the
-robot's own `confirm` callback.
+robot's own `operator=` callback (asked with a `Move` whose `source` is `dashboard`).
 
 ## Tabs
 

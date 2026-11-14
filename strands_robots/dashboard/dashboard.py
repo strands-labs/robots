@@ -156,7 +156,7 @@ class Dashboard:
         if unknown:
             raise ValueError(f"{rid} has no joints {unknown}; action keys are {list(robot.action_keys)}")
         try:  # the robot's own safety chain decides; X-Confirm is the operator's yes for the last step
-            obs = robot.confirm_act({k: float(v) for k, v in targets.items()}, confirmed=confirmed)
+            obs = robot.confirm_act({k: float(v) for k, v in targets.items()}, confirmed=confirmed, source="dashboard")
         except PermissionError as exc:
             if robot.is_real and not confirmed and not getattr(robot, "estopped", False):
                 raise type(exc)(f"{exc} (from this page: confirm with header X-Confirm: yes)") from exc

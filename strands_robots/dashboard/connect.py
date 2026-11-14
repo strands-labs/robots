@@ -183,7 +183,9 @@ class Connections:
         s = float(seconds) if isinstance(seconds, (int, float)) and 0 < seconds <= 5 else 1.0
         if not confirmed:
             raise PermissionError(f"{rid} is a real robot to this page: move it with header X-Confirm: yes")
-        obs = robot.confirm_act({k: float(v) for k, v in targets.items()}, seconds=s, confirmed=True)
+        obs = robot.confirm_act(
+            {k: float(v) for k, v in targets.items()}, seconds=s, confirmed=True, source="dashboard"
+        )
         return {"t": obs.t, "joints": dict(zip(obs.joints.names, obs.joints.positions.tolist(), strict=True))}
 
     def resume(self, rid: str, approved_by: str | None) -> str:

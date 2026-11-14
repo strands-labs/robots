@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from .chain import SafetyChain
 from .estop import EStopped, Latch, engage, guarded_write, resume
+from .move import Move, Operator
 from .validators import (
     JointLimitValidator,
     NonFiniteTarget,
@@ -17,6 +18,8 @@ from .watchdog import Watchdog, apply_on_disconnect
 
 __all__ = [
     "SafetyChain",
+    "Move",
+    "Operator",
     "RequestRefused",
     "NonFiniteTarget",
     "EStopped",

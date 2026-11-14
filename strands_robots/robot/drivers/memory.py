@@ -1,7 +1,7 @@
 """A bus with no wire: ``Robot("so101", driver="memory")`` is a hardware body with no arm attached.
 
-Writes land at once and the next read returns them, so the operator gate (``confirm=``), ``approve=``, the
-e-stop and the watchdog's real-body rule run exactly as on an arm: for docs, notebooks and CI.
+Writes land at once and the next read returns them, so the operator gate (``operator=``, asked with a ``Move`` or a
+``RunPlan``), the e-stop and the watchdog's real-body rule run exactly as on an arm: for docs, notebooks and CI.
 """
 
 from __future__ import annotations

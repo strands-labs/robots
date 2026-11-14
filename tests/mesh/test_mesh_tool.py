@@ -109,12 +109,12 @@ def test_a_second_run_is_refused_while_the_first_runs_and_stop_halts_it(lab):
     gate = arm.confirm_act
     arm.confirm_act = lambda *a, **k: (writes.append(1), gate(*a, **k))[1]  # type: ignore[method-assign]
     run = {"policy": lambda o: {"shoulder_pan": 0.1}, "seconds": 3, "hz": 20}
-    dispatch(m, {"action": "run", "device_id": "arm", "run": run}, approve=lambda plan: True)
+    dispatch(m, {"action": "run", "device_id": "arm", "run": run}, operator=lambda plan: True)
     deadline = time.monotonic() + 2.0
     while not writes and time.monotonic() < deadline:  # the first loop is writing before the second run is asked
         time.sleep(0.01)
     with pytest.raises(RuntimeError, match="already has a running task"):
-        dispatch(m, {"action": "run", "device_id": "arm", "run": run}, approve=lambda plan: True)
+        dispatch(m, {"action": "run", "device_id": "arm", "run": run}, operator=lambda plan: True)
     dispatch(m, {"action": "stop", "device_id": "arm"})
     n = len(writes)
     time.sleep(0.5)
@@ -178,7 +178,7 @@ def test_the_mesh_tool_runs_as_an_agent_so_every_run_gate_applies(lab, monkeypat
 
     m, _ = lab
     seen = []
-    monkeypatch.setattr(mesh_tool, "dispatch", lambda mesh, inp, approve=None: seen.append(is_agent()) or [])
+    monkeypatch.setattr(mesh_tool, "dispatch", lambda mesh, inp, operator=None: seen.append(is_agent()) or [])
     call(mesh_tool.use_mesh(m), action="list")
     assert seen == [True] and not is_agent()  # marked inside the call only
 
@@ -189,10 +189,10 @@ def test_an_agents_run_on_a_device_needs_the_operators_approve(lab):
     m, _ = lab
     run = {"policy": lambda o: {"shoulder_pan": 0.1}, "steps": 3, "hz": 20}
     status, text = call(m.tool, action="run", device_id="arm", run=run)
-    assert status == "error" and "approve=" in text and not m.tasks
+    assert status == "error" and "operator=" in text and not m.tasks
     asked: list = []
     status, out = call(
-        use_mesh(m, approve=lambda plan: asked.append(plan) or True), action="run", device_id="arm", run=run
+        use_mesh(m, operator=lambda plan: asked.append(plan) or True), action="run", device_id="arm", run=run
     )
     assert status == "success" and out["started"] == "arm"
     assert m.tasks["arm"].stop(timeout=5.0) is not None  # the run ended without a refusal

@@ -32,7 +32,7 @@ def test_a_device_skill_runs_far_faster_than_the_same_policy_driven_from_the_cal
     on_device = st["steps"] / (time.monotonic() - t0)
 
     remote = b.connect("arm")  # the caller-driven path: one observe and one act rpc per step
-    remote.approve = lambda plan: True
+    remote.operator = lambda plan: True
     t0 = time.monotonic()
     res = remote.run(policy, seconds=2.0)
     from_caller = res.steps / (time.monotonic() - t0)

@@ -119,12 +119,11 @@ _nb.show(_nb.image(sim.render("front"), width=480))
 # ## Step 4: the same code on a physical SO-101 (reference)
 #
 # Calibrate once with LeRobot (`lerobot-calibrate --robot.type=so101_follower --robot.id=my_follower`), then change
-# the constructor. A real arm writes nothing without the operator: `confirm=` sees every target vector a tool
-# asks for, and `approve=` sees a policy run's plan once.
+# the constructor. A real arm writes nothing without the operator: `operator=` sees a `Move` for every command a
+# tool asks for, and a policy run's `RunPlan` once.
 #
 # ```python
-# arm = Robot("so101", port="/dev/ttyACM0", confirm=lambda targets: input(f"move to {targets}? [y/N] ") == "y",
-#             approve=lambda plan: input(f"run {plan}? [y/N] ") == "y")
+# arm = Robot("so101", port="/dev/ttyACM0", operator=lambda req: input(f"{req}? [y/N] ") == "y")
 # agent = Agent(model=MODEL_ID, tools=[arm.tool(policies={"act": act})])
 # agent(f"Run the act policy for 10 seconds with the instruction '{TASK}'.")
 # ```

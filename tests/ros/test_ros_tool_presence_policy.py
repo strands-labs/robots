@@ -110,7 +110,7 @@ def test_presence_shows_a_strands_robot_on_ros_and_gates_inbound_commands(ros, t
     path = tmp_path / "toy.urdf"
     path.write_text(urdf({"a": (-1.0, 1.0), "b": (-1.0, 1.0)}, "toy"))
     approvals = []
-    robot = Robot(path, driver="memory", id="toy", confirm=lambda t: approvals.append(list(t)) or True)
+    robot = Robot(path, driver="memory", id="toy", operator=lambda m: approvals.append(m.vector.tolist()) or True)
     with pytest.raises(PermissionError, match="STRANDS_ROS_OPEN_COMMANDS"):
         RosPresence(robot, commands=True)
     monkeypatch.setenv("STRANDS_ROS_OPEN_COMMANDS", "1")

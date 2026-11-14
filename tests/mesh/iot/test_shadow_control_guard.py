@@ -62,7 +62,7 @@ def _delta(dash, value=0.25):
 
 def _real_arm():
     bus = _Bus(Robot("so101").description.action_keys)
-    return Robot("so101", driver=bus, confirm=lambda targets: True, twin=False), bus
+    return Robot("so101", driver=bus, operator=lambda targets: True, twin=False), bus
 
 
 def test_the_control_shadow_is_off_by_default_and_a_default_mount_never_moves_on_a_delta():

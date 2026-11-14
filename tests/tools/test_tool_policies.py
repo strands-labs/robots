@@ -10,6 +10,7 @@ from test_drivers import make_driver
 from test_operator_gate import goal_writes
 
 from strands_robots import Robot
+from strands_robots.robot.run import Move
 from strands_robots.tools.agent import handles
 
 
@@ -104,7 +105,7 @@ def test_a_remote_handle_runs_on_a_real_arm_through_the_approved_gate_but_a_type
     monkeypatch.setattr(remote.ZenohPolicy, "units_for", lambda self, d: None)
     d, serial = make_driver()
     plans = []
-    real = Robot("so101", driver=d, twin=False, confirm=lambda t: True, approve=lambda plan: plans.append(plan) or True)
+    real = Robot("so101", driver=d, twin=False, operator=lambda r: isinstance(r, Move) or plans.append(r) or True)
     ttt = Policy("zenoh://zenoh.example:7447/d_ttt")
     (ok, refused) = _turn(
         real.tool(policies=[ttt]),
@@ -134,7 +135,7 @@ def test_the_models_units_never_reread_a_registered_policy_on_a_real_arm(units):
     shoulder_pan to +0.9993 rad instead of +0.0187. The units are the developer's, as record and push are."""
     d, serial = make_driver()
     plans: list = []
-    real = Robot("so101", driver=d, twin=False, approve=lambda plan: plans.append(plan) or True)
+    real = Robot("so101", driver=d, twin=False, operator=lambda plan: plans.append(plan) or True)
     tool = real.tool(policies={"pick": _Pick()})
     before = len(goal_writes(serial))
     (r,) = _turn(tool, [_run(policy="pick", units=units)])

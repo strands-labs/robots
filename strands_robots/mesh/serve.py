@@ -70,7 +70,7 @@ def _act(robot: Any, action: Any = None, steps: int | None = None, seconds: floa
         raise ValueError("act takes steps= or seconds=, not both")
     if seconds is not None and not act_wait({"seconds": seconds}):
         raise ValueError(f"act seconds= must be a number in (0, {MAX_SECONDS}], got {seconds!r}")
-    return observation_to_dict(robot.confirm_act(action, steps=steps, seconds=seconds))
+    return observation_to_dict(robot.confirm_act(action, steps=steps, seconds=seconds, source="mesh"))
 
 
 def _lockout(robot: Any, lockout: Lockout) -> Lockout:
@@ -113,7 +113,7 @@ def _resume(
 def _hold(robot: Any) -> None:
     """A hold energises a limp arm (torque on at the measured pose): the safety chain and operator say go first."""
     if hasattr(robot, "gate"):
-        robot.gate(robot.observe(images=False).joints)
+        robot.gate(robot.observe(images=False).joints, source="mesh")
     robot.hold()
 
 

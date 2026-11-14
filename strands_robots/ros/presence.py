@@ -141,7 +141,7 @@ class RosPresence:
 
         try:
             with from_agent():  # Robot.confirm_act: the operator gate, and every ramp point checked again
-                self.robot.confirm_act(dict(zip(names, pos, strict=True)))
+                self.robot.confirm_act(dict(zip(names, pos, strict=True)), source="ros")
         except Exception as e:  # noqa: BLE001 - a refusal is logged, never raised into the executor
             self.refused += 1
             LOG.warning("%s/joint_command refused: %s", self.ns, e)

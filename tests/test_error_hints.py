@@ -30,7 +30,7 @@ def test_real_robot_refusal_names_the_mesh_as_a_source() -> None:
     from strands_robots.robot.safety import RequestRefused
 
     arm = Robot("so101", driver="memory")
-    with pytest.raises(RequestRefused, match="an agent, the dashboard or the mesh: pass confirm="):
+    with pytest.raises(RequestRefused, match="an agent, the dashboard or the mesh: pass operator="):
         arm.confirm_act({"gripper": 0.5})
 
 
