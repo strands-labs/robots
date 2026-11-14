@@ -38,6 +38,32 @@ def test_rule_names_are_legal_and_sql_reads_the_tenant_keys():
     assert all(n == n[:128] and n.replace("_", "a").isalnum() for n in r)
 
 
+def test_every_generated_rule_carries_an_error_action_so_a_failure_is_not_silent():
+    """A rule without an ``errorAction`` drops a failing action silently. Every rule rules_for makes carries one:
+    into S3 under an ``errors/<tenant>/`` prefix when a bucket is given, else republished to the ``@error`` topic."""
+    with_bucket = rules.rules_for("lab", ROLE, sns_topic_arn=SNS, s3_bucket="b", timestream=("db", "tbl"),
+                                  telemetry=True)  # fmt: skip
+    assert set(with_bucket) == {f"strands_{k}_lab" for k in ("estop", "events", "fault", "telemetry")}
+    for name, payload in with_bucket.items():
+        kind = name.removeprefix("strands_").removesuffix("_lab")
+        s3 = payload["errorAction"]["s3"]
+        assert (s3["bucketName"], s3["roleArn"]) == ("b", ROLE)
+        assert s3["key"] == f"errors/lab/{kind}/${{timestamp()}}.json"  # a prefix of its own, not recordings/
+
+    # no bucket: the error goes to the tenant's @error topic, which is never dropped by the broker
+    no_bucket = rules.rules_for("lab", ROLE, sns_topic_arn=SNS)  # estop + fault
+    for payload in no_bucket.values():
+        assert payload["errorAction"]["republish"]["topic"] == "strands/lab/@error"
+        assert payload["errorAction"]["republish"]["roleArn"] == ROLE
+
+
+def test_error_action_overrides_the_default_on_every_rule():
+    cwl = {"cloudwatchLogs": {"roleArn": ROLE, "logGroupName": "strands-rule-errors"}}
+    r = rules.rules_for("lab", ROLE, sns_topic_arn=SNS, s3_bucket="b", error_action=cwl)
+    assert [p["errorAction"] for p in r.values()] == [cwl, cwl, cwl]
+    assert all(p["errorAction"] is not cwl for p in r.values())  # a copy per rule, caller's dict untouched
+
+
 def test_telemetry_needs_a_sink_and_rides_basic_ingest():
     with pytest.raises(ValueError, match="needs a sink"):
         rules.rules_for("lab", ROLE, telemetry=True)
@@ -55,7 +81,8 @@ def test_apply_is_idempotent_and_replaces_on_change(aws):
     assert rules.apply_rules(aws, r) == {"strands_estop_lab": "unchanged", "strands_events_lab": "unchanged"}
     r2 = rules.rules_for("lab", ROLE, s3_bucket="other-bucket")
     out = rules.apply_rules(aws, r2)
-    assert out == {"strands_estop_lab": "unchanged", "strands_events_lab": "replaced"}
+    # the bucket is in every rule's S3 errorAction, so the e-stop rule is replaced too
+    assert out == {"strands_estop_lab": "replaced", "strands_events_lab": "replaced"}
     got = aws.get_topic_rule(ruleName="strands_events_lab")["rule"]
     assert got["actions"][0]["s3"]["bucketName"] == "other-bucket"
     other = rules.rules_for("prod-lab", ROLE, s3_bucket="bucket")  # "_prod_lab_" and 12 hex digits of its sha256
