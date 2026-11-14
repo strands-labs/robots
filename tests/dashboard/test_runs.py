@@ -15,6 +15,7 @@ from test_operator_gate import goal_writes  # noqa: E402
 
 from strands_robots import Robot, Simulation  # noqa: E402
 from strands_robots.dashboard import Dashboard  # noqa: E402
+from strands_robots.robot.drivers import feetech as ft  # noqa: E402
 
 
 def test_run_status_stop_on_a_sim_body_and_the_real_gate() -> None:
@@ -71,7 +72,6 @@ def test_a_page_run_on_hardware_passes_the_safety_chain_on_every_step_not_only_t
     try:
         with pytest.raises(PermissionError, match="X-Confirm"):
             runs.start(real, "fenced", instruction=None, seconds=0.5, hz=20, confirmed=False)
-        before = len(goal_writes(serial))
         out = runs.start(real, "fenced", instruction=None, seconds=0.5, hz=20, confirmed=True)
         assert out["status"] == "running"
         for _ in range(100):
@@ -81,7 +81,11 @@ def test_a_page_run_on_hardware_passes_the_safety_chain_on_every_step_not_only_t
         st = runs.status(real)  # the refusal is the run's end, loudly (the task's error is read once, here)
         assert st["status"] == "error" and "RequestRefused" in st["error"] and "0.1 rad fence" in st["error"], st
         assert len(seen) >= 3 and seen[0] == pytest.approx(0.05) and seen[-1] == pytest.approx(0.5)  # every step
-        assert len(goal_writes(serial)) - before <= 2  # the two 0.05 writes; 0.5 never reached the bus
+        sent = test_drivers._sync_writes(serial)
+        torque_on = next(i for i, (reg, _) in enumerate(sent) if reg == ft.REG_TORQUE_ENABLE)
+        goals = [vals[1] for reg, vals in sent[torque_on + 1 :] if reg == ft.REG_GOAL_POSITION]  # under torque only
+        assert len(goals) <= 2  # the two 0.05 writes; the one-time pre-torque hold is not a step
+        assert all(abs(g - 2048) < 100 for g in goals)  # 0.5 rad (about 2048 + 325 counts) never reached the bus
         assert abs(float(real.observe(images=False).joints.positions[0])) <= 0.1 + 1e-6
     finally:
         real.close()

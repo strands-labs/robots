@@ -140,9 +140,7 @@ class FeetechDriver:
         goals = {
             mid: word(self.rad_to_counts(n, float(t))) for n, mid, t in zip(self.names, self.ids, targets, strict=True)
         }
-        if not self._torque_on:
-            self.bus.torque(self.ids, True)
-            self._torque_on = True
+        self.torque(True)  # a no-op once on; the first time, every servo is held where it is before torque comes on
         self.bus.sync_write(REG_GOAL_POSITION, 2, goals)
 
     def pose(self) -> Pose | None:
@@ -172,10 +170,12 @@ class FeetechDriver:
             self.hold()
 
     def torque(self, on: bool) -> None:
-        self.bus.torque(self.ids, on)
-        self._torque_on = on
-        if not on:
+        if on and not self._torque_on:  # Goal := Present first (FeetechBus.engage): torque never meets a stale goal
+            self.bus.engage(self.ids, retries=self.num_read_retries)
+        elif not on:
+            self.bus.torque(self.ids, False)
             self.slew.release()
+        self._torque_on = on
 
     def calibrate(
         self, *, interactive: bool = True, save: bool = True, prompt: Any = input, sweep_seconds: float = 20.0
