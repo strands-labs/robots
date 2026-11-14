@@ -13,15 +13,15 @@ from __future__ import annotations
 import itertools
 import logging
 import time
-from collections.abc import Callable, Iterable
-from concurrent.futures import ThreadPoolExecutor
+from collections.abc import Callable, Iterable, Mapping
 from typing import Any
 
 from ..robot.safety import RequestRefused
 from . import signed, wire
 from .authority import Authority, Lockout, new_epoch
-from .codec import observation_to_dict
+from .codec import observation_to_dict, observe_dict
 from .identity import Freshness
+from .rpcs import DeviceRpc, check_args, served
 from .skills import SKILL_ARGS, Skills
 from .transports.base import Transport, Unsubscribe
 from .watchdog import MOTION_RPCS
@@ -50,25 +50,6 @@ ARGS: dict[str, tuple[str, ...]] = {
     "skill_status": (),
 }
 """The rpcs a mounted device answers over the mesh, and the arguments each takes."""
-
-
-_RENDER: dict[int, ThreadPoolExecutor] = {}
-
-
-def _render_thread(robot: Any) -> ThreadPoolExecutor:
-    """One thread per robot does every image observe: a GL context is bound to the thread that first rendered with
-    it (measured on macOS: a render from a second thread never returns)."""
-    pool = _RENDER.get(id(robot))
-    if pool is None:
-        pool = _RENDER[id(robot)] = ThreadPoolExecutor(max_workers=1, thread_name_prefix="mesh-render")
-    return pool
-
-
-def _observe(robot: Any, images: bool) -> Any:
-    if not images:
-        return observation_to_dict(robot.observe(images=False))
-    obs = _render_thread(robot).submit(robot.observe, images=True).result()
-    return observation_to_dict(obs, images=True)
 
 
 def act_wait(args: dict[str, Any]) -> float:
@@ -143,7 +124,7 @@ def _handlers(
         "skill": skills.start,  # answered through skills.start_for in answer(), which knows the caller's beat
         "skill_status": skills.status,
         "describe": lambda: robot.describe(),
-        "observe": lambda images=False: _observe(robot, bool(images)),
+        "observe": lambda images=False: observe_dict(robot, bool(images)),
         "act": lambda action=None, steps=None, seconds=None, by=None: _act(robot, action, steps, seconds),
         "hold": lambda by=None: _hold(robot),
         "stop": lambda by=None: None if robot.stop() is None else "stopped",
@@ -168,14 +149,20 @@ def serve(
     authority: Callable[[], Authority],
     on_rpc: Callable[[str, str | None, str | None, bool], Callable[[bool], str | None] | None] | None = None,
     skills: Skills | None = None,
+    rpcs: Mapping[str, DeviceRpc] | None = None,
 ) -> Unsubscribe:
     """Answer ``strands/<tenant>/<device_id>/rpc/<name>`` for ``robot``; ``on_rpc(name, peer, beat, proven)`` sees
     every call before it runs (the watchdog) and may return a callable run once the call ends, whose beat key goes
     back in the reply. ``skills`` answers ``skill`` and ``skill_status`` (a device mounted without any refuses
-    ``skill`` by name); a started skill's reply carries its beat key the same way. Returns the undo."""
+    ``skill`` by name); a started skill's reply carries its beat key the same way. ``rpcs`` are the device's own
+    (``mesh/rpcs.py``), each through the same gate as the built-in it is like. Returns the undo."""
     signed.check_mount(transport, device_id)
     skills = skills or Skills(robot, device_id, {})
     handlers = _handlers(robot, device_id, lockout, authority, in_process(transport.url), skills)
+    extras = dict(rpcs or {})
+    more, writes, arms = served(device_id, extras, lambda: _lockout(robot, lockout).engaged)
+    handlers.update(more)
+    writes, moving = (*WRITE_RPCS, *writes), (*MOTION_RPCS, "skill", *arms)
     counter = itertools.count(1)
     proven = signed.identity_of(transport) is not None  # a request's ``peer`` is proven, not only claimed
     fresh = Freshness() if proven else None
@@ -206,12 +193,13 @@ def serve(
             if named != here and name != "estop":  # estop exempt: a stop only halts, so it always lands
                 raise RequestRefused(f"a request naming {named} arrived on {here}: answered only on the key it names")
             cert = signed.check_request(transport, env, fresh, name)  # before anything else hears of the call
-            if why is not None and name in WRITE_RPCS:
+            if why is not None and name in writes:
                 raise RequestRefused(f"{device_id} is mounted observe-only ({why}); {name} is refused (docs/mesh.md)")
-            if on_rpc is not None and name in (*MOTION_RPCS, "skill") and env.get("peer") is None:
+            if on_rpc is not None and name in moving and env.get("peer") is None:
                 raise TypeError(f"{device_id}.{name} needs the caller's peer id: the watchdog arms on whoever moves it")
-            extra = sorted(set(args) - set(ARGS[name]))
-            if extra:  # checked before the watchdog hears of it: a request refused here moves nothing, arms nothing
+            # checked before the watchdog hears of it: a request refused here moves nothing, arms nothing
+            kw = check_args(device_id, name, extras[name], args) if name in extras else args
+            if name in ARGS and (extra := sorted(set(args) - set(ARGS[name]))):
                 raise TypeError(f"{device_id}.{name} takes {list(ARGS[name]) or 'no arguments'}, not {extra}")
             if on_rpc is not None and name != "estop":
                 done = on_rpc(name, env.get("peer"), env.get("beat"), proven)
@@ -219,7 +207,7 @@ def serve(
                 result, beat = skills.start_for(env.get("peer"), env.get("beat"), proven, **args)
                 body = {"result": result}
             else:
-                body = {"result": handlers[name](**args)}
+                body = {"result": handlers[name](**kw)}
         except Exception as exc:
             body = {"error": _error(exc)}
         finally:
@@ -237,7 +225,8 @@ def serve(
         return signed.encode(transport, reply)
 
     undos = [
-        transport.queryable(wire.key("rpc", tenant, device_id, name), answer, inline=(name == "estop")) for name in ARGS
+        transport.queryable(wire.key("rpc", tenant, device_id, name), answer, inline=(name == "estop"))
+        for name in (*ARGS, *extras)
     ]
 
     def undo() -> None:

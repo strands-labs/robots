@@ -32,9 +32,16 @@ MOTION_RPCS = ("act",)
 
 class MeshWatchdog:
     def __init__(
-        self, robot: Any, timeout_ms: float, transports: Sequence[Transport], tenant: str, device_id: str | None = None
+        self,
+        robot: Any,
+        timeout_ms: float,
+        transports: Sequence[Transport],
+        tenant: str,
+        device_id: str | None = None,
+        motions: Sequence[str] = (),
     ) -> None:
         self.robot = robot
+        self.motions = (*MOTION_RPCS, *motions)  # ``act`` and the device rpcs that arm (mesh/rpcs.py)
         self.tenant, self.device_id = tenant, device_id
         self.dog = Watchdog(robot, timeout_ms, clock=time.monotonic)
         self.peer: str | None = None
@@ -59,7 +66,7 @@ class MeshWatchdog:
         the key the watched mover was given."""
         with self._lock:
             mover = self._is_mover(peer, beat, proven)
-            if name in MOTION_RPCS and peer is not None:
+            if name in self.motions and peer is not None:
                 if mover:  # only the watched mover's own requests keep its clock alive
                     self.dog.beat()
                 self._moving += 1
@@ -158,12 +165,17 @@ class MeshWatchdog:
 
 
 def start(
-    robot: Any, timeout_ms: float | None, transports: Sequence[Transport], tenant: str, device_id: str | None = None
+    robot: Any,
+    timeout_ms: float | None,
+    transports: Sequence[Transport],
+    tenant: str,
+    device_id: str | None = None,
+    motions: Sequence[str] = (),
 ) -> MeshWatchdog | None:
     """A watchdog for a device with controls (a manifest says what ``on_disconnect`` means); ``None`` otherwise."""
     if timeout_ms is None or not hasattr(robot, "manifest"):
         return None
-    return MeshWatchdog(robot, timeout_ms, transports, tenant, device_id)
+    return MeshWatchdog(robot, timeout_ms, transports, tenant, device_id, motions)
 
 
 def stopper(dog: MeshWatchdog | None) -> Unsubscribe:

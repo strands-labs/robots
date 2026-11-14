@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
 import numpy as np
@@ -59,3 +60,23 @@ def observation_from_dict(d: dict[str, Any]) -> Observation:
             None if ang is None else np.asarray(ang, float),
         )
     return Observation(t=float(d["t"]), joints=js, pose=pose, images=d.get("images") or {})
+
+
+_RENDER: dict[int, ThreadPoolExecutor] = {}
+
+
+def _render_thread(robot: Any) -> ThreadPoolExecutor:
+    """One thread per robot does every image observe: a GL context is bound to the thread that first rendered with
+    it (measured on macOS: a render from a second thread never returns)."""
+    pool = _RENDER.get(id(robot))
+    if pool is None:
+        pool = _RENDER[id(robot)] = ThreadPoolExecutor(max_workers=1, thread_name_prefix="mesh-render")
+    return pool
+
+
+def observe_dict(robot: Any, images: bool) -> Any:
+    """``robot.observe`` as a mesh payload; an image observe runs on the robot's own render thread."""
+    if not images:
+        return observation_to_dict(robot.observe(images=False))
+    obs = _render_thread(robot).submit(robot.observe, images=True).result()
+    return observation_to_dict(obs, images=True)

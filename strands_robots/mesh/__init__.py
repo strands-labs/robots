@@ -5,5 +5,6 @@ from . import authority
 from .device import Device, Selector
 from .mesh import Mesh
 from .remote import RemoteBody
+from .rpcs import device_rpc
 
-__all__ = ["authority", "Device", "Mesh", "RemoteBody", "RequestRefused", "Selector"]
+__all__ = ["authority", "Device", "Mesh", "RemoteBody", "RequestRefused", "Selector", "device_rpc"]
