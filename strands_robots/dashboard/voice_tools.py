@@ -13,7 +13,7 @@ from typing import TYPE_CHECKING, Any
 from . import chat
 
 if TYPE_CHECKING:
-    from .dashboard import Dashboard
+    from .protocols import DashboardLike
 
 SYSTEM_PROMPT = (
     "You are the voice of a strands-robots dashboard: you operate robots that share one simulated world (and maybe "
@@ -38,7 +38,7 @@ def _result(tid: str, fn: Callable[[], Any]) -> dict[str, Any]:
     return {"toolUseId": tid, "status": "success", "content": [{"json": json_safe(out)}]}
 
 
-def _robot_arg(dash: Dashboard) -> dict[str, Any]:
+def _robot_arg(dash: DashboardLike) -> dict[str, Any]:
     ids = sorted({*dash.sim.robots, *dash.real})
     return {"type": "string", "description": f"robot id, one of {ids}"}
 
@@ -49,7 +49,7 @@ def _presets() -> str:
     return "; ".join(f"{n} ({', '.join(f['robots'])}): {f.get('summary', '')}" for n, f in _table().items())
 
 
-def run_tools(dash: Dashboard) -> list[Any]:
+def run_tools(dash: DashboardLike) -> list[Any]:
     """``dashboard_run`` / ``dashboard_stop`` / ``dashboard_estop``: what the page's run row and e-stop do."""
     from strands.tools.tools import PythonAgentTool
 
@@ -124,12 +124,12 @@ def run_tools(dash: Dashboard) -> list[Any]:
     ]
 
 
-def build_tools(dash: Dashboard) -> list[Any]:
+def build_tools(dash: DashboardLike) -> list[Any]:
     """The chat agent's tools plus the run controls."""
     return [*chat.build_tools(dash.sim, dash.real.values()), *run_tools(dash)]
 
 
-def build_agent(dash: Dashboard, model: Any) -> Any:
+def build_agent(dash: DashboardLike, model: Any) -> Any:
     from strands.bidi import BidiAgent
 
     return BidiAgent(model=model, tools=build_tools(dash), system_prompt=SYSTEM_PROMPT)

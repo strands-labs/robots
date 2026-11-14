@@ -15,7 +15,7 @@ from ..recording import Episode, is_repo_id, repo_id
 if TYPE_CHECKING:
     from ..robot import Robot
     from ..units import Units
-    from .dashboard import Dashboard
+    from .protocols import DashboardLike
 
 MAX_FPS = 60
 
@@ -99,7 +99,7 @@ def units_of(robot: Robot, name: Any) -> Units | None:
     return Units.for_robot(robot.description, name)
 
 
-def options(dash: Dashboard) -> dict[str, Any]:
+def options(dash: DashboardLike) -> dict[str, Any]:
     """What the page can record: every robot with the cameras it carries, every world camera, a default target."""
     sim = dash.sim
     with sim.lock:
@@ -128,7 +128,7 @@ def options(dash: Dashboard) -> dict[str, Any]:
     return {"robots": robots, "cameras": cams, "target": target, "max_fps": MAX_FPS}
 
 
-def observe(dash: Dashboard, t: Track) -> Any:
+def observe(dash: DashboardLike, t: Track) -> Any:
     robot = t.robot
     obs = robot.observe(images=robot.sim is None and bool(t.cameras))
     images: dict[str, np.ndarray] = {}
@@ -143,7 +143,7 @@ def action(t: Track, obs: Any) -> np.ndarray:
     return np.asarray(obs.joints.positions if held is None else held, dtype=float)
 
 
-def plan(dash: Dashboard, robots: Any, cameras: Any, target: Any, fps: Any, task: Any, units: Any) -> list[Track]:
+def plan(dash: DashboardLike, robots: Any, cameras: Any, target: Any, fps: Any, task: Any, units: Any) -> list[Track]:
     """A start body checked (robots, cameras, target, fps, task) into one Track per robot, or the reason it is not."""
     if not isinstance(robots, list) or not robots or not all(isinstance(r, str) for r in robots):
         raise ValueError('body must have "robots": ["<robot id>", ...] (at least one)')

@@ -22,7 +22,7 @@ from . import takes
 from .takes import State, Track, targets_for
 
 if TYPE_CHECKING:
-    from .dashboard import Dashboard
+    from .protocols import DashboardLike
 
 log = logging.getLogger(__name__)
 __all__ = ["Recorder", "targets_for"]
@@ -31,7 +31,7 @@ __all__ = ["Recorder", "targets_for"]
 class Recorder:
     """The dashboard's one recording: ``start`` / ``save`` / ``discard`` / ``stop`` / ``status``."""
 
-    def __init__(self, dash: Dashboard) -> None:
+    def __init__(self, dash: DashboardLike) -> None:
         self.dash = dash
         self._lock = threading.RLock()  # one transition at a time; the sampler takes it per tick
         self._s = State()

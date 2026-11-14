@@ -29,7 +29,7 @@ from . import chat
 from .voice_tools import SYSTEM_PROMPT, build_agent, build_tools
 
 if TYPE_CHECKING:
-    from .dashboard import Dashboard
+    from .protocols import DashboardLike
 
 log = logging.getLogger(__name__)
 __all__ = ["SYSTEM_PROMPT", "build_agent", "build_tools", "make_model", "page_events", "provider_of", "session"]
@@ -138,7 +138,7 @@ def page_events(ev: Any, names: dict[str, str]) -> list[Any]:
     return []
 
 
-async def session(ws: Any, dash: Dashboard) -> None:
+async def session(ws: Any, dash: DashboardLike) -> None:
     """Run one conversation over an accepted Starlette WebSocket until either side ends it."""
     try:
         model = await asyncio.to_thread(make_model, dash.voice)

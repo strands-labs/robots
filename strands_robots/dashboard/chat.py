@@ -8,9 +8,12 @@ from __future__ import annotations
 
 import json
 from collections.abc import AsyncIterator, Iterable
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
-from strands import Agent
+if TYPE_CHECKING:
+    from strands import Agent
+
+NO_CHAT = "chat is off: start the dashboard with --model <bedrock model id>, or pass Dashboard(sim, model=...)"
 
 SYSTEM_PROMPT = (
     "You operate robots that share one simulated world (and possibly real ones). Use the robot_* tools "
@@ -23,6 +26,8 @@ def build_tools(sim: Any, real: Iterable[Any] = ()) -> list[Any]:
 
 
 def build_agent(sim: Any, model: Any, real: Iterable[Any] = ()) -> Agent:
+    from strands import Agent  # here, not at module top: GET /api/chat reads NO_CHAT on a [dashboard]-only install
+
     return Agent(model=model, tools=build_tools(sim, real), system_prompt=SYSTEM_PROMPT, callback_handler=None)
 
 

@@ -16,7 +16,7 @@ from typing import TYPE_CHECKING, Any
 from .connect_policy import KINDS, policy_spec, probe
 
 if TYPE_CHECKING:
-    from .dashboard import Dashboard
+    from .protocols import DashboardLike
 
 FRAME_S = 0.12  # one observe serves every camera <img> of a robot for this long
 
@@ -38,7 +38,7 @@ def mesh_url(address: str) -> str:
 class Connections:
     """The page's meshes, attached remote robots and connected policies."""
 
-    def __init__(self, dash: Dashboard) -> None:
+    def __init__(self, dash: DashboardLike) -> None:
         self.dash = dash
         self.meshes: dict[str, Any] = {}  # url -> Mesh
         self._own: set[str] = set()  # the urls this page opened (closed with it)
