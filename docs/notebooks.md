@@ -1,10 +1,10 @@
 ---
-description: Eleven notebooks that take one SO-101 from a first observation to an agent driving it over the mesh, saved with their outputs.
+description: Thirteen notebooks that take one SO-101 from a first observation to an agent driving it over the mesh, saved with their outputs.
 ---
 
 # Example notebooks
 
-The [`notebooks/`](https://github.com/strands-labs/robots/tree/main/notebooks) folder has eleven short notebooks.
+The [`notebooks/`](https://github.com/strands-labs/robots/tree/main/notebooks) folder has thirteen short notebooks.
 Each teaches one thing. They are saved with their outputs, so you can read them on GitHub.
 
 | Notebook | Teaches |
@@ -20,6 +20,8 @@ Each teaches one thing. They are saved with their outputs, so you can read them 
 | [08 device and safety](https://github.com/strands-labs/robots/blob/main/notebooks/08_device_and_safety.ipynb) | The manifest, refusals and e-stop |
 | [09 mesh](https://github.com/strands-labs/robots/blob/main/notebooks/09_mesh.ipynb) | Robots in different processes |
 | [10 GPU backends](https://github.com/strands-labs/robots/blob/main/notebooks/10_gpu_backends.ipynb) | Isaac Sim and Newton |
+| [11 hub to hardware](https://github.com/strands-labs/robots/blob/main/notebooks/11_hub_to_hardware.ipynb) | From a Hub policy to a physical arm |
+| [12 streaming data loop](https://github.com/strands-labs/robots/blob/main/notebooks/12_streaming_data_loop.ipynb) | Record into a bucket, stream it back, train |
 
 To run them, install the extras and LeRobot (see the [quickstart](quickstart.md)), then open the folder:
 
