@@ -219,7 +219,9 @@ All paths are under `strands_robots/`.
   model. `tests/test_xml_limits.py` holds it to MuJoCo on registry models.
 - GitHub-hosted models are pinned: `asset.source.commit` plus `asset.source.sha256` (`assets.tree_digest` of the
   subdir). Bumping a model means updating both; a cache from another pin is fetched again.
-- Two robots with the same id clash as tool names. Pass `id=`.
+- In one world a second robot with a taken id gets a suffix (`so101`, `so101_2`; `Simulation.unique_id`). Robots in
+  different worlds keep the same id, so their tools clash in one `Agent` (`Tool name 'robot_so101' already exists`).
+  Pass `id=`.
 - Over Zenoh, resume by name is refused unless the device has operator keys (`Authority(public_keys=...)`) or
   `trust_names=True`.
 - Recording needs an integer `hz`, and refuses an existing dataset with a different fps, robot, units or features.
