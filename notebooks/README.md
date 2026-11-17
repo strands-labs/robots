@@ -1,6 +1,6 @@
 # strands-robots notebooks
 
-Twelve notebooks, saved without outputs so the repository stays small: run one to see its results. Each one is also
+Thirteen notebooks, saved without outputs so the repository stays small: run one to see its results. Each one is also
 a plain script in [`scripts/`](scripts/) that runs top to bottom in a terminal or pastes into a REPL.
 
 ![the notebook path, 00 to 10](media/hero.svg)
@@ -19,6 +19,7 @@ a plain script in [`scripts/`](scripts/) that runs top to bottom in a terminal o
 | 09 | [mesh](09_mesh.ipynb) | discover, invoke, state streams, broadcast estop, signed resume, a robot in a second process, `use_mesh` |
 | 10 | [GPU backends](10_gpu_backends.ipynb) | Isaac Sim and MuJoCo-Warp, measured on an L40S (shown, not re-run) |
 | 11 | [hub to hardware](11_hub_to_hardware.ipynb) | the companion to the Hugging Face article: an agent over the arm, a LeRobot v3 recording (pushed with `HF_USER`), a Hub ACT by name, the hardware constructor, the arm on a mesh |
+| 12 | [streaming data loop](12_streaming_data_loop.ipynb) | the companion to the Storage Buckets article: `run(record=...)` into a bucket with `hf sync` (set `HF_BUCKET`), streamed back with `StreamingLeRobotDataset`, `lerobot-train` from the stream, the checkpoint as a `Policy` |
 
 ## Run them
 
