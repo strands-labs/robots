@@ -33,6 +33,7 @@ python notebooks/scripts/00_quickstart.py        # or: jupyter lab notebooks/
 ```
 
 03 and 04 call a model; they use Amazon Bedrock when `AWS_BEARER_TOKEN_BEDROCK` (or AWS credentials) is set.
+09 runs one model turn and skips it when `STRANDS_MODEL_ID` is unset; 07's chat cell is skipped the same way.
 
 ## Editing
 

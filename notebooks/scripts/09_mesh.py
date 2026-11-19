@@ -275,20 +275,23 @@ for inp in ({"action": "list", "selector": "device(role:arm)"},
 # %%
 from strands import Agent
 
-agent = Agent(model=os.environ["STRANDS_MODEL_ID"], tools=[tool], callback_handler=None)
-t0 = time.perf_counter()
-reply = agent("List the arms on the mesh, move so101's shoulder_pan to 0.4 rad, then e-stop every device. "
-              "Answer in two sentences.")
-print(f"({time.perf_counter() - t0:.1f} s)", str(reply).strip())
-for m in agent.messages:
-    for b in m["content"]:
-        if "toolUse" in b:
-            print("  call:", json.dumps(b["toolUse"]["input"]))
-print("arm estopped:", arm.estopped, "| shoulder_pan:", round(arm.observe().joints["shoulder_pan"], 3))
-me.invoke("so101", "resume", approved_by=me.operator)  # the operator, in code
-bench.resume_authority = authority.Authority(trust_names=True)
-me.invoke("g1", "resume", approved_by=me.operator)
-print("operator resumed:", not arm.estopped, not g1.estopped)
+if not os.environ.get("STRANDS_MODEL_ID"):
+    print("skipped: no STRANDS_MODEL_ID in the environment")
+else:
+    agent = Agent(model=os.environ["STRANDS_MODEL_ID"], tools=[tool], callback_handler=None)
+    t0 = time.perf_counter()
+    reply = agent("List the arms on the mesh, move so101's shoulder_pan to 0.4 rad, then e-stop every device. "
+                  "Answer in two sentences.")
+    print(f"({time.perf_counter() - t0:.1f} s)", str(reply).strip())
+    for m in agent.messages:
+        for b in m["content"]:
+            if "toolUse" in b:
+                print("  call:", json.dumps(b["toolUse"]["input"]))
+    print("arm estopped:", arm.estopped, "| shoulder_pan:", round(arm.observe().joints["shoulder_pan"], 3))
+    me.invoke("so101", "resume", approved_by=me.operator)  # the operator, in code
+    bench.resume_authority = authority.Authority(trust_names=True)
+    me.invoke("g1", "resume", approved_by=me.operator)
+    print("operator resumed:", not arm.estopped, not g1.estopped)
 
 # %% [markdown]
 # ## The same mesh over AWS IoT
