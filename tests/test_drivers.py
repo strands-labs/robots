@@ -277,6 +277,55 @@ def test_write_computes_goals_before_torque_comes_on():
     assert d.extras()["torque"] is False
 
 
+def _sync_writes(s):
+    """Every SYNC_WRITE on the wire as (register, {servo id: value})."""
+    out = []
+    for f in s.frames:
+        if f[4] == ft.SYNC_WRITE:
+            reg, per, body = f[5], f[6], f[7:-1]
+            vals = {body[k]: int.from_bytes(body[k + 1 : k + 1 + per], "little") for k in range(0, len(body), per + 1)}
+            out.append((reg, vals))
+    return out
+
+
+def _stale(s, counts=100):
+    """Power-up: every servo still holds a Goal_Position from before, far from the 2048 it is at."""
+    for r in s.regs.values():
+        r[ft.REG_GOAL_POSITION : ft.REG_GOAL_POSITION + 2] = ft.word(counts)
+
+
+def test_first_write_holds_every_servo_where_it_is_before_torque_comes_on():
+    """Torque on drives each servo to the Goal_Position it already holds (power-up, or the last session's). So the first
+    write reads Present, writes it as the goal, enables torque, and only then sends the targets: at no point is a servo
+    torqued toward a stale goal, or toward a target the speed cap has not seen."""
+    d, s = make_driver()
+    _stale(s)
+    s.frames.clear()
+    d.write(np.array([0.5, 0, 0, 0, 0, 0]))
+    (r1, held), (r2, on), (r3, goal) = _sync_writes(s)
+    assert (r1, r2, r3) == (ft.REG_GOAL_POSITION, ft.REG_TORQUE_ENABLE, ft.REG_GOAL_POSITION)
+    assert held == dict.fromkeys(d.ids, 2048)  # Goal := Present, never the stale 100 or the target
+    assert on == dict.fromkeys(d.ids, 1) and goal[1] != 2048  # then torque, then the move
+    s.frames.clear()
+    d.write(np.zeros(6))
+    assert [reg for reg, _ in _sync_writes(s)] == [ft.REG_GOAL_POSITION]  # torque is on: the targets only
+
+
+def test_torque_on_holds_the_arm_where_it_is():
+    """``torque(True)`` on its own goes through the same Goal := Present; on an arm already torqued it sends nothing."""
+    d, s = make_driver()
+    _stale(s)
+    s.frames.clear()
+    d.torque(True)
+    assert _sync_writes(s) == [
+        (ft.REG_GOAL_POSITION, dict.fromkeys(d.ids, 2048)),
+        (ft.REG_TORQUE_ENABLE, dict.fromkeys(d.ids, 1)),
+    ]
+    s.frames.clear()
+    d.torque(True)
+    assert s.frames == []
+
+
 def _goal_frames(s):
     return [f for f in s.frames if f[4] == ft.SYNC_WRITE and f[5] == ft.REG_GOAL_POSITION]
 
