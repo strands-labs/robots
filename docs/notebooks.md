@@ -28,3 +28,12 @@ To run them, install the extras and LeRobot (see the [quickstart](quickstart.md)
 ```bash
 uv pip install -e ".[all]" ipykernel nbconvert av
 ```
+
+## One-file examples
+
+[`notebooks/examples/`](https://github.com/strands-labs/robots/tree/main/notebooks/examples) has single scripts:
+
+| Example | Shows |
+|---|---|
+| [agent_builds_a_scene.py](https://github.com/strands-labs/robots/blob/main/notebooks/examples/agent_builds_a_scene.py) | An agent builds a scene, moves the arm and renders |
+| [agentcore_fleet.py](https://github.com/strands-labs/robots/blob/main/notebooks/examples/agentcore_fleet.py) | An agent over two robots, served as an Amazon Bedrock AgentCore Runtime app |

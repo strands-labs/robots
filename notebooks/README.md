@@ -56,4 +56,5 @@ cp notebooks/media/05/wave.gif /tmp/05-wave.gif && gh release upload media /tmp/
 
 `_nb.py` holds the builder and a few display helpers (GIFs, inline MP4, tables, quiet imports); `scripts/check_nb.py NN_x.ipynb`
 lists any error or stderr output. Neither is part of the package. [`examples/agent_builds_a_scene.py`](examples/agent_builds_a_scene.py)
-is the one-file agent example the test suite runs.
+builds a scene with an agent, and [`examples/agentcore_fleet.py`](examples/agentcore_fleet.py) serves an agent over two
+robots as an Amazon Bedrock AgentCore Runtime app. The test suite runs both.
