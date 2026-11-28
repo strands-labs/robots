@@ -47,9 +47,13 @@ def cache_dir() -> Path:
 
 
 def tree_digest(root: Path) -> str:
-    """sha256 over every file under ``root`` (sorted ``relpath NUL sha256(bytes) LF`` lines; the marker excluded)."""
+    """sha256 over every file under ``root`` (sorted ``relpath NUL sha256(bytes) LF`` lines; the marker excluded).
+
+    Files are ordered by their path parts, case-sensitively, so every platform computes the digest the registry pins.
+    """
     h = hashlib.sha256()
-    for p in sorted(q for q in root.rglob("*") if q.is_file() and q.name != _MARKER):
+    files = (q for q in root.rglob("*") if q.is_file() and q.name != _MARKER)
+    for p in sorted(files, key=lambda q: q.relative_to(root).parts):
         rel = p.relative_to(root).as_posix()
         h.update(rel.encode() + b"\0" + hashlib.sha256(p.read_bytes()).hexdigest().encode() + b"\n")
     return h.hexdigest()

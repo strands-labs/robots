@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import io
 import json
 import tarfile
@@ -65,6 +66,15 @@ def _serve(monkeypatch, blob: bytes) -> _Served:
     served = _Served(blob)
     monkeypatch.setattr(assets.urllib.request, "urlopen", served)
     return served
+
+
+def test_the_digest_orders_files_the_same_way_on_every_platform(tmp_path):
+    # Case-sensitive, one path part at a time: WindowsPath ignores case, and comparing the joined
+    # strings would put "a-c.txt" before "a/b.txt".
+    ordered = ["Zeta.txt", "a/b.txt", "a-c.txt", "alpha.txt"]
+    lines = "".join(f"{rel}\0{hashlib.sha256(rel.encode()).hexdigest()}\n" for rel in ordered)
+
+    assert _digest_of({rel: rel for rel in ordered}, tmp_path) == hashlib.sha256(lines.encode()).hexdigest()
 
 
 def test_every_github_model_in_the_registry_is_pinned():
